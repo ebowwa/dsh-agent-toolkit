@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { Service } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 
@@ -70,6 +71,9 @@ var FlightRecorder = class extends Service {
 		this.telemetry = new Map();
 		/** ownerKey -> Map<jobId, last non-terminal status> for onJobsChanged diffs. */
 		this.lastStatus = new Map();
+		/** sessionId -> Session, observed through job ownership (writer targets
+		 * that do not depend on the scope view of ctx.sessions). */
+		this.knownSessions = new Map();
 		if (config.disabled) return;
 		this.observeJobs(ctx);
 		if (config.pluginLayer) this.observePluginLayer(ctx);
@@ -212,6 +216,7 @@ var FlightRecorder = class extends Service {
 			const id = innerStart(spec);
 			try {
 				const session = self.ownerSession(spec.owner);
+				self.rememberSession(session);
 				/* No read can precede start's return — the id does not exist before
 				 * it — so attaching identity here races nothing. */
 				entry.currentId = id;
@@ -251,6 +256,7 @@ var FlightRecorder = class extends Service {
 					startedAt: snapshot.startedAt
 				};
 				const session = this.ownerSession(owner);
+				this.rememberSession(session);
 				if (session) data.ownerSession = session.id;
 				if (typeof snapshot.finishedAt === "number") data.finishedAt = snapshot.finishedAt;
 				if (typeof snapshot.detail === "string") data.detail = snapshot.detail;
@@ -282,6 +288,7 @@ var FlightRecorder = class extends Service {
 					if (before !== snapshot.status && before !== undefined) {
 						const data = { id: snapshot.id, kind: snapshot.kind, status: snapshot.status };
 						const session = this.ownerSession(owner);
+						this.rememberSession(session);
 						if (session) data.ownerSession = session.id;
 						if (typeof snapshot.detail === "string") data.detail = snapshot.detail;
 						this.append(session ?? this.anyLiveSession(), "job/status", data);
@@ -380,11 +387,52 @@ var FlightRecorder = class extends Service {
 				if (value !== undefined) data[key] = value;
 			}
 		}
+		this.debugSideChannel(data);
 		try {
-			const sessions = this.ctx.sessions;
-			if (!sessions || typeof sessions.list !== "function") return;
-			for (const session of sessions.list()) {
+			/* Writer targets: the scope view of ctx.sessions PLUS every session
+			 * this process has observed through job ownership — the store view
+			 * may be scope-proxied to nothing for a host-level plugin, so
+			 * job-observed refs are the reliable path. */
+			const targets = new Map();
+			try {
+				const sessions = this.ctx.sessions;
+				if (sessions && typeof sessions.list === "function") {
+					for (const session of sessions.list()) targets.set(session.id, session);
+				}
+			} catch {
+				/* contained */
+			}
+			for (const [id, session] of this.knownSessions) {
+				if (!targets.has(id)) targets.set(id, session);
+			}
+			for (const session of targets.values()) {
 				this.append(session, "plugin/lifecycle", data);
+			}
+		} catch {
+			/* contained */
+		}
+	}
+
+	/** Side channel for pipeline diagnosis: one JSON line per heard event. */
+	debugSideChannel(data) {
+		try {
+			appendFileSync(
+				`${process.env.HOME ?? "/tmp"}/.dsh/storages/flight-recorder-debug.jsonl`,
+				`${JSON.stringify({ t: Date.now(), ...data })}\n`
+			);
+		} catch {
+			/* contained: diagnosis must never break recording */
+		}
+	}
+
+	/** Remember a session observed through job ownership. */
+	rememberSession(session) {
+		try {
+			if (!session?.id) return;
+			this.knownSessions.set(session.id, session);
+			if (this.knownSessions.size > 100) {
+				const oldest = this.knownSessions.keys().next().value;
+				this.knownSessions.delete(oldest);
 			}
 		} catch {
 			/* contained */
