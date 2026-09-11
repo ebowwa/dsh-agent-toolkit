@@ -62,7 +62,9 @@ var FlightRecorder = class extends Service {
 		/** Subscribe to the loader/HMR plugin layer. */
 		pluginLayer: z.boolean().default(true),
 		/** Record only fiber status transitions touching the active state (2). */
-		pluginStatusActiveOnly: z.boolean().default(true)
+		pluginStatusActiveOnly: z.boolean().default(true),
+		/** Host-level plugin log (every heard event). Relative to $DSH_HOME's storages dir when not absolute. */
+		pluginLogFile: z.string().default("/Users/ebowwa/.dsh/storages/flight-recorder-plugins.jsonl")
 	});
 	constructor(ctx, config) {
 		super(ctx, "flightRecorder");
@@ -387,7 +389,17 @@ var FlightRecorder = class extends Service {
 				if (value !== undefined) data[key] = value;
 			}
 		}
-		this.debugSideChannel(data);
+		/* Sink 1 — the host-level plugin log: EVERY event. Session attach
+		 * churns hundreds of fibers (SubagentRuntime, AgentLoop, …); that
+		 * firehose belongs in the per-host log, not in session transcripts. */
+		this.writePluginLog(data);
+		/* Sink 2 — session transcripts: the curated subset only. Proven to
+		 * land when the writing instance has a job-observed session cached. */
+		const curated =
+			name === "FlightRecorder" ||
+			event === "hmr-change" ||
+			event === "hmr-reload";
+		if (!curated) return;
 		try {
 			/* Writer targets: the scope view of ctx.sessions PLUS every session
 			 * this process has observed through job ownership — the store view
@@ -413,15 +425,15 @@ var FlightRecorder = class extends Service {
 		}
 	}
 
-	/** Side channel for pipeline diagnosis: one JSON line per heard event. */
-	debugSideChannel(data) {
+	/** Sink 1 writer: the host-level plugin log, one JSON line per event. */
+	writePluginLog(data) {
 		try {
-			appendFileSync(
-				`${process.env.HOME ?? "/tmp"}/.dsh/storages/flight-recorder-debug.jsonl`,
-				`${JSON.stringify({ t: Date.now(), ...data })}\n`
-			);
+			const path = this.config.pluginLogFile?.startsWith("/")
+				? this.config.pluginLogFile
+				: `${process.env.HOME ?? "/tmp"}/.dsh/storages/flight-recorder-plugins.jsonl`;
+			appendFileSync(path, `${JSON.stringify({ t: Date.now(), ...data })}\n`);
 		} catch {
-			/* contained: diagnosis must never break recording */
+			/* contained: the log must never break recording */
 		}
 	}
 
