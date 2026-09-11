@@ -28,10 +28,29 @@ log (`session.jsonl.zstd`):
    | `plugin/lifecycle {event: "hmr-change"/"hmr-reload", ...}` | `hmr/change`, `hmr/reload` |
    | `plugin/lifecycle {event: "recorder-mounted"}` | this plugin's own mount |
 
+   Two sinks, because the event classes have different audiences:
+
+   - `~/.dsh/storages/flight-recorder-plugins.jsonl` — the host-level log,
+     EVERY event. Session attach churns hundreds of scoped fibers
+     (SubagentRuntime, AgentLoop, SandboxBashExecutor, ...) — thousands of
+     events per attach — and that firehose would drown session transcripts.
+   - session transcripts — the curated subset only: FlightRecorder's own
+     lifecycle, HMR change/reload, mount markers. A harness shutdown
+     cascades through the tree and is recorded into the transcript by the
+     dying observer up to its own `status 2->5`.
+
    The internal listeners register `{ global: true }`: internal events are
    emitted on the emitting fiber's own context and dispatch filters
    non-global listeners through that fiber's scope filter, which does not
-   include a sibling plugin's context.
+   include a sibling plugin's context. Writer targets are the scope view of
+   `ctx.sessions` PLUS every session observed through job ownership
+   (`knownSessions`) — the store view can be scope-proxied for host-level
+   plugins, so job-observed refs are the reliable transcript path. The
+   plugin instantiates PER SESSION-SCOPE (every composition mounts its own
+   FlightRecorder fiber; the service name is isolate-filtered, so this is
+   legal). Fiber-create events are structurally unhearable when no instance
+   is already mounted (creation precedes listener registration); disposals
+   and status transitions land reliably.
 
 ## Install
 
