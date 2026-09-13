@@ -55,7 +55,7 @@ exit 0
       HOME: home,
       WORKER_GH_CRED: GH_CRED,
       WORKER_DOPPLER_CRED: DOPPLER_CRED,
-      WORKER_REPOS: "ebowwa/dsh-bot ebowwa/github-activity-tracker",
+      WORKER_REPOS: "ebowwa/dsh-agent-toolkit ebowwa/github-activity-tracker",
       DSH_BOT_INSTALL_DIR: botDir,
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       ...extra,
@@ -75,7 +75,7 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
     const envBody = readFileSync(envFile, "utf8");
     assert.ok(envBody.includes(GH_CRED), "env holds the GH credential");
     assert.ok(envBody.includes(DOPPLER_CRED), "env holds the doppler credential");
-    assert.match(envBody, /DSH_WORKER_REPOS="ebowwa\/dsh-bot ebowwa\/github-activity-tracker"/);
+    assert.match(envBody, /DSH_WORKER_REPOS="ebowwa\/dsh-agent-toolkit ebowwa\/github-activity-tracker"/);
 
     const cron = readFileSync(f.store, "utf8");
     assert.match(cron, /\/bin\/bash .*dsh-worker\.sh --once/, "sweep invoked via bash (scripts are mode 644 — direct exec is Permission denied)");

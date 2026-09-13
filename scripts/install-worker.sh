@@ -47,7 +47,7 @@ WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 #    No -q: nothing in this installer may fail quietly.
 PIN_OK=0
 if [ ! -d "$DSH_BOT_DIR/.git" ]; then
-  git clone https://github.com/ebowwa/dsh-bot.git "$DSH_BOT_DIR" \
+  git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_BOT_DIR" \
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
 if git -c safe.directory="$DSH_BOT_DIR" -C "$DSH_BOT_DIR" fetch --tags --force \

@@ -36,7 +36,7 @@ jobs:
           && github.event.comment.user.type != 'Bot'
           && contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
           && github.event.issue.pull_request)
-    uses: ebowwa/dsh-bot/.github/workflows/agent-review-thin.yml@v1
+    uses: ebowwa/dsh-agent-toolkit/.github/workflows/agent-review-thin.yml@v1
     secrets: inherit
     with:
       # workflow_dispatch passes inputs.pr; the /review comment path

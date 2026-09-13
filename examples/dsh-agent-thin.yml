@@ -37,5 +37,5 @@ jobs:
           && (startsWith(github.event.issue.body, '/dsh') || startsWith(github.event.issue.title, '/dsh'))
           && github.event.issue.user.type != 'Bot'
           && contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
-    uses: ebowwa/dsh-bot/.github/workflows/agent-comment-thin.yml@v1
+    uses: ebowwa/dsh-agent-toolkit/.github/workflows/agent-comment-thin.yml@v1
     secrets: inherit

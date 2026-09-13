@@ -48,7 +48,7 @@ on:
         type: boolean
         default: true
       dsh-bot-ref:
-        description: "Git ref of ebowwa/dsh-bot to fetch scripts from (defaults to the called workflow's own pinned ref)"
+        description: "Git ref of ebowwa/dsh-agent-toolkit to fetch scripts from (defaults to the called workflow's own pinned ref)"
         type: string
         default: ""
       model:
@@ -106,10 +106,10 @@ jobs:
           # the toolkit fetch writes the real credential.
           persist-credentials: false
 
-      - name: Fetch dsh-bot scripts (pinned ref)
+      - name: Fetch dsh-agent-toolkit scripts (pinned ref)
         uses: actions/checkout@v4
         with:
-          repository: ebowwa/dsh-bot
+          repository: ebowwa/dsh-agent-toolkit
           ref: ${{ inputs.dsh-bot-ref || github.ref }}
           path: .dsh-bot
           token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}

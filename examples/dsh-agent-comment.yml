@@ -1,5 +1,5 @@
 # Consumer shell — .github/workflows/dsh-agent-comment.yml in YOUR repo.
-# Everything else lives in ebowwa/dsh-bot's reusable workflow.
+# Everything else lives in ebowwa/dsh-agent-toolkit's reusable workflow.
 
 name: dsh agent (GLM) - comment
 
@@ -25,7 +25,7 @@ jobs:
       && (startsWith(github.event.comment.body, '/dsh') || contains(github.event.comment.body, '@dsh-agent'))
       && github.event.comment.user.type != 'Bot'
       && contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-    uses: ebowwa/dsh-bot/.github/workflows/agent-comment.yml@v1
+    uses: ebowwa/dsh-agent-toolkit/.github/workflows/agent-comment.yml@v1
     secrets: inherit
     with:
       review-workflow: "dsh-review.yml"
