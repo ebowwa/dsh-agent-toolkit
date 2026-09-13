@@ -688,6 +688,25 @@ fi
 # checkpoint, so this driver tails the session file while dsh runs and streams
 # a compact event trace (tool calls, results, reasoning) to stderr — visible
 # live in the Actions log, never in the reply (stdout stays final-answer-only).
+# --- THROTTLE-WAVE RETRY (2026-09-13) --------------------------------------
+# The provider's per-account throttle kills synchronized spawn waves at the
+# FIRST API call — before the session file exists, so a dead attempt leaves
+# no transcript and reads downstream as "silent" (measured 2026-09-08: 7
+# agents spawned together all died within ~6 min; again 2026-09-13 01:23Z+
+# when the tower minted a burst — every attempt in the wave died instantly
+# and the 60-min sweep reaped them). The claim budget (60 min) is sized for
+# exactly this: retry a FAST failure (lifetime under DSH_FAST_FAIL_S) with
+# a hard backoff, capped by attempts and a wall clock that keeps the whole
+# loop inside the claim budget. Slow failures and successes never retry.
+RC=0
+ATTEMPT=1
+DSH_SPAWN_ATTEMPTS="${DSH_SPAWN_ATTEMPTS:-3}"
+DSH_FAST_FAIL_S="${DSH_FAST_FAIL_S:-420}"
+DSH_RETRY_WALL_S="${DSH_RETRY_WALL_S:-2700}"
+FIRST_ATTEMPT_EPOCH="$(date +%s)"
+ATTEMPT_START="$FIRST_ATTEMPT_EPOCH"
+while :; do
+ATTEMPT_START="$(date +%s)"
 FINAL_OUT="$(mktemp /tmp/dsh-agent-answer.XXXXXX)"
 MARKER="$(mktemp /tmp/dsh-agent-marker.XXXXXX)"
 touch "$MARKER"
@@ -775,6 +794,21 @@ RC=0
 wait "$DSH_PID" || RC=$?
 wait "$PROGRESS_PID" 2>/dev/null || true
 echo "::endgroup::" >&2
+# Throttle-wave decision: success or slow failure exits the loop; a fast
+# failure retries with hard backoff while attempts and the wall clock allow.
+if [ "${RC}" -eq 0 ]; then break; fi
+NOW_EPOCH="$(date +%s)"; LIFE=$(( NOW_EPOCH - ATTEMPT_START ))
+if [ "$LIFE" -ge "$DSH_FAST_FAIL_S" ]; then break; fi
+if [ $(( NOW_EPOCH - FIRST_ATTEMPT_EPOCH )) -ge "$DSH_RETRY_WALL_S" ]; then
+  echo "::error::retry wall clock (${DSH_RETRY_WALL_S}s) exhausted — surfacing the failure" >&2
+  break
+fi
+ATTEMPT=$(( ATTEMPT + 1 ))
+if [ "$ATTEMPT" -gt "$DSH_SPAWN_ATTEMPTS" ]; then break; fi
+case "$ATTEMPT" in 2) BACKOFF=180 ;; *) BACKOFF=600 ;; esac
+echo "::error::agent died fast (lifetime ${LIFE}s < ${DSH_FAST_FAIL_S}s, exit ${RC}) — throttle-wave class; retry ${ATTEMPT}/${DSH_SPAWN_ATTEMPTS} in ${BACKOFF}s" >&2
+sleep "$BACKOFF"
+done
 
 # The session transcript on the runner contains everything the agent saw,
 # including any secret a tool result echoed. Default: delete it. Set
