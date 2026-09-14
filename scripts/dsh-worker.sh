@@ -105,7 +105,11 @@ CHECK_ENV() { # <varname> — required env, typed exit 2 (never run half-configu
 # 34803136038). Resolve the retired name loudly, then hold the same contract.
 if [ -z "${DSH_AGENT_TOOLKIT_DIR:-}" ] && [ -n "${DSH_BOT_DIR:-}" ]; then
   echo "dsh-worker: DSH_BOT_DIR is retired — set DSH_AGENT_TOOLKIT_DIR (accepted for this run)" >&2
-  DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
+  # EXPORT the resolution: the worker spawns ship-changes/post-reply/review-pr
+  # by path WITHOUT re-stating the dir, so a plain assignment reaches no child
+  # and every child would re-derive from the retired name (or die at its `:?`
+  # gate when the legacy name does not travel) — review F1 on this PR.
+  export DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
 fi
 CHECK_ENV DSH_AGENT_TOOLKIT_DIR
 CHECK_ENV GH_TOKEN
@@ -158,6 +162,13 @@ mkdir -p "$ITEM_SLOTS" 2>/dev/null || true
 # the item is already running.
 slot_take() {
   local key="$1" active lock
+  # Repo-shaped keys ("w-owner/repo-N") must not fold into a lock SUBDIR:
+  # nothing creates items/<prefix>/, so the `: >` below failed and EVERY
+  # item skipped as "slots full" (label stayed, next sweep retried forever —
+  # found by the composed rename-compat test). Keys stay flat so the
+  # active-slot count (`ls -1 items`) and the dashboard's items/*.lock glob
+  # keep working.
+  key="${key//\//-}"
   lock="$ITEM_SLOTS/$key.lock"
   [ -e "$lock" ] && return 1            # this item is already running
   active="$(ls -1 "$ITEM_SLOTS" 2>/dev/null | wc -l | tr -d ' ')"
@@ -215,6 +226,14 @@ repo_store() { # <owner/repo> -> store path (created + refreshed under flock)
       [ -d "$store" ] || git clone --mirror --quiet "${ORIGIN_PREFIX}${repo}.git" "$store"
     ) 9>"$lock" || return 1
   fi
+  # `clone --mirror` also sets remote.origin.mirror=true, which every worktree
+  # built on this store INHERITS — and a mirror-mode remote rejects explicit
+  # refspecs, so the shipper's `git push -u origin <branch>` died with
+  # "--mirror can't be combined with refspecs" on every worker-path ship
+  # (found by the composed rename-compat test). The flag is push-only: the
+  # refresh below keeps mirroring every ref through remote.origin.fetch.
+  # Runs on every sweep so pre-existing stores heal too.
+  git --git-dir="$store" config --local --unset-all remote.origin.mirror 2>/dev/null || true
   # bounded refresh: a stale store only costs old refs (items fetch what
   # they need themselves); the lock serializes concurrent sweeps
   ( flock -n 9 && git --git-dir="$store" fetch --prune --quiet origin ) 9>"$lock" 2>/dev/null || true

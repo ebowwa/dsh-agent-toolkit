@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { copyFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -310,4 +310,219 @@ test("workflows: dsh-bot-ref stays a declared alias and every checkout resolves 
   const thin = read(".github", "workflows", "agent-dispatch-thin.yml");
   assert.match(thin, /dsh-agent-toolkit-ref:/);
   assert.match(thin, /dsh-bot-ref:/, "the no-op compat input surface must carry BOTH names");
+});
+
+// --- the COMPOSED worker→child legacy path (review round on this PR) -------
+//
+// The worker-level shim resolves the retired name and then spawns
+// ship-changes.sh / post-reply.sh / review-pr.sh WITHOUT re-stating the dir
+// in those invocations' env-prefixes — the children can only inherit the
+// resolution if the worker EXPORTS it. A plain shell variable never crosses
+// a process boundary, so the ONLY way the legacy name reaches the worker is
+// the deployed cron shape (`set -a; . env; set +a` — install-worker.sh) —
+// which exports the retired name to the children too. Before the worker-side
+// `export`, that composed path still completed (every child re-derived the
+// dir from the retired name through its own shim, printing its own warning);
+// what was broken was the CONTRACT: the children depended on the retired
+// name propagating, not on the worker's resolution. These tests pin both
+// halves: the worker's shim must EXPORT the resolution (source pin + env
+// probes on every child hop), and the composed legacy pipeline must run
+// end-to-end through the REAL child scripts.
+
+// This lane's `git` may be the dsh scrub shim (a script whose shebang needs
+// PATH); the composed fixture bakes the REAL git into its PATH shim so the
+// shim's passthrough arm cannot recurse through itself.
+const REAL_GIT = process.env.GIT_SCRUB_REAL || "/usr/bin/git";
+const BASH = spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+
+test("worker composed: a legacy-only env file still drives ship→reply→review, and the shim's resolution travels to every child — the worker's shim must export it", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "rename-compat-composed-"));
+  const bare = path.join(dir, "origin.git");
+  const shims = path.join(dir, "shim");
+  const toolkit = path.join(dir, "toolkit"); // what the retired name points at
+  const data = path.join(dir, "data");
+  const probes = path.join(dir, "probes");
+  const ghLog = path.join(dir, "gh.log");
+  mkdirSync(shims, { recursive: true });
+  mkdirSync(path.join(toolkit, "scripts"), { recursive: true });
+  mkdirSync(probes, { recursive: true });
+
+  // Fixture origin: one base commit carrying REVIEW.md (review-pr's rules
+  // fallback reads it from the worktree when the base ref has none) plus a
+  // refs/pull/999/merge so the review stage's merge fetch resolves against
+  // the local store.
+  const seed = path.join(dir, "seed");
+  git(["init", "-q", "-b", "master", seed]); // pin the branch: init.defaultBranch differs per lane and the review stage fetches refs/heads/<baseRefName>
+  git(["config", "user.name", "tester"], { cwd: seed });
+  git(["config", "user.email", "tester@example.com"], { cwd: seed });
+  writeFileSync(path.join(seed, "REVIEW.md"), "# rules contract fixture\n");
+  writeFileSync(path.join(seed, "a.txt"), "base content\n");
+  git(["add", "."], { cwd: seed });
+  git(["commit", "-q", "-m", "base"], { cwd: seed });
+  git(["init", "--bare", "-q", "-b", "master", bare]); // pin HEAD to the pushed branch: an unresolved HEAD fails the store worktree add exactly like an empty repo
+  git(["push", "-q", bare, "master"], { cwd: seed });
+  const base = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
+  git(["--git-dir", bare, "update-ref", "refs/pull/999/merge", base]);
+
+  // gh shim: the queue poll yields ONE queued issue; the ack lookup yields 0;
+  // the comments endpoint returns a trusted /dsh trigger (deliberately raw
+  // JSON — this test pins dir RESOLUTION across the worker's child hops, not
+  // the trust pipeline's jq shapes); the PR facts answer the review stage's
+  // reads; everything else answers empty-success.
+  writeFileSync(path.join(shims, "gh"), `#!/usr/bin/env bash
+echo "gh: \$*" >> "${ghLog}"
+case " \$* " in
+  *"labels=dsh/queued"*) echo '{"number":42,"is_pr":false}' ;;
+  *"labels=dsh/review"*|*"labels=dsh/task"*) ;;
+  *"dsh:ack"*) echo 0 ;;
+  *"/issues/42/comments"*) echo '[{"id":555,"body":"/dsh ship a fix","user":{"login":"alice","type":"User"},"author_association":"OWNER"}]' ;;
+  *" issue view "*) echo '{"title":"fixture","body":"body"}' ;;
+  *" pr create "*) echo "https://github.com/owner/repo/pull/999" ;;
+  *" --json number "*) echo 999 ;;
+  *" pr view "*) echo '{"baseRefName":"master","headRefName":"dsh/agent-branch","title":"fixture pr"}' ;;
+  *"/contents/REVIEW.md"*) exit 1 ;;
+  *) exit 0 ;;
+esac
+`);
+  // git shim: point every github.com clone at the fixture bare; everything
+  // else passes through to the REAL git (absolute path — this shim dir leads
+  // the child PATH).
+  writeFileSync(path.join(shims, "git"), `#!/usr/bin/env bash
+args=()
+for a in "\$@"; do
+  case "\$a" in https://github.com/*) a="${bare}";; esac
+  args+=("\$a")
+done
+exec "${REAL_GIT}" "\${args[@]}"
+`);
+  // flock exists only on util-linux boxes; the store lock is a no-op here.
+  writeFileSync(path.join(shims, "flock"), "#!/usr/bin/env bash\nexit 0\n");
+  for (const f of ["gh", "git", "flock"]) spawnSync("chmod", ["+x", path.join(shims, f)]);
+
+  // The child surfaces under $DSH_AGENT_TOOLKIT_DIR are WRAPPERS around the
+  // REAL scripts (stubbed only where the real thing leaves the box: driver,
+  // push-credential resolver). Each wrapper records whether the worker's
+  // shim resolution arrived in its ENVIRONMENT — the F1 contract: a child
+  // must not depend on the retired name propagating — then delegates to the
+  // real script. The stub driver dirties the worktree (the shipper must have
+  // something to commit) and ends with a parseable verdict line (the review
+  // hop must complete its label contract).
+  for (const [f, tag] of [["ship-changes.sh", "ship"], ["post-reply.sh", "reply"], ["review-pr.sh", "review"]]) {
+    writeFileSync(path.join(toolkit, "scripts", f), `#!/usr/bin/env bash
+if [ -n "\${DSH_AGENT_TOOLKIT_DIR:-}" ]; then echo 1 >> "${probes}/${tag}.env"; else echo 0 >> "${probes}/${tag}.env"; fi
+exec bash "${path.join(ROOT, "scripts", f)}" "\$@"
+`);
+    spawnSync("chmod", ["+x", path.join(toolkit, "scripts", f)]);
+  }
+  for (const f of ["scrub-output.mjs", "review-verdict.mjs"]) {
+    copyFileSync(path.join(ROOT, "scripts", f), path.join(toolkit, "scripts", f));
+  }
+  writeFileSync(path.join(toolkit, "scripts", "run-dsh-agent.sh"), `#!/usr/bin/env bash
+echo "stub driver ran" >> a.txt
+echo "stub driver: work done"
+echo "## Verdict: APPROVE"
+`);
+  writeFileSync(path.join(toolkit, "scripts", "resolve-push-token.sh"), "#!/usr/bin/env bash\nexit 0\n");
+  for (const f of ["run-dsh-agent.sh", "resolve-push-token.sh"]) {
+    spawnSync("chmod", ["+x", path.join(toolkit, "scripts", f)]);
+  }
+
+  // The deployed env-file shape: the legacy name only, sourced exactly the
+  // way the cron line sources it (install-worker.sh: `set -a; . env; set +a`).
+  const envFile = path.join(dir, "worker.env");
+  writeFileSync(envFile, `DSH_BOT_DIR="${toolkit}"\n`);
+
+  try {
+    const res = spawnSync(BASH, ["-c", `set -a; . "${envFile}"; set +a; exec bash "${WORKER}" --once`], {
+      encoding: "utf8",
+      env: baseEnv({
+        GH_TOKEN: "fake-token",
+        DSH_WORKER_REPOS: "owner/repo",
+        DSH_WORKER_DATA_ROOT: data,
+        DSH_WORKER_DASHBOARD: "0",
+        PATH: `${shims}${path.delimiter}${process.env.PATH}`,
+      }),
+      timeout: 90000,
+    });
+    assert.equal(res.status, 0, `worker sweep must succeed (got exit ${res.status}):\n${res.stderr}`);
+    assert.match(res.stderr, /DSH_BOT_DIR is retired/, "the worker shim must warn loud, never silent");
+
+    // Items run in a background subshell that outlives the sweep — the item
+    // is complete when its slot lock is gone (the trap removes it on exit),
+    // not merely when the first artifact appears.
+    const runs = path.join(data, "runs");
+    const slots = path.join(data, "items");
+    const deadline = Date.now() + 45000;
+    let rundir = "";
+    while (Date.now() < deadline) {
+      rundir = (existsSync(runs) ? readdirSync(runs) : [])
+        .map((d) => path.join(runs, d))
+        .find((d) => existsSync(path.join(d, "review-output.txt"))) || "";
+      const busy = (existsSync(slots) ? readdirSync(slots) : []).some((f) => f.endsWith(".lock"));
+      if (rundir && !busy) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const log = existsSync(ghLog) ? readFileSync(ghLog, "utf8") : "";
+    assert.ok(rundir,
+      `the review stage never ran — the children did not resolve the dir.\ngh log:\n${log}\nworker stderr:\n${res.stderr}`);
+    assert.match(log, /pr create/, "the shipper child must resolve the dir and open the PR");
+    assert.match(readFileSync(path.join(rundir, "review-output.txt"), "utf8"), /stub driver/,
+      "the review child must resolve the dir and run its driver");
+    assert.match(`${res.stdout}${res.stderr}`, /verdict APPROVE/,
+      "the review hop must complete on the composed path");
+    assert.doesNotMatch(`${res.stdout}${res.stderr}`, /DSH_AGENT_TOOLKIT_DIR unset/,
+      "no child may die at the dir gate on the composed legacy path");
+    // F1's contract, observed in vivo: every leaf child must receive the
+    // worker's RESOLUTION in its environment — never re-derive it from the
+    // retired name (a plain shim assignment does not travel; only an export
+    // does).
+    for (const tag of ["ship", "reply", "review"]) {
+      const p = path.join(probes, `${tag}.env`);
+      assert.ok(existsSync(p), `the ${tag} hop never ran`);
+      assert.equal(readFileSync(p, "utf8").trim(), "1",
+        `the ${tag} child must see DSH_AGENT_TOOLKIT_DIR in its env (the worker's shim must export the resolution)`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("worker source: the legacy-name shim EXPORTS the resolution — a plain assignment dies at the first child gate (review F1)", () => {
+  const src = read("scripts", "dsh-worker.sh");
+  const line = src.split("\n").find((l) => l.trim() === 'DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"' || l.trim() === 'export DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"');
+  assert.ok(line, "the worker shim must assign DSH_AGENT_TOOLKIT_DIR from the retired name");
+  assert.match(line, /^\s*export /,
+    "the shim's resolution must be exported: the worker spawns ship/reply/review without re-stating the dir, so a plain assignment reaches no child");
+});
+
+test("review-pr: only the retired DSH_BOT_DIR set still gets past the dir gate, loudly (the direct-caller shim)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "rename-compat-review-"));
+  const shims = path.join(dir, "shim"); // a prepared dir with NO gh: constructs gh absence hermetically (blessed form — runtime-interpolated, no system dir, ambient not re-included)
+  const rules = path.join(dir, "rules.md");
+  mkdirSync(shims, { recursive: true });
+  writeFileSync(rules, "# rules contract fixture\n");
+  try {
+    // The gate AFTER the dir shim is the gh check — reaching "gh unavailable"
+    // proves the shim resolved the dir and the `:?` gate passed.
+    const res = spawnSync(BASH, [path.join(ROOT, "scripts", "review-pr.sh")], {
+      encoding: "utf8",
+      env: baseEnv({
+        GH_TOKEN: "fake-token",
+        DSH_SHIP_REPO: "owner/repo",
+        PR_NUM: "42",
+        DSH_WORKTREE: dir,
+        DSH_REVIEW_OUT: path.join(dir, "review-output.txt"),
+        DSH_REVIEW_RULES_FILE: rules,
+        DSH_BOT_DIR: ROOT, // retired name only
+        PATH: shims,
+      }),
+    });
+    assert.match(res.stderr, /DSH_BOT_DIR is retired/, "the shim must warn loud, never silent");
+    assert.match(res.stderr, /gh unavailable/,
+      "the run must get PAST the dir gate (the next typed gate is the gh check)");
+    assert.doesNotMatch(res.stderr, /DSH_AGENT_TOOLKIT_DIR unset/,
+      "the retired name must be shimmed, not fatal");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
