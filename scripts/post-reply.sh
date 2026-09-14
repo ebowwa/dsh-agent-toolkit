@@ -53,7 +53,7 @@ export DSH_SCRUB_EXTRA_HOSTS="${EXTRA_SCRUB_HOSTS:-}"
 # The reply is the user-facing output channel, so a missing gh downgrades to
 # a warning instead of a bare 127.
 command -v gh >/dev/null 2>&1 \
-  || export PATH="${DSH_CELL_BIN:-$1/.dsh-agent-toolkit-bin:$1/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
+  || export PATH="${DSH_CELL_BIN:-${HOME:-/root}/.dsh-agent-toolkit-bin:${HOME:-/root}/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 command -v gh >/dev/null 2>&1 || {
   echo "::warning::gh unavailable — reply NOT posted to the thread; the agent's answer is in the run log/worker output ($DSH_AGENT_OUTPUT)"
   exit 0

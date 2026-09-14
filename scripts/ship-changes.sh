@@ -73,7 +73,7 @@ fi
 # lane-lottery, 2026-08-26): probe the driver's persistent prefix + brew
 # prefixes before giving up. Identical list to the driver's CELL_PROBE_DIRS.
 command -v gh >/dev/null 2>&1 \
-  || export PATH="${DSH_CELL_BIN:-$1/.dsh-agent-toolkit-bin:$1/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
+  || export PATH="${DSH_CELL_BIN:-${HOME:-/root}/.dsh-agent-toolkit-bin:${HOME:-/root}/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 
 # Progress edit: agent phase over, shipping.
 if [ -n "${ACK_COMMENT_ID:-}" ] && command -v gh >/dev/null 2>&1; then
