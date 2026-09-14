@@ -48,7 +48,7 @@ exit 0
   // carries the keepalive, its systemd --user exists); a "clean" fixture
   // is unbuildable there without stubbing every manager the audit reads
   writeFileSync(path.join(shim, "crontab"), `#!/usr/bin/env bash
-${plant ? 'echo "* * * * * flock -n ~/.dsh-worker/sweep.lock /bin/bash ~/dsh-bot/scripts/dsh-worker.sh --once"' : 'exit 1'}
+${plant ? 'echo "* * * * * flock -n ~/.dsh-worker/sweep.lock /bin/bash ~/dsh-agent-toolkit/scripts/dsh-worker.sh --once"' : 'exit 1'}
 exit 0
 `);
   writeFileSync(path.join(shim, "systemctl"), `#!/usr/bin/env bash

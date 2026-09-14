@@ -1,4 +1,4 @@
-# dsh-bot: agent-review-thin — the DECOUPLED review trigger as a REUSABLE
+# dsh-agent-toolkit: agent-review-thin — the DECOUPLED review trigger as a REUSABLE
 # workflow. The runner-holding review stage is retired: this trigger is a
 # ~15s job on the self-hosted dsh lane (owner directive: nothing on
 # github-hosted) that enqueues the review (the dsh/review label on

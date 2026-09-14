@@ -56,7 +56,7 @@ exit 0
       WORKER_GH_CRED: GH_CRED,
       WORKER_DOPPLER_CRED: DOPPLER_CRED,
       WORKER_REPOS: "ebowwa/dsh-agent-toolkit ebowwa/github-activity-tracker",
-      DSH_BOT_INSTALL_DIR: botDir,
+      DSH_AGENT_TOOLKIT_INSTALL_DIR: botDir,
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       ...extra,
     }) };

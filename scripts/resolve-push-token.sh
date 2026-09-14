@@ -9,7 +9,7 @@
 #   1. the ephemeral token can NEVER carry `workflows` permission — a push
 #      whose commits edit .github/workflows/** is rejected outright
 #      ("refusing to allow a GitHub App to create or update workflow ..."),
-#      the same wall dsh-bot-bump.yml documents for its own push;
+#      the same wall dsh-agent-toolkit-bump.yml documents for its own push;
 #   2. even for non-workflow commits, a bot-identity push onto a PR whose
 #      OVERALL diff touches workflow files parks every triggered run in
 #      action_required until a human approves (observed 2026-08-26: factory

@@ -45,12 +45,12 @@
 #                       nothing). Unset = off, byte-identical launch line.
 #   DOPPLER_SERVICE_TOKEN required by `doppler run`
 #   DSH_CELL_BIN        persistent prefix for the cell-tool bootstrap
-#                       (default $HOME/.dsh-bot-bin); the relay/reply
+#                       (default $HOME/.dsh-agent-toolkit-bin); the relay/reply
 #                       guards in the workflows honor the same seam. gh
 #                       is NOT a hard driver requirement (soft: warn and
 #                       run — the workflows own gh absence); doppler is.
 #
-# Comment-bot reply wiring (used by dsh-agent-comment.yml):
+# Comment-agent-toolkit reply wiring (used by dsh-agent-comment.yml):
 #   REPLY_TARGET    human label of the thread to answer, e.g. "PR #123"
 #   TARGET_KIND     "pr" | "issue" — which `gh ... comment` subcommand to use
 #   TARGET_NUM      the number the agent should reply to
@@ -113,7 +113,7 @@ Your task (from the triggering comment):
 $TASK"
 fi
 
-# Comment-bot mode: the workflow posts the reply itself (as github-actions[bot]
+# Comment-agent-toolkit mode: the workflow posts the reply itself (as github-actions[bot]
 # via GITHUB_TOKEN), so the agent must NOT comment. It may still push commits
 # and open PRs; author commits as the bot so attribution is not the runner user.
 if [ "${REPLY_TARGET:-}" != "" ]; then
@@ -166,13 +166,13 @@ export DSH_SCRUB_EXTRA_HOSTS="${EXTRA_SCRUB_HOSTS:-}"
 # gh are ensured here, cheapest first:
 #   1. probe known prefixes onto PATH (fixes the regressed-PATH case with
 #      zero network),
-#   2. install into a PERSISTENT user prefix (~/.dsh-bot-bin — survives
+#   2. install into a PERSISTENT user prefix (~/.dsh-agent-toolkit-bin — survives
 #      steps and runs, so the first hardened run pays the cost and later
 #      runs just find the binaries),
 #   3. fail LOUD with the provisioning hint — never limp on half a
 #      toolchain (a missing doppler at `doppler run` means no ZAI_API_KEY
 #      and a dead agent; a missing gh means no identity, no verdict).
-CELL_BIN="${DSH_CELL_BIN:-$HOME/.dsh-bot-bin}"
+CELL_BIN="${DSH_CELL_BIN:-$HOME/.dsh-agent-toolkit-bin}"
 # Probe order: the persistent cell prefix, the brew prefixes a mac/linux
 # runner service PATH may have regressed away from, and doppler's own
 # default. CELL_PROBE_DIRS is a TEST SEAM (space list) — callers never set
@@ -381,7 +381,7 @@ echo "::group::dsh agent (${MODEL_ID} via ${PROVIDER})" >&2
 # is then github-actions[bot], and the runner's personal hosts.yml is
 # invisible to agent jobs entirely.
 if [ -n "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
-  GH_BOT_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gh-bot-config.$$"
+  GH_BOT_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gh-agent-toolkit-config.$$"
   mkdir -p "$GH_BOT_DIR" && chmod 700 "$GH_BOT_DIR"
   # Resolve the gh identity FROM THE TOKEN: a PAT must push as its owner
   # (BOT_PAT exists so cross-repo tower tickets can push to targets like
@@ -621,7 +621,7 @@ fi
 # to resolve against. The packaging fix is the web-search-browser pattern
 # (section 2e): the plugin ships as a real package (package.json + lib/) and
 # is COPIED into the profile module tree ($DSH_HOME/profiles/node_modules/
-# @dsh-bot/), where @deepseek-ai/dsh-tools and @deepseek-ai/dsh-tool-fs-search
+# @dsh-agent-toolkit/), where @deepseek-ai/dsh-tools and @deepseek-ai/dsh-tool-fs-search
 # resolve through the profile's flat fallback (hoisted by the dsh install —
 # nothing per-cell to provision, unlike the web provider). The patch overlay
 # then names the PACKAGE, never a path. Default off: opt-in per caller, no
@@ -636,8 +636,8 @@ if [ "${DSH_SEARCH_COMPOSE:-}" = "1" ]; then
     echo "hint: the mount is a packaged plugin, not a bare script path — an incomplete copy is a dead mount, and a dead mount must never look like a working one" >&2
     exit 2
   fi
-  mkdir -p "$DSH_HOME/profiles/node_modules/@dsh-bot"
-  COMPOSE_PLUGIN_DST="$DSH_HOME/profiles/node_modules/@dsh-bot/tool-search-compose"
+  mkdir -p "$DSH_HOME/profiles/node_modules/@dsh-agent-toolkit"
+  COMPOSE_PLUGIN_DST="$DSH_HOME/profiles/node_modules/@dsh-agent-toolkit/tool-search-compose"
   # Same-tree guard (section 2e, review r1 finding 1): structurally
   # unreachable while DSH_HOME is minted or pointed at ~/.dsh, but a
   # DSH_HOME set INSIDE this plugin's directory would otherwise rm -rf the
@@ -659,7 +659,7 @@ if [ "${DSH_SEARCH_COMPOSE:-}" = "1" ]; then
     echo "# insert: because a bare row with an unknown id only warns and is silently skipped."
     echo "- insert:"
     echo "    - id: tool-search-compose"
-    echo "      name: '@dsh-bot/tool-search-compose'"
+    echo "      name: '@dsh-agent-toolkit/tool-search-compose'"
   } > "$COMPOSE_PATCH_FILE"
   echo "search-compose: mounted for this run ($COMPOSE_COPY_NOTE)" >&2
 fi

@@ -178,7 +178,7 @@ test("context with countOnly or filesOnly is a typed error, never a silent drop"
 
 test("the plugin ships as a package the overlay can name (never a bare path again)", () => {
   const pkg = JSON.parse(readFileSync(path.join(PLUGIN, "package.json"), "utf8"));
-  assert.equal(pkg.name, "@dsh-bot/tool-search-compose");
+  assert.equal(pkg.name, "@dsh-agent-toolkit/tool-search-compose");
   assert.equal(pkg.type, "module");
   assert.equal(pkg.main, "lib/index.js");
   assert.ok(existsSync(path.join(PLUGIN, pkg.main)), "main entry exists");
@@ -198,7 +198,7 @@ test("the whole package parse-checks — lib/index.js has no other gate (PR #43 
     const p = spawnSync(process.execPath, ["--check", path.join(PLUGIN, rel)], { encoding: "utf8" });
     assert.equal(p.status, 0, `${rel} must parse: ${p.stderr}`);
   }
-  assert.equal(JSON.parse(readFileSync(path.join(PLUGIN, "package.json"), "utf8")).name, "@dsh-bot/tool-search-compose", "package.json parses");
+  assert.equal(JSON.parse(readFileSync(path.join(PLUGIN, "package.json"), "utf8")).name, "@dsh-agent-toolkit/tool-search-compose", "package.json parses");
 });
 
 test("compose.js stays dependency-free — the gates' module path has no dsh packages", () => {
@@ -210,7 +210,7 @@ test("compose.js stays dependency-free — the gates' module path has no dsh pac
 test("the launcher stamps the same package name this package declares", () => {
   const script = readFileSync(LAUNCHER, "utf8");
   assert.match(script, /id: tool-search-compose/, "overlay row id pinned");
-  assert.match(script, /name: '@dsh-bot\/tool-search-compose'/, "overlay row names the PACKAGE, not a path");
+  assert.match(script, /name: '@dsh-agent-toolkit\/tool-search-compose'/, "overlay row names the PACKAGE, not a path");
   assert.match(script, /DSH_SEARCH_COMPOSE/, "the mount is env-gated");
 });
 

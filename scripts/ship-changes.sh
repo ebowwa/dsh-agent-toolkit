@@ -19,7 +19,7 @@
 #   DSH_RUN_ID              run identifier for branch naming (default $GITHUB_RUN_ID)
 #   DSH_RUN_ATTEMPT         attempt counter (default ${GITHUB_RUN_ATTEMPT:-1})
 #   DSH_WORKTREE            the checkout the agent worked in (default $GITHUB_WORKSPACE)
-#   DSH_BOT_DIR             dsh-bot toolkit checkout (contains scripts/)
+#   DSH_AGENT_TOOLKIT_DIR             dsh-agent-toolkit toolkit checkout (contains scripts/)
 #   DSH_SHIP_CACHE          dir holding the BEFORE-state files this script
 #                           diffs against; the caller (workflow step or
 #                           worker) must have written them. Default
@@ -52,7 +52,7 @@ DSH_SHIP_REPO="${DSH_SHIP_REPO:-${GITHUB_REPOSITORY:?ship-changes: DSH_SHIP_REPO
 DSH_RUN_ID="${DSH_RUN_ID:-${GITHUB_RUN_ID:?ship-changes: DSH_RUN_ID/GITHUB_RUN_ID unset}}"
 DSH_RUN_ATTEMPT="${DSH_RUN_ATTEMPT:-${GITHUB_RUN_ATTEMPT:-1}}"
 DSH_WORKTREE="${DSH_WORKTREE:-${GITHUB_WORKSPACE:?ship-changes: DSH_WORKTREE/GITHUB_WORKSPACE unset}}"
-DSH_BOT_DIR="${DSH_BOT_DIR:?ship-changes: DSH_BOT_DIR unset}"
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?ship-changes: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_SHIP_CACHE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}"
 DSH_AGENT_OUTPUT="${DSH_AGENT_OUTPUT:-$DSH_SHIP_CACHE/dsh-agent-output.txt}"
 DSH_SHIP_NOTE_FILE="${DSH_SHIP_NOTE_FILE:-$DSH_SHIP_CACHE/dsh-ship-note.txt}"
@@ -66,14 +66,14 @@ DSH_META_FILE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}/dsh-run-meta.env"
 DSH_STAMP=""
 if [ -f "$DSH_META_FILE" ]; then
   . "$DSH_META_FILE"
-  DSH_STAMP="dsh-bot: model=${DSH_RUN_MODEL:-?} harness=dsh-${DSH_RUN_DSH_VERSION:-?} run=${DSH_RUN_ID:-_}"
+  DSH_STAMP="dsh-agent-toolkit: model=${DSH_RUN_MODEL:-?} harness=dsh-${DSH_RUN_DSH_VERSION:-?} run=${DSH_RUN_ID:-_}"
 fi
 
 # gh may sit outside the runner service PATH on self-hosted cells (secondsee
 # lane-lottery, 2026-08-26): probe the driver's persistent prefix + brew
 # prefixes before giving up. Identical list to the driver's CELL_PROBE_DIRS.
 command -v gh >/dev/null 2>&1 \
-  || export PATH="${DSH_CELL_BIN:-${HOME:-/root}/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
+  || export PATH="${DSH_CELL_BIN:-$1/.dsh-agent-toolkit-bin:$1/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 
 # Progress edit: agent phase over, shipping.
 if [ -n "${ACK_COMMENT_ID:-}" ] && command -v gh >/dev/null 2>&1; then
@@ -156,20 +156,20 @@ $DSH_STAMP}")"
   fi
 done
 
-# .dsh-bot is the fetched toolkit checkout, NOT agent work (workflow mode);
+# .dsh-agent-toolkit is the fetched toolkit checkout, NOT agent work (workflow mode);
 # the worker's clone contains no toolkit checkout at all, so the exclusion is
 # harmless there. DIFF_OK tracks whether the git checks ACTUALLY ran — a
 # failing git must never yield a "verified: nothing to ship" note (review
 # round on PR #45: the unguarded substitutions collapsed failures to an
 # empty diff and the note overclaimed verification).
 DIFF_OK=1
-DIRTY="$(git status --porcelain -- . ':!.dsh-bot' 2>/dev/null)" || DIFF_OK=0
+DIRTY="$(git status --porcelain -- . ':!.dsh-agent-toolkit' 2>/dev/null)" || DIFF_OK=0
 AHEAD="$(git log --oneline "$BEFORE_SHA..HEAD" 2>/dev/null | wc -l | tr -d ' ')" || DIFF_OK=0
 if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
   BRANCH="dsh/auto-r${DSH_RUN_ID}a${DSH_RUN_ATTEMPT}"
   git checkout -B "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
   if [ -n "$DIRTY" ]; then
-    git add -A -- . ':!.dsh-bot'
+    git add -A -- . ':!.dsh-agent-toolkit'
     git commit -m "dsh: automated ship of agent run ${DSH_RUN_ID}" ${DSH_STAMP:+-m "$DSH_STAMP"} --allow-empty 2>/dev/null || true
   fi
   if git push -u origin "$BRANCH" 2>&1; then
@@ -182,7 +182,7 @@ if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
       echo "---"
       echo
       if [ -f "$DSH_AGENT_OUTPUT" ]; then
-        node "$DSH_BOT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null || true
+        node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null || true
       fi
     } > "$DSH_SHIP_CACHE/dsh-pr-body.md"
     NOTE="${NOTE:+$NOTE; }$(open_pr "$BRANCH" "dsh: ${DSH_TASK_TITLE:-agent changes}" \

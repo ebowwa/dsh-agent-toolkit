@@ -1,4 +1,4 @@
-# dsh-bot: agent-dispatch-thin — the DECOUPLED manual/scheduled task entry
+# dsh-agent-toolkit: agent-dispatch-thin — the DECOUPLED manual/scheduled task entry
 # as a REUSABLE workflow. The runner-holding path (agent-dispatch.yml on
 # [self-hosted, dsh] for up to 120 min per task) is retired for consumers
 # that adopt this: the trigger is a ~15s job on the self-hosted dsh lane
@@ -14,7 +14,7 @@
 # Out-of-band semantics: task/base-ref/model/subagent-model ride the
 # queue payload; runner/timeout-minutes are accepted no-ops (no lane is
 # held; the worker's DSH_WORKER_TIMEOUT_MIN caps the run);
-# review-workflow/dsh-bot-ref are accepted no-ops (reviews are inline on
+# review-workflow/dsh-agent-toolkit-ref are accepted no-ops (reviews are inline on
 # the worker).
 #
 # The queue payload (issue body), written by this trigger and parsed by
@@ -61,7 +61,7 @@ on:
         description: "Accepted for input compatibility; reviews run inline on the worker"
         type: string
         default: ""
-      dsh-bot-ref:
+      dsh-agent-toolkit-ref:
         description: "Accepted for input compatibility"
         type: string
         default: ""

@@ -1,6 +1,6 @@
 name: self-register-factory
 
-# Runs ON a dsh-bot runner and registers THAT MACHINE as an additional
+# Runs ON a dsh-agent-toolkit runner and registers THAT MACHINE as an additional
 # executor for the factory repo (github-activity-tracker) — side-by-side
 # install, this repo's own runner is untouched. Idempotent: skips if the
 # install directory exists. Dispatched when the factory queue is saturated

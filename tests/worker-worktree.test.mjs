@@ -60,7 +60,7 @@ const fixture = () => {
       "set -euo pipefail",
       `DATA=${JSON.stringify(path.join(dir, "data"))}`,
       "GH_TOKEN=stub-token",
-      `DSH_BOT_DIR=${JSON.stringify(ROOT)}`,
+      `DSH_AGENT_TOOLKIT_DIR=${JSON.stringify(ROOT)}`,
       `ORIGIN_PREFIX=${JSON.stringify(origins + "/")}`,
     ].join("\n");
     writeFileSync(script, prologue + "\n" + extractFns() + cmd);

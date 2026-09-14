@@ -4,7 +4,7 @@
 // a `#` comment INSIDE a backslash continuation (the --patch overlay mount
 // at 236c706), which silently severed the command: `doppler run ... env -u
 // ...` ran with no utility (an env dump), and `dsh ... --patch
-// "$DSH_BOT_DIR/..."` executed as its own line — unbound variable, dead
+// "$DSH_AGENT_TOOLKIT_DIR/..."` executed as its own line — unbound variable, dead
 // agent, red run. That instance was reverted (f2972e7, run 32798068670
 // green), but the failure exposed two defects still live on main:
 //
@@ -249,7 +249,7 @@ test("scripts never place a comment line inside a backslash continuation (run 32
       // The joined line begins with `#`: bash treats it as a comment start,
       // the continuation is severed, and everything after it runs as a
       // SEPARATE command (in 32797020619: dsh launched outside doppler,
-      // referencing an unbound $DSH_BOT_DIR). bash -n passes this shape —
+      // referencing an unbound $DSH_AGENT_TOOLKIT_DIR). bash -n passes this shape —
       // only a structural check can catch it.
       if (/^\s*#/.test(lines[i + 1])) {
         offenders.push(`${f}:${i + 2} (continuation from line ${i + 1})`);

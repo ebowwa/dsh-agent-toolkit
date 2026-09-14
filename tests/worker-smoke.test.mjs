@@ -37,7 +37,7 @@ esac
   spawnSync("chmod", ["+x", path.join(shim, "gh")]);
   return { dir, ghLog, shim,
     env: (extra = {}) => ({
-      GH_TOKEN: "fake-token", DSH_BOT_DIR: ROOT, DSH_WORKER_REPOS: "owner/repo",
+      GH_TOKEN: "fake-token", DSH_AGENT_TOOLKIT_DIR: ROOT, DSH_WORKER_REPOS: "owner/repo",
       DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       ...extra,
@@ -60,7 +60,7 @@ test("--once on an empty queue sweeps cleanly (exit 0, polls the repo)", () => {
 test("fails loudly (exit 2) without the required env — never runs half-configured", () => {
   const f = fixture();
   try {
-    for (const missing of ["GH_TOKEN", "DSH_BOT_DIR", "DSH_WORKER_REPOS"]) {
+    for (const missing of ["GH_TOKEN", "DSH_AGENT_TOOLKIT_DIR", "DSH_WORKER_REPOS"]) {
       const env = f.env();
       delete env[missing];
       const res = spawnSync("bash", [WORKER, "--once"], { encoding: "utf8", env });
@@ -89,7 +89,7 @@ test("documented env example matches the worker's required vars", () => {
   const f = fixture();
   try {
     const example = readFileSync(path.join(ROOT, "config", "dsh-worker.env.example"), "utf8");
-    for (const v of ["GH_TOKEN", "DSH_BOT_DIR", "DSH_WORKER_REPOS"]) {
+    for (const v of ["GH_TOKEN", "DSH_AGENT_TOOLKIT_DIR", "DSH_WORKER_REPOS"]) {
       assert.match(example, new RegExp(v));
     }
   } finally {

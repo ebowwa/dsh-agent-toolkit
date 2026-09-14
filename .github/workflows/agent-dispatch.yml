@@ -1,4 +1,4 @@
-# dsh-bot: agent-dispatch — manual/scheduled task entry as a REUSABLE
+# dsh-agent-toolkit: agent-dispatch — manual/scheduled task entry as a REUSABLE
 # workflow (LEGACY execution mode — kept for the migration window; it
 # executes the agent inside the Actions job that holds a self-hosted
 # runner. Decoupled mode runs manual/scheduled tasks on the worker via the
@@ -39,7 +39,7 @@ on:
       review-workflow:
         type: string
         default: "dsh-review.yml"
-      dsh-bot-ref:
+      dsh-agent-toolkit-ref:
         type: string
         default: ""
 
@@ -68,13 +68,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ebowwa/dsh-agent-toolkit
-          # dsh-bot-ref when given; else MAIN — never github.ref: the
+          # dsh-agent-toolkit-ref when given; else MAIN — never github.ref: the
           # CALLER may fire this workflow from a target repo whose default
-          # branch is not main (ANE: dev), and dsh-bot has no such branch —
+          # branch is not main (ANE: dev), and dsh-agent-toolkit has no such branch —
           # the fetch died with "couldn't find remote ref refs/heads/dev"
           # on every cross-repo tower review (observed 2026-08-24).
-          ref: ${{ inputs.dsh-bot-ref || 'main' }}
-          path: .dsh-bot
+          ref: ${{ inputs.dsh-agent-toolkit-ref || 'main' }}
+          path: .dsh-agent-toolkit
           token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
 
       # Lane impact: none — same runners, one added step (a doppler fetch +
@@ -89,7 +89,7 @@ jobs:
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           PUSH_FALLBACK_CRED: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
-        run: bash "${GITHUB_WORKSPACE}/.dsh-bot/scripts/resolve-push-token.sh"
+        run: bash "${GITHUB_WORKSPACE}/.dsh-agent-toolkit/scripts/resolve-push-token.sh"
 
       - name: Run agent
         env:
@@ -100,15 +100,15 @@ jobs:
           DSH_MODEL: ${{ inputs.model }}
           DSH_SUBAGENT_MODEL: ${{ inputs.subagent-model }}
           DSH_WEB_SEARCH_CELLS: ${{ inputs.web-search-browser-cells }}
-          DSH_BOT_DIR: ${{ github.workspace }}/.dsh-bot
+          DSH_AGENT_TOOLKIT_DIR: ${{ github.workspace }}/.dsh-agent-toolkit
         run: |
           set -euo pipefail
           echo "DSH_RUNNER_NAME=${RUNNER_NAME:-unknown}" >> "$GITHUB_ENV"
           TASK="${TASK_INPUT}"
           [ -n "$TASK" ] || TASK="${DEFAULT_TASK:?no task given}"
           export REPLY_TARGET=""
-          bash "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" "$TASK" \
-            | node "$DSH_BOT_DIR/scripts/scrub-output.mjs" \
+          bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$TASK" \
+            | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" \
             | tee "$RUNNER_TEMP/dsh-agent-output.txt"
 
       # FLIGHT RECORDER: the full session transcript (every reasoning

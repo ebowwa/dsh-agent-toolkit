@@ -31,7 +31,7 @@ provider). When set, the launcher, on every run:
 1. checks the package is complete here (`package.json` + `lib/index.js`;
    missing pieces fail loud — a plugin that cannot resolve is a dead mount,
    never a working one),
-2. copies it to `$DSH_HOME/profiles/node_modules/@dsh-bot/tool-search-compose`,
+2. copies it to `$DSH_HOME/profiles/node_modules/@dsh-agent-toolkit/tool-search-compose`,
 3. stamps a regenerated `$DSH_HOME/search-compose.patch.yml` overlay whose
    row is an explicit `insert:` (a bare row with an unknown id only warns and
    is silently skipped — the silently-dead patch the insert grammar exists to

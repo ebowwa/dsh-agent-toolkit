@@ -1,5 +1,5 @@
 /**
- * dsh-bot search tool — the composition layer the fleet transcripts demanded.
+ * dsh-agent-toolkit search tool — the composition layer the fleet transcripts demanded.
  *
  * Measurement (35 transcripts, 2026-08-24/25): bash-grep 85x vs grep-tool 20x;
  * 185 of the bash calls were pipes (grep | head/wc/grep/sort). The stock tools
@@ -10,7 +10,7 @@
  *
  * Packaging (issue #40; the f2972e7 revert): this file ships as a REAL package
  * (package.json + lib/) that the launcher copies into the profile module tree
- * ($DSH_HOME/profiles/node_modules/@dsh-bot/tool-search-compose), where its
+ * ($DSH_HOME/profiles/node_modules/@dsh-agent-toolkit/tool-search-compose), where its
  * bare `@deepseek-ai/*` imports resolve through the profile's flat fallback —
  * the mount that crashed every launch at f2972e7 pointed at this file's bare
  * IN-TREE path, which resolves nothing (no node_modules beside it). The

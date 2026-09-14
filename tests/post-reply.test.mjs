@@ -36,7 +36,7 @@ exit 0
   return { dir, cache, ghLog,
     env: (extra = {}) => ({
       GH_TOKEN: "fake-token", DSH_SHIP_REPO: "owner/repo",
-      TARGET_KIND: "issue", TARGET_NUM: "42", DSH_BOT_DIR: ROOT,
+      TARGET_KIND: "issue", TARGET_NUM: "42", DSH_AGENT_TOOLKIT_DIR: ROOT,
       DSH_SHIP_CACHE: cache, DSH_AGENT_OUTPUT: path.join(cache, "dsh-agent-output.txt"),
       DSH_SHIP_NOTE: "shipped [branch](https://github.com/owner/repo/pull/999)",
       DSH_RUN_ID: "run123", DSH_RUNNER_NAME: "worker-t", DSH_REPLY_OUT: path.join(cache, "reply.md"),

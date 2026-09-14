@@ -33,8 +33,8 @@ note "auditing the local plane under $AUDIT_HOME ($(uname -s) $(uname -m))"
 
 # --- 1. live processes ------------------------------------------------------
 note "--- processes (dsh/node participants) ---"
-# self-excluded: this audit's own bash would match the dsh-bot/scripts pattern
-PROCS="$(ps aux 2>/dev/null | grep -iE 'dsh-(node|worker)|dsh-bot/scripts|actions-runner' | grep -v grep | grep -v local-fleet-audit || true)"
+# self-excluded: this audit's own bash would match the dsh-(bot|agent-toolkit)/scripts pattern
+PROCS="$(ps aux 2>/dev/null | grep -iE 'dsh-(node|worker)|dsh-(bot|agent-toolkit)/scripts|actions-runner' | grep -v grep | grep -v local-fleet-audit || true)"
 if [ -n "$PROCS" ]; then
   printf '%s\n' "$PROCS" | cut -c1-160
   found "live participant processes (above)"
