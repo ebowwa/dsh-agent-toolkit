@@ -13,7 +13,7 @@
 # run, the answer is withheld, never posted raw.
 #
 # Env contract:
-#   GH_TOKEN            required — comment write access (BOT_PAT in the
+#   GH_TOKEN            required — comment write access (TOWER_PROBE_PAT in the
 #                       workflow; the worker's own PAT in decoupled mode)
 #   DSH_SHIP_REPO       repo to comment in (default $GITHUB_REPOSITORY)
 #   TARGET_KIND         "pr" | "issue" — which gh ... comment subcommand

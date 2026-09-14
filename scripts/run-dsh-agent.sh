@@ -54,7 +54,7 @@
 #   REPLY_TARGET    human label of the thread to answer, e.g. "PR #123"
 #   TARGET_KIND     "pr" | "issue" — which `gh ... comment` subcommand to use
 #   TARGET_NUM      the number the agent should reply to
-#   GH_TOKEN        must be a PAT with issue/PR comment write access (BOT_PAT)
+#   GH_TOKEN        must be a PAT with issue/PR comment write access (TOWER_PROBE_PAT)
 
 set -euo pipefail
 # Linux runner services can start jobs WITHOUT $HOME in env (observed
@@ -384,7 +384,7 @@ if [ -n "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
   GH_BOT_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gh-agent-toolkit-config.$$"
   mkdir -p "$GH_BOT_DIR" && chmod 700 "$GH_BOT_DIR"
   # Resolve the gh identity FROM THE TOKEN: a PAT must push as its owner
-  # (BOT_PAT exists so cross-repo tower tickets can push to targets like
+  # (TOWER_PROBE_PAT exists so cross-repo tower tickets can push to targets like
   # ebowwa/ANE — the factory write-probe proved the PAT CAN write there
   # while agent pushes went 0/8, every one denied because this hardcode
   # made every agent the installation bot). Only the github.token

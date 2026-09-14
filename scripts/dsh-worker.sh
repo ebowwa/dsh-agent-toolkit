@@ -79,7 +79,7 @@
 #   DSH_WORKER_TICK_S       loop sleep seconds (default 60)
 #
 # Security posture (the honest delta vs. CI): the worker holds credentials
-# BETWEEN tasks — a long-lived BOT_PAT + optional Doppler token in its env
+# BETWEEN tasks — a long-lived TOWER_PROBE_PAT + optional Doppler token in its env
 # (see docs/decoupled-worker.md for the env-file + chmod 600 pattern). Per
 # TASK, nothing persists: DSH_HOME is job-scoped inside the run dir (the
 # driver's existing default), transcripts are deleted, and the run dir is

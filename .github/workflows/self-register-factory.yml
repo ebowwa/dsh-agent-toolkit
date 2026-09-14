@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Register this machine with the factory repo (idempotent)
         env:
-          GH_PAT: ${{ secrets.BOT_PAT }}
+          GH_PAT: ${{ secrets.TOWER_PROBE_PAT }}
           NAME: ${{ inputs.runner_name }}
           LABELS: ${{ inputs.labels }}
         run: |
