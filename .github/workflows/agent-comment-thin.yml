@@ -4,7 +4,7 @@
 # the dsh:ack marker the worker matches) and enqueue the task (the queue
 # label). Everything heavy (agent run, shipping, reply, adversarial review)
 # happens out-of-band in scripts/dsh-worker.sh on the worker box, and the
-# consumer needs NO DOPPLER_SERVICE_TOKEN, NO DSH_BOT_REPO_TOKEN.
+# consumer needs NO DOPPLER_SERVICE_TOKEN, NO DSH_AGENT_TOOLKIT_REPO_TOKEN.
 #
 # Consumer shells call this with `uses:`; their local file is a ~15-line
 # event shell (on:, the trust gate, secrets: inherit) — see

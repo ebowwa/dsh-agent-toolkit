@@ -75,20 +75,20 @@ jobs:
           # on every cross-repo tower review (observed 2026-08-24).
           ref: ${{ inputs.dsh-agent-toolkit-ref || 'main' }}
           path: .dsh-agent-toolkit
-          token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          token: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
 
       # Lane impact: none — same runners, one added step (a doppler fetch +
       # one bounded curl per run, ~2-4s).
       - name: Push credential (Doppler-first)
         # Rewrites the git auth the checkout would have persisted: Doppler
         # seed/prd GITHUB_TOKEN when its scopes cover repo+workflow, else
-        # DSH_BOT_REPO_TOKEN (documented PAT with workflow scope), else
+        # DSH_AGENT_TOOLKIT_REPO_TOKEN (documented PAT with workflow scope), else
         # github.token (= exactly today's behavior). Decision line lands in
         # this step's log; the token value only ever reaches the local git
         # config. See scripts/resolve-push-token.sh for the full rationale.
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
-          PUSH_FALLBACK_CRED: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          PUSH_FALLBACK_CRED: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
         run: bash "${GITHUB_WORKSPACE}/.dsh-agent-toolkit/scripts/resolve-push-token.sh"
 
       - name: Run agent
@@ -121,7 +121,7 @@ jobs:
       - name: Archive session transcript (flight recorder)
         if: always() && env.DSH_HOME_JOB != ''
         env:
-          GH_TOKEN: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
         run: |
           set -euo pipefail
           [ -d "${DSH_HOME_JOB}/sessions" ] || { echo "no sessions dir"; exit 0; }

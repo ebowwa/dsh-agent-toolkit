@@ -22,8 +22,8 @@
 # factory's git tokens live in Doppler (seed/prd GITHUB_TOKEN):
 #   1. Doppler seed/prd GITHUB_TOKEN — ONLY if its scopes cover
 #      repo + workflow (probe = one x-oauth-scopes header read);
-#   2. the caller-supplied fallback (secrets.DSH_BOT_REPO_TOKEN || github.token
-#      at the call sites — the bump workflow documents DSH_BOT_REPO_TOKEN
+#   2. the caller-supplied fallback (secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token
+#      at the call sites — the bump workflow documents DSH_AGENT_TOOLKIT_REPO_TOKEN
 #      as a PAT with workflow scope; github.token reproduces today's
 #      behavior exactly, so the wiring is never WORSE than before).
 #
@@ -55,7 +55,7 @@ CONFIG="${DOPPLER_CONFIG:-prd}"
 
 # Caller-provided last resort. Required: an empty push credential is a
 # broken job, not a degraded one — fail loud, never silently unauthenticated.
-FALLBACK="${PUSH_FALLBACK_CRED:?no fallback credential supplied (expected secrets.DSH_BOT_REPO_TOKEN || github.token)}"
+FALLBACK="${PUSH_FALLBACK_CRED:?no fallback credential supplied (expected secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token)}"
 
 GIT_BIN="${GIT_BIN:-git}"
 # Bound on a hung doppler fetch, in seconds (review round-1 finding 4:

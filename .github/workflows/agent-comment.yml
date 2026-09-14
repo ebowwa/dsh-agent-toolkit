@@ -6,7 +6,7 @@
 # trigger on the self-hosted dsh lane (owner directive: nothing on
 # github-hosted) that acks + enqueues; the out-of-band worker
 # (scripts/dsh-worker.sh, running on the factory pool boxes) runs the agent,
-# ships, replies, and reviews — no DOPPLER_SERVICE_TOKEN/DSH_BOT_REPO_TOKEN
+# ships, replies, and reviews — no DOPPLER_SERVICE_TOKEN/DSH_AGENT_TOOLKIT_REPO_TOKEN
 # in the consumer.
 #
 # This workflow remains for the migration window: it executes the agent
@@ -112,7 +112,7 @@ jobs:
           repository: ebowwa/dsh-agent-toolkit
           ref: ${{ inputs.dsh-agent-toolkit-ref || github.ref }}
           path: .dsh-agent-toolkit
-          token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          token: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
         # The reusable workflow's own repo is not auto-checked-out.
 
       # Lane impact: none — same runners, one added step (a doppler fetch +
@@ -120,12 +120,12 @@ jobs:
       # shipper: both push through the workspace git config it writes.
       - name: Push credential (Doppler-first)
         # Doppler seed/prd GITHUB_TOKEN when its scopes cover repo+workflow,
-        # else DSH_BOT_REPO_TOKEN (documented PAT with workflow scope), else
+        # else DSH_AGENT_TOOLKIT_REPO_TOKEN (documented PAT with workflow scope), else
         # github.token (= exactly today's behavior). Decision line in this
         # step's log; the token only ever reaches the local git config.
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
-          PUSH_FALLBACK_CRED: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          PUSH_FALLBACK_CRED: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
         run: bash "${GITHUB_WORKSPACE}/.dsh-agent-toolkit/scripts/resolve-push-token.sh"
 
       - name: Run agent (captures the before-state for the shipper)
