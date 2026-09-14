@@ -698,6 +698,16 @@ fi
 # exactly this: retry a FAST failure (lifetime under DSH_FAST_FAIL_S) with
 # a hard backoff, capped by attempts and a wall clock that keeps the whole
 # loop inside the claim budget. Slow failures and successes never retry.
+#
+# DSH_RETRY_BACKOFF_S overrides BOTH backoff waits with one fixed value
+# (unset = the production schedule: 180s after attempt 1, 600s after
+# attempt 2). The seam exists because the backoff is otherwise hardcoded
+# and the failure path becomes untestable in bounded time: a stub agent
+# that fails instantly plus a 180s+600s schedule is 13+ minutes of sleep,
+# which blew the 60s budget every contract test gives the driver (gates
+# runs 34748403843, 34788769043, 34795917609 — PR #85 merged red). Tests
+# set DSH_RETRY_BACKOFF_S=0 to walk the REAL retry loop (attempts, retry
+# messages, final RC) without the waits; production behavior is unchanged.
 RC=0
 ATTEMPT=1
 DSH_SPAWN_ATTEMPTS="${DSH_SPAWN_ATTEMPTS:-3}"
@@ -707,6 +717,12 @@ FIRST_ATTEMPT_EPOCH="$(date +%s)"
 ATTEMPT_START="$FIRST_ATTEMPT_EPOCH"
 while :; do
 ATTEMPT_START="$(date +%s)"
+# Per-attempt artifacts must not leak across backoff iterations: a retried
+# wave orphaned every dead attempt's answer/marker temp files and doppler
+# isolation home on the runner (only the LAST attempt's was cleaned up).
+# The :- guards make the first iteration a no-op.
+rm -f "${FINAL_OUT:-}" "${MARKER:-}" 2>/dev/null || true
+rm -rf "${DOPPLER_ISOLATED_HOME:-}" 2>/dev/null || true
 FINAL_OUT="$(mktemp /tmp/dsh-agent-answer.XXXXXX)"
 MARKER="$(mktemp /tmp/dsh-agent-marker.XXXXXX)"
 touch "$MARKER"
@@ -805,7 +821,7 @@ if [ $(( NOW_EPOCH - FIRST_ATTEMPT_EPOCH )) -ge "$DSH_RETRY_WALL_S" ]; then
 fi
 ATTEMPT=$(( ATTEMPT + 1 ))
 if [ "$ATTEMPT" -gt "$DSH_SPAWN_ATTEMPTS" ]; then break; fi
-case "$ATTEMPT" in 2) BACKOFF=180 ;; *) BACKOFF=600 ;; esac
+case "$ATTEMPT" in 2) BACKOFF="${DSH_RETRY_BACKOFF_S:-180}" ;; *) BACKOFF="${DSH_RETRY_BACKOFF_S:-600}" ;; esac
 echo "::error::agent died fast (lifetime ${LIFE}s < ${DSH_FAST_FAIL_S}s, exit ${RC}) — throttle-wave class; retry ${ATTEMPT}/${DSH_SPAWN_ATTEMPTS} in ${BACKOFF}s" >&2
 sleep "$BACKOFF"
 done
