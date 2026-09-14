@@ -18,7 +18,7 @@
 #   GH_TOKEN                the worker's PAT (read + comment/label on the repo)
 #   DSH_SHIP_REPO           owner/repo of the PR under review
 #   PR_NUM                  the PR number
-#   DSH_BOT_DIR             dsh-bot toolkit checkout (contains scripts/)
+#   DSH_AGENT_TOOLKIT_DIR             dsh-agent-toolkit toolkit checkout (contains scripts/)
 #   DSH_WORKTREE            the per-task clone (review-pr.sh fetches the PR
 #                           merge ref + base into it itself)
 #   DSH_REVIEW_MODEL        provider/model for the reviewer (default zai/glm-5.3)
@@ -37,7 +37,7 @@ set -euo pipefail
 
 DSH_SHIP_REPO="${DSH_SHIP_REPO:?review-pr: DSH_SHIP_REPO unset}"
 PR_NUM="${PR_NUM:?review-pr: PR_NUM unset}"
-DSH_BOT_DIR="${DSH_BOT_DIR:?review-pr: DSH_BOT_DIR unset}"
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?review-pr: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_WORKTREE="${DSH_WORKTREE:?review-pr: DSH_WORKTREE unset}"
 DSH_REVIEW_OUT="${DSH_REVIEW_OUT:-${RUNNER_TEMP:-/tmp}/dsh-review-output.txt}"
 DSH_REVIEW_RULES_FILE="${DSH_REVIEW_RULES_FILE:-REVIEW.md}"
@@ -141,15 +141,15 @@ EOF
 #    ref — the ONLY ref involved, so the reader cannot drift to another).
 rc=0
 DSH_MODEL="$DSH_REVIEW_MODEL" DSH_SUBAGENT_MODEL="" REPLY_TARGET="" \
-  bash "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" "$(cat "$TASK_FILE")" \
-  | node "$DSH_BOT_DIR/scripts/scrub-output.mjs" > "$DSH_REVIEW_OUT" || rc=$?
+  bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$(cat "$TASK_FILE")" \
+  | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" > "$DSH_REVIEW_OUT" || rc=$?
 rm -f "$TASK_FILE" "$RULES_TMP"
 if [ "$rc" -ne 0 ]; then
   echo "review-pr: reviewer driver exited $rc — review incomplete" >&2
 fi
 
 # 5. Verdict — line-strict, fail-closed on absence.
-VERDICT="$(node "$DSH_BOT_DIR/scripts/review-verdict.mjs" "$DSH_REVIEW_OUT" 2>/dev/null || true)"
+VERDICT="$(node "$DSH_AGENT_TOOLKIT_DIR/scripts/review-verdict.mjs" "$DSH_REVIEW_OUT" 2>/dev/null || true)"
 
 # 6. Post: scrubbed body as a PR comment, labels per verdict. Fail-closed:
 #    the review comment is scrubbed output — a scrubber failure means the
@@ -165,7 +165,7 @@ DSH_RUN_DSH_VERSION=""
   echo "**dsh review (worker)** — run: ${DSH_RUN_ID:-_} — model: ${DSH_REVIEW_MODEL} — harness: dsh-${DSH_RUN_DSH_VERSION:-?}"
   echo
 } > "$POST_BODY"
-if ! node "$DSH_BOT_DIR/scripts/scrub-output.mjs" < "$DSH_REVIEW_OUT" >> "$POST_BODY" 2>/dev/null; then
+if ! node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_REVIEW_OUT" >> "$POST_BODY" 2>/dev/null; then
   echo "review-pr: scrubber failed — review NOT posted (fail-closed, exit 3)" >&2
   rm -f "$POST_BODY" "$RULES_TMP"
   exit 3

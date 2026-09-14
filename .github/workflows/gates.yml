@@ -1,6 +1,6 @@
 name: gates
 
-# dsh-bot's own checks: every script must at least parse, and whatever test
+# dsh-agent-toolkit's own checks: every script must at least parse, and whatever test
 # suite exists under tests/ must pass (no build — the honest minimum for a
 # scripts-only repo, now with real tests where they earn their keep).
 # Runs on push to main + PRs + workflow_dispatch (the tower fires it on

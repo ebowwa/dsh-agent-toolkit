@@ -18,7 +18,7 @@
 #   DSH_SHIP_REPO       repo to comment in (default $GITHUB_REPOSITORY)
 #   TARGET_KIND         "pr" | "issue" — which gh ... comment subcommand
 #   TARGET_NUM          the issue/PR number
-#   DSH_BOT_DIR         dsh-bot toolkit checkout (contains scripts/)
+#   DSH_AGENT_TOOLKIT_DIR         dsh-agent-toolkit toolkit checkout (contains scripts/)
 #   DSH_RUN_ID          run identifier for the reply header
 #                       (default $GITHUB_RUN_ID)
 #   DSH_RUNNER_NAME     lane/worker name for the header
@@ -37,7 +37,7 @@
 set -euo pipefail
 
 DSH_SHIP_REPO="${DSH_SHIP_REPO:-${GITHUB_REPOSITORY:?post-reply: DSH_SHIP_REPO/GITHUB_REPOSITORY unset}}"
-DSH_BOT_DIR="${DSH_BOT_DIR:?post-reply: DSH_BOT_DIR unset}"
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?post-reply: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_RUN_ID="${DSH_RUN_ID:-${GITHUB_RUN_ID:-}}"
 TARGET_KIND="${TARGET_KIND:?post-reply: TARGET_KIND unset}"
 TARGET_NUM="${TARGET_NUM:?post-reply: TARGET_NUM unset}"
@@ -53,7 +53,7 @@ export DSH_SCRUB_EXTRA_HOSTS="${EXTRA_SCRUB_HOSTS:-}"
 # The reply is the user-facing output channel, so a missing gh downgrades to
 # a warning instead of a bare 127.
 command -v gh >/dev/null 2>&1 \
-  || export PATH="${DSH_CELL_BIN:-${HOME:-/root}/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
+  || export PATH="${DSH_CELL_BIN:-$1/.dsh-agent-toolkit-bin:$1/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 command -v gh >/dev/null 2>&1 || {
   echo "::warning::gh unavailable — reply NOT posted to the thread; the agent's answer is in the run log/worker output ($DSH_AGENT_OUTPUT)"
   exit 0
@@ -71,7 +71,7 @@ fi
   echo "**dsh agent** — run: ${DSH_RUN_ID:-_} — lane: ${DSH_RUNNER_NAME:-unknown} — ${DSH_STAMP}"
   echo
   if [ -f "$DSH_AGENT_OUTPUT" ]; then
-    node "$DSH_BOT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null \
+    node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null \
       || echo "_(agent output withheld: scrubber unavailable)_"
   else
     echo "_(agent output file missing: $DSH_AGENT_OUTPUT)_"

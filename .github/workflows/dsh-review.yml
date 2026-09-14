@@ -1,4 +1,4 @@
-# dsh-review shell for dsh-bot — DECOUPLED: enqueues the review; the
+# dsh-review shell for dsh-agent-toolkit — DECOUPLED: enqueues the review; the
 # out-of-band worker (scripts/dsh-worker.sh, dsh/review label) runs
 # scripts/review-pr.sh. The legacy path (agent-review.yml on a held
 # [self-hosted, dsh] runner for up to 45 min per review) is retired for

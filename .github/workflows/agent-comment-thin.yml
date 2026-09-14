@@ -1,4 +1,4 @@
-# dsh-bot: agent-comment-thin — the DECOUPLED comment trigger as a REUSABLE
+# dsh-agent-toolkit: agent-comment-thin — the DECOUPLED comment trigger as a REUSABLE
 # workflow. A ~20s job on the self-hosted dsh lane (owner directive: nothing
 # on github-hosted) that does exactly two things — post the ack comment (with
 # the dsh:ack marker the worker matches) and enqueue the task (the queue

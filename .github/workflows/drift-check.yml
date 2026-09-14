@@ -8,7 +8,7 @@
 #      ride along as release notes),
 #   4. writes a release on the tag with the agent's review as notes, and
 #      advances the moving major tag (@v1) consumers pin,
-#   5. notifies registered consumers (DSH_BOT_CONSUMERS repo variable) via
+#   5. notifies registered consumers (DSH_AGENT_TOOLKIT_CONSUMERS repo variable) via
 #      repository_dispatch so each can open its own bump PR.
 #
 # BLOCK verdict: no tag, red run — scripts/drift-verdict.mjs dumps the
@@ -94,7 +94,7 @@ jobs:
                    sh -c 'printf "::add-mask::%s\n" "$ZAI_API_KEY"' \
             && rm -rf "$MASK_HOME" || true
 
-          TASK="You are the RELEASE stage of dsh-bot — the toolkit other repos run on their own runners. A change landed on main; decide whether it is safe to tag and propagate.
+          TASK="You are the RELEASE stage of dsh-agent-toolkit — the toolkit other repos run on their own runners. A change landed on main; decide whether it is safe to tag and propagate.
 
           Scope: git diff ${BASE}..HEAD (scripts/, agent-*.yml workflows, config/).
           Method:
@@ -177,13 +177,13 @@ jobs:
           # documented pin ever drift apart again.
           git tag -f "$MOVING" "$NEXT" && git push -q -f origin "$MOVING"
           # notify registered consumers so each opens its own bump PR
-          CONSUMERS="$(printf '%s' "${{ vars.DSH_BOT_CONSUMERS }}" | tr ',[:space:]' '\n')"
+          CONSUMERS="$(printf '%s' "${{ vars.DSH_AGENT_TOOLKIT_CONSUMERS }}" | tr ',[:space:]' '\n')"
           while read -r repo; do
             [ -n "$repo" ] || continue
             DISPATCH_TOKEN="${PAT_TOKEN:-$GH_TOKEN}"
             gh api "repos/$repo/dispatches" --method POST \
               -H "Authorization: Bearer $DISPATCH_TOKEN" \
-              -f event_type="dsh-bot-release" \
+              -f event_type="dsh-agent-toolkit-release" \
               -F "client_payload[tag]=${NEXT}" 2>/dev/null \
               && echo "notified $repo" || echo "notify failed: $repo"
           done <<< "$CONSUMERS"

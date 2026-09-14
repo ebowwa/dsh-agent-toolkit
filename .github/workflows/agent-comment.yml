@@ -1,4 +1,4 @@
-# dsh-bot: agent-comment — the comment-triggered agent loop as a REUSABLE
+# dsh-agent-toolkit: agent-comment — the comment-triggered agent loop as a REUSABLE
 # workflow (LEGACY execution mode).
 #
 # NOTE: consumers should adopt the DECOUPLED mode instead —
@@ -15,7 +15,7 @@
 # scripts/ship-changes.sh + scripts/post-reply.sh, ported 1:1).
 #
 # Runs in the CALLER's context: caller's runners, caller's GITHUB_TOKEN,
-# caller's secrets. dsh-bot itself needs no runners.
+# caller's secrets. dsh-agent-toolkit itself needs no runners.
 #
 # Inputs (all optional — sane defaults):
 #   lanes          JSON-ish lane mapping hint. Default routes like the
@@ -47,7 +47,7 @@ on:
         description: "Enable --big/--mac/--linux lane routing from comment prefixes"
         type: boolean
         default: true
-      dsh-bot-ref:
+      dsh-agent-toolkit-ref:
         description: "Git ref of ebowwa/dsh-agent-toolkit to fetch scripts from (defaults to the called workflow's own pinned ref)"
         type: string
         default: ""
@@ -110,8 +110,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ebowwa/dsh-agent-toolkit
-          ref: ${{ inputs.dsh-bot-ref || github.ref }}
-          path: .dsh-bot
+          ref: ${{ inputs.dsh-agent-toolkit-ref || github.ref }}
+          path: .dsh-agent-toolkit
           token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
         # The reusable workflow's own repo is not auto-checked-out.
 
@@ -126,7 +126,7 @@ jobs:
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           PUSH_FALLBACK_CRED: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
-        run: bash "${GITHUB_WORKSPACE}/.dsh-bot/scripts/resolve-push-token.sh"
+        run: bash "${GITHUB_WORKSPACE}/.dsh-agent-toolkit/scripts/resolve-push-token.sh"
 
       - name: Run agent (captures the before-state for the shipper)
         env:
@@ -140,7 +140,7 @@ jobs:
           DSH_MODEL: ${{ inputs.model }}
           DSH_SUBAGENT_MODEL: ${{ inputs.subagent-model }}
           DSH_WEB_SEARCH_CELLS: ${{ inputs.web-search-browser-cells }}
-          DSH_BOT_DIR: ${{ github.workspace }}/.dsh-bot
+          DSH_AGENT_TOOLKIT_DIR: ${{ github.workspace }}/.dsh-agent-toolkit
         run: |
           set -euo pipefail
           echo "DSH_RUNNER_NAME=${RUNNER_NAME:-unknown}" >> "$GITHUB_ENV"
@@ -187,8 +187,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
           # scrub BEFORE tee: the step's stdout IS the Actions log
-          bash "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" "$TASK" \
-            | node "$DSH_BOT_DIR/scripts/scrub-output.mjs" \
+          bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$TASK" \
+            | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" \
             | tee "$RUNNER_TEMP/dsh-agent-output.txt"
 
       # Deterministic shipping (never trust the model to push) — logic lives
@@ -199,8 +199,8 @@ jobs:
           GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
           REVIEW_WORKFLOW: ${{ inputs.review-workflow }}
           EXTRA_SCRUB_HOSTS: ${{ inputs.extra-scrub-hosts }}
-          DSH_BOT_DIR: ${{ github.workspace }}/.dsh-bot
-        run: bash "${DSH_BOT_DIR}/scripts/ship-changes.sh"
+          DSH_AGENT_TOOLKIT_DIR: ${{ github.workspace }}/.dsh-agent-toolkit
+        run: bash "${DSH_AGENT_TOOLKIT_DIR}/scripts/ship-changes.sh"
 
       - name: Reply on the thread as github-actions[bot]
         if: always()
@@ -209,5 +209,5 @@ jobs:
           TARGET_KIND: ${{ (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request) && 'pr' || 'issue' }}
           TARGET_NUM: ${{ github.event.pull_request.number || github.event.issue.number }}
           EXTRA_SCRUB_HOSTS: ${{ inputs.extra-scrub-hosts }}
-          DSH_BOT_DIR: ${{ github.workspace }}/.dsh-bot
-        run: bash "${DSH_BOT_DIR}/scripts/post-reply.sh"
+          DSH_AGENT_TOOLKIT_DIR: ${{ github.workspace }}/.dsh-agent-toolkit
+        run: bash "${DSH_AGENT_TOOLKIT_DIR}/scripts/post-reply.sh"

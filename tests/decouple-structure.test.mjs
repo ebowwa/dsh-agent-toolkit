@@ -243,7 +243,7 @@ test("task queue: dispatched tasks run on the worker (the last runner-holding pa
   // per-task model beats the repo map (dispatch semantics preserved)
   assert.match(w, /ITEM_MODEL="\$\{t_model:-\$\(model_for "\$repo" "\$task"\)\}"/, "marker wins; router sees ticket text");
   // dispatch semantics: the agent pushes itself (REPLY_TARGET empty)
-  assert.match(w, /REPLY_TARGET="" DSH_BOT_DIR/);
+  assert.match(w, /REPLY_TARGET="" DSH_AGENT_TOOLKIT_DIR/);
   // timeout cap applies to tasks too
   assert.match(w, /\$\{DSH_WORKER_TIMEOUT_MIN:-120\}m/);
 });
@@ -251,7 +251,7 @@ test("task queue: dispatched tasks run on the worker (the last runner-holding pa
 test("task queue: the thin dispatch trigger exists with the legacy input surface", () => {
   const t = read(".github/workflows/agent-dispatch-thin.yml");
   assertSelfHostedThin(t, "agent-dispatch-thin.yml");
-  for (const input of ["task:", "base-ref:", "runner:", "model:", "subagent-model:", "timeout-minutes:", "review-workflow:", "dsh-bot-ref:"]) {
+  for (const input of ["task:", "base-ref:", "runner:", "model:", "subagent-model:", "timeout-minutes:", "review-workflow:", "dsh-agent-toolkit-ref:"]) {
     assert.ok(t.includes(input), "input surface kept: " + input);
   }
   assert.match(t, /dsh\/task/);

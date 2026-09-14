@@ -1,4 +1,4 @@
-# Model catalog for dsh-bot consumers — the models the Z.AI coding endpoint
+# Model catalog for dsh-agent-toolkit consumers — the models the Z.AI coding endpoint
 # actually serves (verified against the live /models API). provider/model ids
 # here are the values the `model:` workflow input and DSH_MODEL accept.
 #

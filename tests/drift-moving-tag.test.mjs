@@ -41,7 +41,7 @@ const readmePin = () => {
 
 test("examples pin one moving major tag and the README documents the same pin", () => {
   const pins = examplePins();
-  assert.ok(pins.length >= 3, `all example shells must pin a dsh-bot workflow (found ${pins.length})`);
+  assert.ok(pins.length >= 3, `all example shells must pin a dsh-agent-toolkit workflow (found ${pins.length})`);
   const tags = [...new Set(pins.map((p) => p.tag))];
   assert.equal(tags.length, 1, `examples must agree on one pin, found: ${tags.join(", ")}`);
   assert.match(tags[0], /^v\d+$/, "the pin must be a moving major tag (v<digits>), not a frozen release");

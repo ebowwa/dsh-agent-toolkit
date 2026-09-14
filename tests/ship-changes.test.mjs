@@ -67,7 +67,7 @@ esac
   return { dir, bare, work, cache, shim, logs, ghLog, prBodyOut, head,
     env: (extra = {}) => ({
       GH_TOKEN: "fake-token", DSH_SHIP_REPO: "owner/repo", DSH_RUN_ID: "testrun",
-      DSH_RUN_ATTEMPT: "1", DSH_WORKTREE: work, DSH_BOT_DIR: ROOT,
+      DSH_RUN_ATTEMPT: "1", DSH_WORKTREE: work, DSH_AGENT_TOOLKIT_DIR: ROOT,
       DSH_SHIP_CACHE: cache, DSH_AGENT_OUTPUT: path.join(cache, "dsh-agent-output.txt"),
       DSH_SHIP_NOTE_FILE: path.join(cache, "ship-note.txt"),
       DSH_PR_NUM_FILE: path.join(cache, "pr-num"),

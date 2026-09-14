@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dsh-worker.sh — the out-of-band worker for the DECOUPLED dsh-bot mode.
+# dsh-worker.sh — the out-of-band worker for the DECOUPLED dsh-agent-toolkit mode.
 #
 # The decouple: the comment-triggered loop no longer executes the agent
 # inside the Actions job that holds a self-hosted runner for up to 120
@@ -28,7 +28,7 @@
 #   GH_TOKEN            required — the worker PAT (read + write on every
 #                       configured consumer repo; per-consumer least
 #                       privilege is a deployment decision, see docs)
-#   DSH_BOT_DIR         required — this toolkit's checkout (scripts/)
+#   DSH_AGENT_TOOLKIT_DIR         required — this toolkit's checkout (scripts/)
 #   DSH_WORKER_REPOS    required — space/comma-separated "owner/repo" list
 #                       of consumer repos to poll
 #   DOPPLER_SERVICE_TOKEN  REQUIRED — the agent launches only via
@@ -96,13 +96,13 @@ CHECK_ENV() { # <varname> — required env, typed exit 2 (never run half-configu
   local v="$1"
   if [ -z "${!v:-}" ]; then echo "dsh-worker: $v unset (required)" >&2; exit 2; fi
 }
-CHECK_ENV DSH_BOT_DIR
+CHECK_ENV DSH_AGENT_TOOLKIT_DIR
 CHECK_ENV GH_TOKEN
 CHECK_ENV DSH_WORKER_REPOS
 # The driver is always invoked via `bash script` (exec bit not guaranteed
 # on checkouts), so `-f`, not `-x`.
-[ -f "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" ] \
-  || { echo "dsh-worker: no runnable driver at $DSH_BOT_DIR/scripts/run-dsh-agent.sh" >&2; exit 2; }
+[ -f "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" ] \
+  || { echo "dsh-worker: no runnable driver at $DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" >&2; exit 2; }
 
 DATA="${DSH_WORKER_DATA_ROOT:-$HOME/.dsh-worker}"
 QUEUE_LABEL="${DSH_WORKER_QUEUE_LABEL:-dsh/queued}"
@@ -454,7 +454,7 @@ review_item() {
     env DSH_SHIP_REPO="$repo" DSH_REVIEW_OUT="$rundir/review-output.txt" DSH_REVIEW_MODEL="$ITEM_REVIEW_MODEL" \
     DSH_REVIEW_RULES_FILE="$REVIEW_RULES_FILE" DSH_WORKTREE="$work" PR_NUM="$num" \
     DSH_RUN_ID="$runid" DSH_RUNNER_NAME="$WORKER_NAME" \
-    bash "$DSH_BOT_DIR/scripts/review-pr.sh" || rc=$?
+    bash "$DSH_AGENT_TOOLKIT_DIR/scripts/review-pr.sh" || rc=$?
   echo "worker: review of $repo #$num exited $rc (verdicts never auto-approve; see the PR thread)"
   if [ "$rc" -ne 0 ]; then
     # Mid-review failure (timeout=124, crash, typed exit): the label stays
@@ -537,7 +537,7 @@ task_item() {
 
   # push credential (the agent pushes itself in dispatch mode)
   ( cd "$work" && PUSH_FALLBACK_CRED="$GH_TOKEN" DOPPLER_SERVICE_TOKEN="${DOPPLER_SERVICE_TOKEN:-}" \
-      bash "$DSH_BOT_DIR/scripts/resolve-push-token.sh" ) \
+      bash "$DSH_AGENT_TOOLKIT_DIR/scripts/resolve-push-token.sh" ) \
     || { echo "worker: task push-credential write failed — aborting" >&2
          gh api "repos/${repo}/issues/${num}/comments" -f body="**dsh worker** — the push credential could not be written for this task; nothing ran. Re-dispatch to retry." >/dev/null 2>&1 || true
          rm -rf "$rundir"; return 1; }
@@ -557,15 +557,15 @@ task_item() {
   # || context, which suppresses set -e inside the function — a failing
   # pipeline must be captured, never flow into the reply step.
   rc=0
-  ( cd "$work" && export DSH_MODEL="$ITEM_MODEL" DSH_SUBAGENT_MODEL="${t_sub:-}" REPLY_TARGET="" DSH_BOT_DIR="$DSH_BOT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
-      && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" "$task" ) \
-    | node "$DSH_BOT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
+  ( cd "$work" && export DSH_MODEL="$ITEM_MODEL" DSH_SUBAGENT_MODEL="${t_sub:-}" REPLY_TARGET="" DSH_AGENT_TOOLKIT_DIR="$DSH_AGENT_TOOLKIT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
+      && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$task" ) \
+    | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
   echo "worker: task agent exited $rc"
 
   # reply on the task issue and close it (the answer is the record)
   DSH_SHIP_REPO="$repo" DSH_SHIP_CACHE="$rundir" DSH_AGENT_OUTPUT="$rundir/agent-output.txt" \
     TARGET_KIND="issue" TARGET_NUM="$num" DSH_RUN_ID="$runid" DSH_RUNNER_NAME="$WORKER_NAME" \
-    bash "$DSH_BOT_DIR/scripts/post-reply.sh" \
+    bash "$DSH_AGENT_TOOLKIT_DIR/scripts/post-reply.sh" \
     || echo "worker: task reply step failed (the answer is in the run log)" >&2
   gh issue close "$num" --repo "$repo" >/dev/null 2>&1 || true
   echo "==== worker [$runid] TASK $repo #$num complete ===="
@@ -641,7 +641,7 @@ process_item() {
 
   # --- push credential into the clone (same resolver the CI flow uses) ----
   ( cd "$work" && PUSH_FALLBACK_CRED="$GH_TOKEN" DOPPLER_SERVICE_TOKEN="${DOPPLER_SERVICE_TOKEN:-}" \
-      bash "$DSH_BOT_DIR/scripts/resolve-push-token.sh" ) \
+      bash "$DSH_AGENT_TOOLKIT_DIR/scripts/resolve-push-token.sh" ) \
     || { echo "worker: push-credential write failed — aborting item" >&2; abort_item "$repo" "$num" "$rundir" "push-credential write (resolve-push-token.sh)"; return 1; }
 
   # --- before-state for the shipper ----------------------------------------
@@ -664,9 +664,9 @@ process_item() {
   # backslash continuation into the command — that made the driver an
   # argument of export), and the pipeline's rc is captured with || rc=$?
   # (the || call context suppresses set -e inside this function).
-  ( cd "$work" && export THREAD_CONTEXT REPLY_TARGET="$kind #$num" DSH_MODEL="$ITEM_MODEL" DSH_BOT_DIR="$DSH_BOT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
-      && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_BOT_DIR/scripts/run-dsh-agent.sh" "$TASK" ) \
-    | node "$DSH_BOT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
+  ( cd "$work" && export THREAD_CONTEXT REPLY_TARGET="$kind #$num" DSH_MODEL="$ITEM_MODEL" DSH_AGENT_TOOLKIT_DIR="$DSH_AGENT_TOOLKIT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
+      && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$TASK" ) \
+    | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
   echo "worker: agent exited $rc (non-zero is the agent/task failing, not the worker)"
 
   # --- ship (deterministic; shared script) ---------------------------------
@@ -677,7 +677,7 @@ process_item() {
   ( cd "$work" && ACK_COMMENT_ID="$ACK_ID" DSH_SHIP_REPO="$repo" DSH_RUN_ID="$runid" DSH_RUN_ATTEMPT=1 \
       DSH_WORKTREE="$work" DSH_SHIP_CACHE="$rundir" DSH_AGENT_OUTPUT="$rundir/agent-output.txt" \
       DSH_PR_NUM_FILE="$rundir/pr-num" REVIEW_WORKFLOW="" \
-      DSH_TASK_TITLE="${TASK%%$'\n'*}" bash "$DSH_BOT_DIR/scripts/ship-changes.sh" ) \
+      DSH_TASK_TITLE="${TASK%%$'\n'*}" bash "$DSH_AGENT_TOOLKIT_DIR/scripts/ship-changes.sh" ) \
     || echo "worker: shipper exited nonzero (see log — ship note may be incomplete)" >&2
 
   # --- reply (edits the trigger's ack comment in place when found) ---------
@@ -686,7 +686,7 @@ process_item() {
   DSH_SHIP_REPO="$repo" DSH_SHIP_CACHE="$rundir" DSH_AGENT_OUTPUT="$rundir/agent-output.txt" \
     ACK_COMMENT_ID="$ACK_ID" \
     TARGET_KIND="$kind" TARGET_NUM="$num" DSH_RUN_ID="$runid" DSH_RUNNER_NAME="$WORKER_NAME" \
-    bash "$DSH_BOT_DIR/scripts/post-reply.sh" || echo "worker: reply step failed" >&2
+    bash "$DSH_AGENT_TOOLKIT_DIR/scripts/post-reply.sh" || echo "worker: reply step failed" >&2
 
   # --- adversarial review of what shipped (inline, on the worker) ----------
   if [ -s "$rundir/pr-num" ]; then
@@ -695,7 +695,7 @@ process_item() {
     DSH_SHIP_REPO="$repo" DSH_REVIEW_OUT="$rundir/review-output.txt" DSH_REVIEW_MODEL="$REVIEW_MODEL" \
       DSH_REVIEW_RULES_FILE="$REVIEW_RULES_FILE" DSH_WORKTREE="$work" PR_NUM="$PR_NUM" \
       DSH_RUN_ID="$runid" DSH_RUNNER_NAME="$WORKER_NAME" \
-      bash "$DSH_BOT_DIR/scripts/review-pr.sh" \
+      bash "$DSH_AGENT_TOOLKIT_DIR/scripts/review-pr.sh" \
       || echo "worker: review stage exited nonzero (see log; verdicts never auto-approve)" >&2
   else
     echo "worker: nothing shipped — no review stage"

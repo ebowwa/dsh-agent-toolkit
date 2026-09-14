@@ -132,7 +132,7 @@ test("DSH_SEARCH_COMPOSE unset: byte-identical launch line — no --patch, no ov
   assert.ok(!args.includes("--patch"), `no --patch when unset, got argv: ${args}`);
   assert.ok(!existsSync(path.join(home, "search-compose.patch.yml")), "no overlay stamped when unset");
   assert.ok(
-    !existsSync(path.join(home, "profiles", "node_modules", "@dsh-bot")),
+    !existsSync(path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit")),
     "no plugin copy when unset",
   );
 });
@@ -144,18 +144,18 @@ test("DSH_SEARCH_COMPOSE=1: copies the package, stamps the insert overlay, passe
 
   // The package lands in the profile module tree, complete — this is the
   // f2972e7 fix: deps resolve THROUGH the tree, so the copy must be whole.
-  const dst = path.join(home, "profiles", "node_modules", "@dsh-bot", "tool-search-compose");
+  const dst = path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit", "tool-search-compose");
   for (const rel of ["package.json", "lib/index.js", "lib/compose.js"]) {
     assert.ok(existsSync(path.join(dst, rel)), `copied package carries ${rel}`);
   }
   const copied = JSON.parse(readFileSync(path.join(dst, "package.json"), "utf8"));
-  assert.equal(copied.name, "@dsh-bot/tool-search-compose");
+  assert.equal(copied.name, "@dsh-agent-toolkit/tool-search-compose");
 
   // The overlay names the PACKAGE with the insert grammar — never a path.
   const overlay = path.join(home, "search-compose.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped");
   const body = readFileSync(overlay, "utf8");
-  assert.match(body, /- insert:\n    - id: tool-search-compose\n      name: '@dsh-bot\/tool-search-compose'/);
+  assert.match(body, /- insert:\n    - id: tool-search-compose\n      name: '@dsh-agent-toolkit\/tool-search-compose'/);
   assert.ok(!/name: \.\/|name: ['"]?\.{0,2}\//.test(body.replace(/#.*$/gm, "")), "no bare-path row (the f2972e7 shape)");
 
   // And the launch line carries it: --patch directly after --profile headless
@@ -199,7 +199,7 @@ test("same-tree guard: a DSH_HOME at the plugin itself copies nothing and delete
     // symlink, so both resolve to one physical directory — the only way the
     // guard's equality ever trips on a real filesystem:
     //   SRC = <scripts>/../plugins/tool-search-compose
-    //   DST = <home>/profiles/node_modules/@dsh-bot/tool-search-compose
+    //   DST = <home>/profiles/node_modules/@dsh-agent-toolkit/tool-search-compose
     const home = path.join(base, "home");
     const modules = path.join(home, "profiles", "node_modules");
     mkdirSync(path.join(modules, "scripts"), { recursive: true });
@@ -207,9 +207,9 @@ test("same-tree guard: a DSH_HOME at the plugin itself copies nothing and delete
     cpSync(path.join(ROOT, "scripts", "run-dsh-agent.sh"), path.join(modules, "scripts", "run-dsh-agent.sh"));
     cpSync(path.join(ROOT, "scripts", "scrub-output.mjs"), path.join(modules, "scripts", "scrub-output.mjs"));
     cpSync(path.join(ROOT, "config", "settings.zai.yaml"), path.join(modules, "config", "settings.zai.yaml"));
-    const pkgDir = path.join(modules, "@dsh-bot", "tool-search-compose");
+    const pkgDir = path.join(modules, "@dsh-agent-toolkit", "tool-search-compose");
     cpSync(PLUGIN, pkgDir, { recursive: true });
-    symlinkSync(path.join("@dsh-bot"), path.join(modules, "plugins"), "dir");
+    symlinkSync(path.join("@dsh-agent-toolkit"), path.join(modules, "plugins"), "dir");
     const { proc, args } = runLauncher(
       { DSH_SEARCH_COMPOSE: "1" },
       { script: path.join(modules, "scripts", "run-dsh-agent.sh"), dshHome: home },
@@ -239,7 +239,7 @@ test("the stamped overlay composes into the real profile: the insert row resolve
     { encoding: "utf8", env: { ...process.env, DSH_HOME: home }, timeout: 60_000 },
   );
   assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
-  assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-bot\/tool-search-compose['"]/, "the insert row must appear in the composed config");
+  assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/, "the insert row must appear in the composed config");
 });
 
 test("the packaged plugin's tree BOOTS against the stamped overlay (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
@@ -248,7 +248,7 @@ test("the packaged plugin's tree BOOTS against the stamped overlay (skip when ds
   const overlay = path.join(home, "search-compose.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
   assert.ok(
-    existsSync(path.join(home, "profiles", "node_modules", "@dsh-bot", "tool-search-compose", "lib", "index.js")),
+    existsSync(path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit", "tool-search-compose", "lib", "index.js")),
     "the package copy the overlay names is in place",
   );
 

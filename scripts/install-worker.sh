@@ -5,8 +5,8 @@
 # per-user service; cron keepalive needs no sudo).
 #
 # What it installs:
-#   1. the toolkit checkout (clone if absent) at $DSH_BOT_INSTALL_DIR
-#      (default ~/dsh-bot);
+#   1. the toolkit checkout (clone if absent) at $DSH_AGENT_TOOLKIT_INSTALL_DIR
+#      (default ~/dsh-agent-toolkit);
 #   2. the worker env file (0600) at $DSH_WORKER_HOME/env (default
 #      ~/.dsh-worker/env) — the ONLY place the credentials ever land
 #      (never the cron line, never the log);
@@ -21,7 +21,7 @@
 #   WORKER_DOPPLER_CRED     required — DOPPLER_SERVICE_TOKEN
 #   WORKER_REPOS            required — DSH_WORKER_REPOS value
 #                           (space-separated owner/repo list)
-#   DSH_BOT_INSTALL_DIR     toolkit location (default $HOME/dsh-bot)
+#   DSH_AGENT_TOOLKIT_INSTALL_DIR     toolkit location (default $HOME/dsh-agent-toolkit)
 #   DSH_WORKER_HOME         worker home (default $HOME/.dsh-worker)
 #
 # Exit: 0 installed (or already installed); 2 missing env; 3 clone failed.
@@ -36,7 +36,7 @@ CHECK WORKER_GH_CRED
 CHECK WORKER_DOPPLER_CRED
 CHECK WORKER_REPOS
 
-DSH_BOT_DIR="${DSH_BOT_INSTALL_DIR:-$HOME/dsh-bot}"
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_INSTALL_DIR:-$HOME/dsh-agent-toolkit}"
 WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 
 # 1. toolkit checkout (clone when absent) and ALWAYS refresh the pin to
@@ -46,14 +46,14 @@ WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 #    HOME/gitconfig handling can trip git's ownership guard silently.
 #    No -q: nothing in this installer may fail quietly.
 PIN_OK=0
-if [ ! -d "$DSH_BOT_DIR/.git" ]; then
-  git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_BOT_DIR" \
+if [ ! -d "$DSH_AGENT_TOOLKIT_DIR/.git" ]; then
+  git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_AGENT_TOOLKIT_DIR" \
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
-if git -c safe.directory="$DSH_BOT_DIR" -C "$DSH_BOT_DIR" fetch --tags --force \
-   && git -c safe.directory="$DSH_BOT_DIR" -C "$DSH_BOT_DIR" checkout v1; then
+if git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
+   && git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" checkout v1; then
   PIN_OK=1
-  echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_BOT_DIR" -C "$DSH_BOT_DIR" describe --tags 2>/dev/null || echo v1)"
+  echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
 else
   echo "install-worker: WARNING — could not refresh the pin to v1; the toolkit runs its previous checkout (cron retries each sweep)" >&2
 fi
@@ -65,7 +65,7 @@ chmod 700 "$WORKER_HOME"
   cat > "$WORKER_HOME/env" <<EOF
 GH_TOKEN=${WORKER_GH_CRED}
 DOPPLER_SERVICE_TOKEN=${WORKER_DOPPLER_CRED}
-DSH_BOT_DIR="${DSH_BOT_DIR}"
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR}"
 DSH_WORKER_REPOS="${WORKER_REPOS}"
 ${WORKER_MODEL_MAP:+DSH_WORKER_MODEL_MAP="${WORKER_MODEL_MAP}"}
 EOF
@@ -90,7 +90,7 @@ command -v flock >/dev/null 2>&1 \
 # ships scripts mode 644 — a direct invocation is "Permission denied"
 # (live-proven: the keepalive fired every minute from 17:52 and died at
 # exactly this word until fixed).
-LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_BOT_DIR} fetch --tags --force -q && git -C ${DSH_BOT_DIR} checkout -q v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_BOT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
+LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
 # The canonical-line rule: ALWAYS drop any existing dsh-worker line and
 # install the current one. Append-only idempotence ships upgrades never
 # (the box keeps its first, buggier line forever); rewrite-always is the
@@ -106,7 +106,7 @@ fi
   || { echo "install-worker: crontab install failed" >&2; exit 3; }
 
 echo "install-worker: OK"
-echo "  toolkit : $DSH_BOT_DIR (pinned to the moving v1 tag per sweep)"
+echo "  toolkit : $DSH_AGENT_TOOLKIT_DIR (pinned to the moving v1 tag per sweep)"
 echo "  env     : $WORKER_HOME/env (mode 600) — the only credential resting place"
 echo "  cron    : keepalive armed (pgrep-guarded, once per minute)"
 echo "  repos   : $WORKER_REPOS"
