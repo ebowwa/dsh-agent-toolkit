@@ -66,7 +66,7 @@ no sudo, `svc.sh`/systemd when sudo exists — issue #6):
 
 ```bash
 # 1. toolkit checkout (keep updated: git pull — or via the drift bump PR)
-git clone --depth 1 https://github.com/ebowwa/dsh-bot "$HOME/dsh-bot"
+git clone --depth 1 https://github.com/ebowwa/dsh-agent-toolkit "$HOME/dsh-bot"
 
 # 2. worker env — secrets live ONLY here, 0600:
 cp "$HOME/dsh-bot/config/dsh-worker.env.example" "$HOME/.dsh-worker/env"

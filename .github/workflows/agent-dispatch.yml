@@ -64,10 +64,10 @@ jobs:
           # The next step writes the real push credential.
           persist-credentials: false
 
-      - name: Fetch dsh-bot scripts
+      - name: Fetch dsh-agent-toolkit scripts
         uses: actions/checkout@v4
         with:
-          repository: ebowwa/dsh-bot
+          repository: ebowwa/dsh-agent-toolkit
           # dsh-bot-ref when given; else MAIN — never github.ref: the
           # CALLER may fire this workflow from a target repo whose default
           # branch is not main (ANE: dev), and dsh-bot has no such branch —

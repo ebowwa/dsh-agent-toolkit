@@ -38,7 +38,7 @@ on:
         type: number
         default: 45
       dsh-bot-ref:
-        description: "Git ref of ebowwa/dsh-bot to fetch scripts from"
+        description: "Git ref of ebowwa/dsh-agent-toolkit to fetch scripts from"
         type: string
         default: ""
       # Comma/JSON labels the review job runs on (default the dsh pool).
@@ -108,11 +108,11 @@ jobs:
           ref: refs/pull/${{ steps.pr.outputs.number }}/merge
           fetch-depth: 0
 
-      - name: Fetch dsh-bot scripts
+      - name: Fetch dsh-agent-toolkit scripts
         if: steps.pr.outputs.state != 'MERGED' && steps.pr.outputs.state != 'CLOSED'
         uses: actions/checkout@v4
         with:
-          repository: ebowwa/dsh-bot
+          repository: ebowwa/dsh-agent-toolkit
           # dsh-bot-ref when given; else MAIN — never github.ref: the
           # CALLER may fire this workflow from a target repo whose default
           # branch is not main (ANE: dev), and dsh-bot has no such branch —

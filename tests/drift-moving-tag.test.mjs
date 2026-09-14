@@ -18,13 +18,13 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
 
-/** Every `uses: ebowwa/dsh-bot/...@TAG` pin in examples/. */
+/** Every `uses: ebowwa/dsh-agent-toolkit/...@TAG` pin in examples/. */
 const examplePins = () => {
   const pins = [];
   for (const f of readdirSync(path.join(ROOT, "examples")).filter((n) => n.endsWith(".yml"))) {
     const text = read("examples", f);
     for (const m of text.matchAll(
-      /^.*uses:\s*ebowwa\/dsh-bot\/\.github\/workflows\/\S+@(\S+)\s*$/gm,
+      /^.*uses:\s*ebowwa\/dsh-agent-toolkit\/\.github\/workflows\/\S+@(\S+)\s*$/gm,
     )) {
       pins.push({ file: f, tag: m[1] });
     }

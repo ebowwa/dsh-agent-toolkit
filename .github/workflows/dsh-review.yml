@@ -39,7 +39,7 @@ jobs:
     # NOT @main: an unpinned main ref means every merge instantly changes
     # this repo's own review path with no audit gate between (drift
     # finding 1 on v1.46.0).
-    uses: ebowwa/dsh-bot/.github/workflows/agent-review-thin.yml@v1
+    uses: ebowwa/dsh-agent-toolkit/.github/workflows/agent-review-thin.yml@v1
     secrets: inherit
     with:
       # workflow_dispatch passes inputs.pr; the /review comment path

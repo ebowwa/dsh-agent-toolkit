@@ -31,7 +31,7 @@ permissions:
 jobs:
   dsh-agent:
     if: ${{ github.event_name != 'schedule' || true }}
-    uses: ebowwa/dsh-bot/.github/workflows/agent-dispatch.yml@v1
+    uses: ebowwa/dsh-agent-toolkit/.github/workflows/agent-dispatch.yml@v1
     secrets: inherit
     with:
       task: ${{ inputs.task }}
