@@ -19,7 +19,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DRIVER = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 
 test("driver without DOPPLER_SERVICE_TOKEN fails typed (exit 2) before any work", () => {
-  const env = { ...process.env };
+  // The typed guard fires before the retry loop, so the backoff never
+  // waits here — the seam is pinned anyway: every driver spawn pins it,
+  // so a stub that starts failing degrades to instant attempts, never a
+  // wedge (tests-lint rule 2; gates runs 34748403843/34788769043/
+  // 34795917609/34803136058).
+  const env = { ...process.env, DSH_RETRY_BACKOFF_S: "0" };
   delete env.DOPPLER_SERVICE_TOKEN;
   // Deliberately bare: the guard must fire before dsh install / cell-tool
   // probes, so no node/dsh/doppler availability is required here.
