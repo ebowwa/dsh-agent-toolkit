@@ -42,6 +42,10 @@ on:
       dsh-agent-toolkit-ref:
         type: string
         default: ""
+      dsh-bot-ref:
+        description: "DEPRECATED alias for dsh-agent-toolkit-ref (retired name); wins only when the new name is empty"
+        type: string
+        default: ""
 
 jobs:
   dsh-agent:
@@ -73,7 +77,7 @@ jobs:
           # branch is not main (ANE: dev), and dsh-agent-toolkit has no such branch —
           # the fetch died with "couldn't find remote ref refs/heads/dev"
           # on every cross-repo tower review (observed 2026-08-24).
-          ref: ${{ inputs.dsh-agent-toolkit-ref || 'main' }}
+          ref: ${{ inputs.dsh-agent-toolkit-ref || inputs.dsh-bot-ref || 'main' }}
           path: .dsh-agent-toolkit
           token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
 

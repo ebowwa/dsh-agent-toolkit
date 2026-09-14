@@ -37,6 +37,12 @@
 set -euo pipefail
 
 DSH_SHIP_REPO="${DSH_SHIP_REPO:-${GITHUB_REPOSITORY:?post-reply: DSH_SHIP_REPO/GITHUB_REPOSITORY unset}}"
+# LEGACY-NAME SHIM (retired DSH_BOT_DIR, drift BLOCK run 34803136038): direct
+# callers on pre-rename env files keep working, loudly; fail-closed unchanged.
+if [ -z "${DSH_AGENT_TOOLKIT_DIR:-}" ] && [ -n "${DSH_BOT_DIR:-}" ]; then
+  echo "post-reply: DSH_BOT_DIR is retired — set DSH_AGENT_TOOLKIT_DIR (accepted for this run)" >&2
+  DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
+fi
 DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?post-reply: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_RUN_ID="${DSH_RUN_ID:-${GITHUB_RUN_ID:-}}"
 TARGET_KIND="${TARGET_KIND:?post-reply: TARGET_KIND unset}"

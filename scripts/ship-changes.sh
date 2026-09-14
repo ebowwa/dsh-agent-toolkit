@@ -52,6 +52,12 @@ DSH_SHIP_REPO="${DSH_SHIP_REPO:-${GITHUB_REPOSITORY:?ship-changes: DSH_SHIP_REPO
 DSH_RUN_ID="${DSH_RUN_ID:-${GITHUB_RUN_ID:?ship-changes: DSH_RUN_ID/GITHUB_RUN_ID unset}}"
 DSH_RUN_ATTEMPT="${DSH_RUN_ATTEMPT:-${GITHUB_RUN_ATTEMPT:-1}}"
 DSH_WORKTREE="${DSH_WORKTREE:-${GITHUB_WORKSPACE:?ship-changes: DSH_WORKTREE/GITHUB_WORKSPACE unset}}"
+# LEGACY-NAME SHIM (retired DSH_BOT_DIR, drift BLOCK run 34803136038): direct
+# callers on pre-rename env files keep working, loudly; fail-closed unchanged.
+if [ -z "${DSH_AGENT_TOOLKIT_DIR:-}" ] && [ -n "${DSH_BOT_DIR:-}" ]; then
+  echo "ship-changes: DSH_BOT_DIR is retired — set DSH_AGENT_TOOLKIT_DIR (accepted for this run)" >&2
+  DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
+fi
 DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?ship-changes: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_SHIP_CACHE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}"
 DSH_AGENT_OUTPUT="${DSH_AGENT_OUTPUT:-$DSH_SHIP_CACHE/dsh-agent-output.txt}"

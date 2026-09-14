@@ -29,6 +29,8 @@
 #                       configured consumer repo; per-consumer least
 #                       privilege is a deployment decision, see docs)
 #   DSH_AGENT_TOOLKIT_DIR         required — this toolkit's checkout (scripts/)
+#                       (the retired DSH_BOT_DIR is still accepted with a
+#                       loud warning: deployed env files predate the rename)
 #   DSH_WORKER_REPOS    required — space/comma-separated "owner/repo" list
 #                       of consumer repos to poll
 #   DOPPLER_SERVICE_TOKEN  REQUIRED — the agent launches only via
@@ -96,6 +98,15 @@ CHECK_ENV() { # <varname> — required env, typed exit 2 (never run half-configu
   local v="$1"
   if [ -z "${!v:-}" ]; then echo "dsh-worker: $v unset (required)" >&2; exit 2; fi
 }
+# LEGACY-NAME SHIM — deployed worker env files (written by install-worker at
+# provisioning time) still set only DSH_BOT_DIR, and the cron sweep adopts the
+# moving v1 tag automatically: a bare rename here would exit 2 on every box
+# within one cron minute of the tag advancing (drift BLOCK finding, run
+# 34803136038). Resolve the retired name loudly, then hold the same contract.
+if [ -z "${DSH_AGENT_TOOLKIT_DIR:-}" ] && [ -n "${DSH_BOT_DIR:-}" ]; then
+  echo "dsh-worker: DSH_BOT_DIR is retired — set DSH_AGENT_TOOLKIT_DIR (accepted for this run)" >&2
+  DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
+fi
 CHECK_ENV DSH_AGENT_TOOLKIT_DIR
 CHECK_ENV GH_TOKEN
 CHECK_ENV DSH_WORKER_REPOS
