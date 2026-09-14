@@ -17,6 +17,27 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHIPPER = path.join(ROOT, "scripts", "ship-changes.sh");
 
+// The dsh driver (run-dsh-agent.sh §2c) installs gh/git scrub shims into a
+// per-process "$TMPDIR/dsh-shim.<pid>" dir at the FRONT of its child's PATH.
+// When this suite runs inside such a child — an agent session running local
+// gates — process.env.PATH carries those dirs WITHOUT the shim's env contract
+// (GIT_SCRUB_REAL / SCRUB_SCRIPT are the driver's own exports, not ours), so
+// a child inheriting the ambient PATH resolves `git` to the env-less shim,
+// which fails loud ("GIT_SCRUB_REAL not set"), every git check in the shipper
+// dies, and the note degrades to "nothing to ship — git checks could not run
+// (UNVERIFIED)": no push, no branch. That is the long-"ambient" ship-changes
+// red on agent-run lanes that clean CI cells never see (gates run
+// 34803136058 follow-up). The shipper under test is the deterministic pusher
+// and must drive REAL git (plus the stub gh), so drop exactly the transient
+// driver-shim dirs and keep the rest of the ambient PATH — the tests-lint
+// rule forbids hard-coding system dirs, and lane-installed CLIs must still
+// resolve.
+export const ambientPathWithoutDriverShims = (p = process.env.PATH || "") =>
+  p
+    .split(path.delimiter)
+    .filter((dir) => !path.basename(dir).startsWith("dsh-shim."))
+    .join(path.delimiter);
+
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
 
 /** Build a fixture: bare remote + a work clone, plus a gh shim. Returns
@@ -74,7 +95,7 @@ esac
       DSH_TASK_TITLE: "task title",
       REVIEW_WORKFLOW: "",
       GH_LOG: ghLog, PR_BODY_OUT: prBodyOut,
-      PATH: `${shim}${path.delimiter}${process.env.PATH}`,
+      PATH: `${shim}${path.delimiter}${ambientPathWithoutDriverShims()}`,
       ...extra,
     }) };
 };
@@ -178,4 +199,32 @@ test("unrunnable git tree → note says UNVERIFIED, never a false 'verified' (PR
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
+});
+
+test("shipper env PATH drops the driver's transient dsh-shim dirs, keeps the ambient PATH", () => {
+  // The exact contamination shape run-dsh-agent.sh §2c produces: the shim
+  // dir first, ambient dirs after. The filter must remove ONLY the
+  // dsh-shim.* dir — dropping everything ambient would violate the
+  // tests-lint rule (hard-coded restriction constructs no absence), keeping
+  // it re-breaks the shipper inside an agent session.
+  const sep = path.delimiter;
+  const contaminated = [
+    path.join(path.sep, "tmp", "dsh-shim.424242"),
+    path.join(path.sep, "usr", "local", "bin"),
+    path.join(path.sep, "usr", "bin"),
+    path.join(path.sep, "opt", "homebrew", "bin"),
+  ].join(sep);
+  const filtered = ambientPathWithoutDriverShims(contaminated).split(sep);
+  assert.ok(
+    !filtered.includes(path.join(path.sep, "tmp", "dsh-shim.424242")),
+    "the driver shim dir must not reach the shipper child",
+  );
+  assert.ok(
+    filtered.includes(path.join(path.sep, "usr", "local", "bin")) &&
+      filtered.includes(path.join(path.sep, "usr", "bin")) &&
+      filtered.includes(path.join(path.sep, "opt", "homebrew", "bin")),
+    "ambient entries must survive the filter",
+  );
+  // empty entries (PATH trailing colon = cwd semantics) pass through untouched
+  assert.equal(ambientPathWithoutDriverShims(`${sep}${sep}`), `${sep}${sep}`);
 });
