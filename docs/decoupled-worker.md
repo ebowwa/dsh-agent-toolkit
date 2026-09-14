@@ -56,7 +56,7 @@ serialization matches the CI flow: the worker takes the **last** trusted
 (workflow_dispatch, input `repos` = the DSH_WORKER_REPOS list). It runs
 `scripts/install-worker.sh` ON a dsh box — the self-register-factory
 pattern — and installs everything below idempotently: credentials from the
-repo's `BOT_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
+repo's `TOWER_PROBE_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
 env file, and the cron line re-pins the toolkit to the moving `v1` tag
 every sweep, so the worker's code updates exclusively through
 drift-check's audited releases.

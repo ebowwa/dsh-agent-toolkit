@@ -53,7 +53,7 @@ jobs:
       # deliberate, once per deploy (input-gated).
       - name: Install the worker on this box (idempotent)
         env:
-          WORKER_GH_CRED: ${{ secrets.BOT_PAT }}
+          WORKER_GH_CRED: ${{ secrets.TOWER_PROBE_PAT }}
           WORKER_DOPPLER_CRED: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           WORKER_REPOS: ${{ inputs.repos }}
           WORKER_MODEL_MAP: ${{ inputs.model-map }}

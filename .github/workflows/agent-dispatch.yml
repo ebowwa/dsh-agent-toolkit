@@ -94,7 +94,7 @@ jobs:
       - name: Run agent
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
-          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }} # BOT_PAT: cross-repo pushes (tower tickets ship PRs in target repos)
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }} # TOWER_PROBE_PAT: cross-repo pushes (tower tickets ship PRs in target repos)
           TASK_INPUT: ${{ inputs.task }}
           DSH_KEEP_SESSIONS: "1" # flight recorder: keep the session transcript for the artifact upload # env, never raw ${{ }} into bash (injection seam)
           DSH_MODEL: ${{ inputs.model }}

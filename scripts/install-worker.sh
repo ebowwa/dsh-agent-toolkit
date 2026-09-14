@@ -17,7 +17,7 @@
 #      through the repo's own release gate.
 #
 # Env contract (values via env; NEVER printed):
-#   WORKER_GH_CRED          required — the worker PAT (BOT_PAT)
+#   WORKER_GH_CRED          required — the worker PAT (TOWER_PROBE_PAT)
 #   WORKER_DOPPLER_CRED     required — DOPPLER_SERVICE_TOKEN
 #   WORKER_REPOS            required — DSH_WORKER_REPOS value
 #                           (space-separated owner/repo list)

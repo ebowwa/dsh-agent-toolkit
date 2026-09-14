@@ -82,7 +82,7 @@ jobs:
     steps:
       - name: Ack the thread instantly (before any work)
         env:
-          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }}
           TARGET_NUM: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
           set -uo pipefail
@@ -131,7 +131,7 @@ jobs:
       - name: Run agent (captures the before-state for the shipper)
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
-          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }}
           # (comment body + task come from GITHUB_EVENT_PATH on disk — the
           # runner dumps step env: to the log, and user text is not a secret)
           TARGET_KIND: ${{ (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request) && 'pr' || 'issue' }}
@@ -196,7 +196,7 @@ jobs:
       - name: Ship any code changes as a PR
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }}
           REVIEW_WORKFLOW: ${{ inputs.review-workflow }}
           EXTRA_SCRUB_HOSTS: ${{ inputs.extra-scrub-hosts }}
           DSH_AGENT_TOOLKIT_DIR: ${{ github.workspace }}/.dsh-agent-toolkit
@@ -205,7 +205,7 @@ jobs:
       - name: Reply on the thread as github-actions[bot]
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }}
           TARGET_KIND: ${{ (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request) && 'pr' || 'issue' }}
           TARGET_NUM: ${{ github.event.pull_request.number || github.event.issue.number }}
           EXTRA_SCRUB_HOSTS: ${{ inputs.extra-scrub-hosts }}
