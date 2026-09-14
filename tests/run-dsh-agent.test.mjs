@@ -308,6 +308,11 @@ test("gh uninstallable (no egress): the full driver still launches the agent and
     GH_BIN: "/nonexistent/gh",
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
+    // The agent stub succeeds here, but pin the retry seam anyway: every
+    // driver spawn pins it, so a stub that starts failing degrades to
+    // instant attempts, never a wedge (tests-lint rule 2; gates runs
+    // 34748403843/34788769043/34795917609/34803136058).
+    DSH_RETRY_BACKOFF_S: "0",
   };
   delete env.GH_TOKEN;      // skip the gh-identity block entirely
   delete env.GITHUB_ENV;    // no workflow env file to publish to
@@ -431,6 +436,11 @@ const runLauncher = (extraEnv = {}) => {
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
+    // The agent stub succeeds here, but pin the retry seam anyway: every
+    // driver spawn pins it, so a stub that starts failing degrades to
+    // instant attempts, never a wedge (tests-lint rule 2; gates runs
+    // 34748403843/34788769043/34795917609/34803136058).
+    DSH_RETRY_BACKOFF_S: "0",
   };
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
@@ -990,6 +1000,11 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
+    // The agent stub succeeds here, but pin the retry seam anyway: every
+    // driver spawn pins it, so a stub that starts failing degrades to
+    // instant attempts, never a wedge (tests-lint rule 2; gates runs
+    // 34748403843/34788769043/34795917609/34803136058).
+    DSH_RETRY_BACKOFF_S: "0",
   };
   delete env.GH_TOKEN;      // skip the gh-identity block entirely
   delete env.GITHUB_ENV;    // no workflow env file to publish to

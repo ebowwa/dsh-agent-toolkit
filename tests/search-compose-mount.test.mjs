@@ -106,6 +106,14 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
+    // The agent stub succeeds here, but pin the retry seam anyway: every
+    // driver spawn pins it, so a stub that starts failing degrades to
+    // instant attempts, never a wedge (gates runs 34748403843/
+    // 34788769043/34795917609/34803136058). NOTE: this harness passes
+    // the driver through the `script` parameter (fed from a helper's
+    // `return path.join(...)`), a shape tests-lint rule 2 cannot see —
+    // the pin here is manual; keep it if the harness moves.
+    DSH_RETRY_BACKOFF_S: "0",
   };
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
