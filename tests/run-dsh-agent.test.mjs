@@ -121,6 +121,14 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
     RUNNER_TEMP: runnerTemp,
     DOPPLER_SERVICE_TOKEN: "stub-token",
     DSH_KEEP_SESSIONS: "", // default path: transcripts must be cleaned
+    // The PR-#85 throttle-wave retry wraps the spawn in a bounded retry:
+    // an instantly-failing stub is the fast-fail class, so the hardcoded
+    // 180s+600s backoff ran past this test's 60s budget and spawnSync
+    // killed the driver (status null — gates 34748403843, 34788769043,
+    // 34795917609). DSH_RETRY_BACKOFF_S=0 keeps the REAL loop (3 attempts,
+    // RC surfacing, cleanup) but removes the waits; test 2c pins the loop
+    // contract itself.
+    DSH_RETRY_BACKOFF_S: "0",
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
@@ -151,6 +159,97 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
     [],
     "the job-scoped home must be removed on failure (secrets/transcripts must not survive on the runner)",
   );
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 2c. the throttle-wave retry loop itself ------------------------------
+//
+// PR #85 shipped the retry loop (34 lines in the driver) with no test, and
+// its hardcoded 180s/600s backoff broke test 2 above: an instantly-failing
+// stub is the fast-fail class, so the failure path slept 780s inside a 60s
+// test budget — spawnSync killed the driver, `proc.status` came back null,
+// and main went red (gates 34748403843 on the PR itself, then 34788769043
+// and 34795917609 on main after it merged). Two contracts are pinned here:
+//
+//   behavioral: a fast failure IS retried (the loop's typed error and
+//   retry counter surface per attempt), attempts stay bounded (3), the
+//   wall clock does not fire, and the final RC + answer + cleanup still
+//   satisfy test 2's contract — all in bounded time via the
+//   DSH_RETRY_BACKOFF_S seam.
+//
+//   structural: the backoff line must keep the seam with the production
+//   defaults inline (`${DSH_RETRY_BACKOFF_S:-180}` / `:-600`) — a revert
+//   to hardcoded 180/600 goes red HERE deterministically, no 60s hang
+//   needed, same posture as the run-32797020619 class guard.
+test("throttle-wave retry: a fast failure retries (bounded, typed), then still surfaces RC with the answer relayed and the home cleaned (gates 34795917609)", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  assert.match(
+    src,
+    /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
+    "the backoff must stay overridable via DSH_RETRY_BACKOFF_S with the production schedule as the inline default — hardcoding it again makes the failure path untestable (runs 34748403843/34788769043/34795917609)",
+  );
+
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-retry-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner");
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+
+  writeFileSync(
+    path.join(bin, "doppler"),
+    "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n",
+  );
+  // dsh stub: fails instantly EVERY attempt — the throttle-wave class.
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: dir,
+    RUNNER_TEMP: runnerTemp,
+    DOPPLER_SERVICE_TOKEN: "stub-token",
+    DSH_KEEP_SESSIONS: "",
+    DSH_RETRY_BACKOFF_S: "0", // walk the real loop without the waits
+    GH_BIN: path.join(bin, "gh"),
+    DOPPLER_BIN: path.join(bin, "doppler"),
+    CELL_PROBE_DIRS: "",
+  };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_ENV;
+  delete env.DSH_HOME;
+  delete env.DSH_PERSISTENT_HOME;
+  delete env.DSH_SESSION_PATH_FILE;
+
+  const proc = spawnSync(
+    "bash",
+    [SCRIPT, "integration test task"],
+    { encoding: "utf8", env, timeout: 60_000 },
+  );
+
+  assert.notEqual(proc.status, null, "the driver must terminate inside the budget, not hang");
+  assert.equal(proc.status, 1, "after attempts are exhausted the agent RC must still surface");
+  assert.match(proc.stdout, /STUB-FINAL-ANSWER/, "the last attempt's answer must be relayed");
+  // The loop retried, audibly: attempt 1 died fast -> retry 2, attempt 2
+  // died fast -> retry 3, attempt 3 died fast -> attempts exhausted.
+  const retries = (proc.stderr.match(/::error::agent died fast/g) || []).length;
+  assert.equal(retries, 2, `a fast failure must retry exactly DSH_SPAWN_ATTEMPTS-1 times, stderr: ${proc.stderr}`);
+  assert.match(proc.stderr, /retry 2\/3/, "the retry counter must surface per attempt");
+  assert.match(proc.stderr, /retry 3\/3/, "the second retry must surface too");
+  assert.doesNotMatch(proc.stderr, /retry wall clock/, "the wall clock must not fire for a fast bounded loop");
+  const homes = readdirSync(runnerTemp).filter((f) => f.startsWith("dsh-home."));
+  assert.deepEqual(homes, [], "retries must not leak the job-scoped home");
 
   rmSync(dir, { recursive: true, force: true });
 });
