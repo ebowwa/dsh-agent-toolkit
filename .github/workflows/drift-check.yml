@@ -142,7 +142,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
           # is repo-scoped); falls back gracefully for public-mode consumers.
-          PAT_TOKEN: ${{ secrets.DSH_BOT_REPO_TOKEN }}
+          PAT_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN }}
           NEXT: ${{ steps.scope.outputs.next }}
           MOVING: ${{ steps.scope.outputs.moving }}
           VERDICT: ${{ env.VERDICT }}

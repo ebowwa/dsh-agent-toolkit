@@ -120,7 +120,7 @@ jobs:
           # on every cross-repo tower review (observed 2026-08-24).
           ref: ${{ inputs.dsh-agent-toolkit-ref || 'main' }}
           path: .dsh-agent-toolkit
-          token: ${{ secrets.DSH_BOT_REPO_TOKEN || github.token }}
+          token: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
 
       - name: Review the PR (rules + gates + verdict)
         if: steps.pr.outputs.state != 'MERGED' && steps.pr.outputs.state != 'CLOSED'
