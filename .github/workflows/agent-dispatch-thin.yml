@@ -65,6 +65,10 @@ on:
         description: "Accepted for input compatibility"
         type: string
         default: ""
+      dsh-bot-ref:
+        description: "DEPRECATED alias for dsh-agent-toolkit-ref (retired name); accepted no-op like the new name"
+        type: string
+        default: ""
 
 jobs:
   dsh-dispatch-thin-trigger:
