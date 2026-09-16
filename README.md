@@ -38,6 +38,7 @@ Two execution modes:
 | `scripts/run-dsh-agent.sh` | driver: dsh install, settings bootstrap, gh/git identity, scrub shims, live trace, Doppler exec; head model via `DSH_MODEL`, subagent/subagent_fork children via `DSH_SUBAGENT_MODEL` (unset = inherit the head); local web search + fetch via `DSH_WEB_SEARCH_CELLS` (per-cell, default off); composition search tool via `DSH_SEARCH_COMPOSE=1` (default off) |
 | `plugins/tool-search-compose/` | the composition search tool — counts, file-lists, case-folding, context, total result caps, path/mtime ordering in one search call (see its README for the packaging contract) |
 | `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
+| `plugins/dsh-flight-recorder/` | transcript blind-spot recorder — `job/*` lifecycle/output events and `plugin/*` loader-fiber activity into session logs plus a host-side firehose; history-preserving repo import (unmounted on the persistent install pending the dsh-session event-type hotfix — see its README coupling note) |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
