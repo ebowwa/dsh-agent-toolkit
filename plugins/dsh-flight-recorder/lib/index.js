@@ -63,8 +63,8 @@ var FlightRecorder = class extends Service {
 		pluginLayer: z.boolean().default(true),
 		/** Record only fiber status transitions touching the active state (2). */
 		pluginStatusActiveOnly: z.boolean().default(true),
-		/** Host-level plugin log (every heard event). Relative to $DSH_HOME's storages dir when not absolute. */
-		pluginLogFile: z.string().default("/Users/ebowwa/.dsh/storages/flight-recorder-plugins.jsonl")
+		/** Host-level plugin log (every heard event). Absolute path, or bare/relative for $HOME/.dsh/storages/<value>. */
+		pluginLogFile: z.string().default("flight-recorder-plugins.jsonl")
 	});
 	constructor(ctx, config) {
 		super(ctx, "flightRecorder");
@@ -430,7 +430,7 @@ var FlightRecorder = class extends Service {
 		try {
 			const path = this.config.pluginLogFile?.startsWith("/")
 				? this.config.pluginLogFile
-				: `${process.env.HOME ?? "/tmp"}/.dsh/storages/flight-recorder-plugins.jsonl`;
+				: `${process.env.HOME ?? "/tmp"}/.dsh/storages/${this.config.pluginLogFile || "flight-recorder-plugins.jsonl"}`;
 			appendFileSync(path, `${JSON.stringify({ t: Date.now(), ...data })}\n`);
 		} catch {
 			/* contained: the log must never break recording */
