@@ -1,0 +1,16 @@
+{
+  "name": "@local/dsh-flight-recorder",
+  "description": "Records background-job lifecycle/output streams and plugin-layer activity (loader fibers, HMR reloads) into session transcripts as job/* and plugin/* events",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}
