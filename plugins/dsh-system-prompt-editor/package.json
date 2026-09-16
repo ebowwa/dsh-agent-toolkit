@@ -1,0 +1,17 @@
+{
+	"name": "@local/dsh-system-prompt-editor",
+	"description": "A file-backed, live system-prompt block for the DeepSeek Harness web UI: ~/.dsh/system-prompt.md is read at EVERY prompt assembly (per step), so a write applies to the very next LLM call of every running session \u2014 plus read_system_prompt / write_system_prompt agent tools so sessions themselves can read and edit the block. Empty/absent file contributes nothing to the prompt.",
+	"version": "0.2.0",
+	"type": "module",
+	"main": "./lib/index.js",
+	"exports": {
+		".": "./lib/index.js",
+		"./package.json": "./package.json"
+	},
+	"license": "MIT",
+	"peerDependencies": {
+		"@deepseek-ai/dsh-agent": "^0.1.0",
+		"@deepseek-ai/dsh-system-prompt": "^0.1.0",
+		"@deepseek-ai/dsh-tools": "^0.1.0"
+	}
+}

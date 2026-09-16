@@ -1,0 +1,23 @@
+{
+	"name": "@local/dsh-system-prompt-ui",
+	"version": "0.2.0",
+	"description": "Web UI for the scoped editable system-prompt block: a chat-header list-pen icon button opens an editor dialog with scope tabs (this chat / workspace / all chats) over a cookie-authenticated host route",
+	"type": "module",
+	"main": "./lib/index.js",
+	"exports": {
+		".": "./lib/index.js",
+		"./client": "./lib/client.js",
+		"./package.json": "./package.json"
+	},
+	"dsh": {
+		"client": {
+			"inject": [
+				"@deepseek-ai/dsh-client-locale",
+				"@deepseek-ai/dsh-client-ui-conversation"
+			],
+			"platform": "web"
+		}
+	},
+	"license": "MIT",
+	"private": true
+}

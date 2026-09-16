@@ -37,6 +37,7 @@ Two execution modes:
 | `scripts/review-verdict.mjs` | line-strict verdict extraction (APPROVE / REQUEST CHANGES; fail-closed on absence) |
 | `scripts/run-dsh-agent.sh` | driver: dsh install, settings bootstrap, gh/git identity, scrub shims, live trace, Doppler exec; head model via `DSH_MODEL`, subagent/subagent_fork children via `DSH_SUBAGENT_MODEL` (unset = inherit the head); local web search + fetch via `DSH_WEB_SEARCH_CELLS` (per-cell, default off); composition search tool via `DSH_SEARCH_COMPOSE=1` (default off) |
 | `plugins/tool-search-compose/` | the composition search tool — counts, file-lists, case-folding, context, total result caps, path/mtime ordering in one search call (see its README for the packaging contract) |
+| `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
@@ -115,3 +116,23 @@ through the profile's flat fallback — the packaging that failed at f2972e7,
 where the overlay pointed at the bare in-tree script path and resolved
 nothing. Requires no per-cell provisioning; unset stays a byte-identical
 launch line.
+
+## System-prompt plugins (persistent web install, mounted by hand)
+
+[`plugins/dsh-system-prompt-editor/`](plugins/dsh-system-prompt-editor/README.md)
++ [`plugins/dsh-system-prompt-ui/`](plugins/dsh-system-prompt-ui/README.md)
+— a live, **scoped** system-prompt block: this-chat → workspace → global
+markdown files, first non-empty wins, re-resolved at every prompt assembly
+so a write applies to the next LLM call of every running session (no
+restart). The editor package mounts the prompt section plus
+`read_system_prompt` / `write_system_prompt` agent tools; the ui package
+adds a chat-header button + scope-tabbed dialog over a cookie-authenticated
+host route, reusing the editor's resolution helpers so dialog and prompt
+can never disagree.
+
+These target a **persistent** dsh web install (hand-mounted into its
+runtime `@local/` tree + a hot-watched `cordis.patch.yml` row), not a
+per-cell launcher mount — the READMEs carry the mount contract, the
+module-cache live-swap recipe (`lib/hot.js` shims), and the
+no-symlinks-into-this-repo rule (Node realpath leaves the
+`@deepseek-ai/*` peers unresolvable — a boot-time fiber failure).
