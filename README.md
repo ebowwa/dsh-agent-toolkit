@@ -51,6 +51,17 @@ Two execution modes:
 | `config/models.yaml` | model catalog for consumers — the provider/model ids the Z.AI coding endpoint serves (what `DSH_MODEL` / `DSH_WORKER_MODEL` accept) |
 | `docs/decoupled-worker.md` | full decoupled-mode guide: queue semantics, trust model, security posture, factory-box install |
 
+## Testing
+
+Run the suite with the glob form:
+
+```bash
+node --test tests/*.test.mjs
+```
+
+Do NOT use the directory form (`node --test tests/`) — under Node 26 it
+fails with `MODULE_NOT_FOUND` before running anything.
+
 ## Adopting (consumer repo)
 
 **Decoupled (recommended):** copy `examples/dsh-agent-thin.yml` into
