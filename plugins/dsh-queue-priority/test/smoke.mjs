@@ -3,11 +3,12 @@
  *
  *   node ~/.dsh/runtime/node_modules/@local/dsh-queue-priority/test/smoke.mjs
  *
- * Covers: the pure swap planner (math + edge errors), the route's request
- * validation and error mapping against a mock agents registry + recording
- * inbox, and the browser factory via a vm harness with stub module seeds
- * (registration only — the panel's React rendering is exercised by loading
- * the page, not here).
+ * Covers: the pure swap planner (math + edge errors), the edit / fork message
+ * builders, the route's request validation and error mapping against a mock
+ * agents registry + recording inbox — including the stock-mirroring remove /
+ * edit / steer semantics and fork's clone-below — and the browser factory via
+ * a vm harness with stub module seeds (registration only — the panel's React
+ * rendering is exercised by loading the page, not here).
  */
 
 import { readFileSync } from "node:fs";
@@ -34,7 +35,13 @@ function check(label, ok, detail = "") {
 // 1. planMove — pure swap math
 // ---------------------------------------------------------------------------
 console.log("planMove:");
-const list = (n) => Array.from({ length: n }, (_, i) => ({ id: `m${i}` }));
+// rows carry the message shape the real inbox holds (id + content + source)
+const list = (n) => Array.from({ length: n }, (_, i) => ({
+	id: `m${i}`,
+	role: "user",
+	content: [{ type: "text", text: `m${i}` }],
+	source: { kind: "user", rpcId: `r${i}` }
+}));
 
 {
 	const l = list(3);
@@ -60,12 +67,32 @@ check("down at tail is at-edge", nodeHalf.planMove(list(3), "m2", "down")?.error
 check("unknown id is item-not-found", nodeHalf.planMove(list(3), "zzz", "up")?.error === "session/queue-item-not-found");
 
 // ---------------------------------------------------------------------------
+// 1b. planEdit / planFork — pure message builders
+// ---------------------------------------------------------------------------
+console.log("planEdit / planFork:");
+{
+	const source = Object.freeze({ id: "m1", role: "user", content: [{ type: "text", text: "old" }], source: { kind: "user", rpcId: "r1" } });
+	const edited = nodeHalf.planEdit(source, "new text");
+	check("edit replaces content with the text block", edited.content.length === 1 && edited.content[0].type === "text" && edited.content[0].text === "new text", JSON.stringify(edited.content));
+	check("edit keeps identity and source", edited.id === "m1" && edited.source.rpcId === "r1");
+	check("edited message is frozen and detached", Object.isFrozen(edited) && source.content[0].text === "old");
+}
+{
+	const source = Object.freeze({ id: "m1", role: "user", content: [{ type: "text", text: "hello" }], source: { kind: "user", rpcId: "r1" } });
+	const fork = nodeHalf.planFork(source);
+	check("fork has a fresh uuid-shaped id", typeof fork.id === "string" && fork.id !== "m1" && /^[0-9a-f-]{36}$/.test(fork.id), fork.id);
+	check("fork carries identical content and source", JSON.stringify(fork.content) === JSON.stringify(source.content) && fork.source.rpcId === "r1");
+	check("fork is frozen and the original is untouched", Object.isFrozen(fork) && fork !== source && source.id === "m1");
+}
+
+// ---------------------------------------------------------------------------
 // 2. apply() — route registration, validation, and the swap against a mock inbox
 // ---------------------------------------------------------------------------
 console.log("apply (mock ctx):");
 
-function makeCtx() {
+function makeCtx(status = "idle") {
 	const inboxCalls = [];
+	const steered = [];
 	const inbox = {
 		nextTurn: list(3),
 		splice(target, start, deleteCount, inserted) {
@@ -73,12 +100,30 @@ function makeCtx() {
 			const removed = this.nextTurn.slice(start, start + deleteCount);
 			this.nextTurn = this.nextTurn.toSpliced(start, deleteCount, ...inserted);
 			return removed;
+		},
+		remove(id) {
+			const index = this.nextTurn.findIndex((message) => message.id === id);
+			if (index === -1) return;
+			inboxCalls.push({ target: "next-turn", start: index, deleteCount: 1, inserted: [] });
+			this.nextTurn = this.nextTurn.toSpliced(index, 1);
+		},
+		replace(id, next) {
+			const index = this.nextTurn.findIndex((message) => message.id === id);
+			if (index === -1) return;
+			inboxCalls.push({ target: "next-turn", start: index, deleteCount: 1, inserted: [next] });
+			this.nextTurn = this.nextTurn.toSpliced(index, 1, next);
 		}
 	};
 	const registered = [];
 	const ctx = {
 		agents: {
-			get(id) { return id === "session-live" ? { inbox } : undefined; }
+			get(id) {
+				return id === "session-live" ? {
+					inbox,
+					status,
+					steer(message) { steered.push(message); }
+				} : undefined;
+			}
 		},
 		connection: {
 			fetch: {
@@ -86,7 +131,7 @@ function makeCtx() {
 			}
 		}
 	};
-	return { ctx, inbox, inboxCalls, registered };
+	return { ctx, inbox, inboxCalls, steered, registered };
 }
 
 const jsonBody = (value) => ({ json: async () => value, url: "http://x/api/queue-priority" });
@@ -122,6 +167,76 @@ const jsonBody = (value) => ({ json: async () => value, url: "http://x/api/queue
 	nodeHalf.apply(mock.ctx, { disabled: true });
 	check("config.disabled registers nothing", mock.registered.length === 0);
 }
+
+// ---------------------------------------------------------------------------
+// 2b. apply() — the stock-mirroring actions: remove / edit / steer / fork
+// ---------------------------------------------------------------------------
+console.log("apply (remove / edit / steer / fork):");
+{
+	const mock = makeCtx();
+	nodeHalf.apply(mock.ctx);
+	const route = mock.registered[0];
+	const res = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "remove" }));
+	const body = await res.json();
+	check("remove accepted", res.status === 200 && body.accepted === true, JSON.stringify(body));
+	check("remove spliced exactly one row out", mock.inbox.nextTurn.map((m) => m.id).join(",") === "m0,m2"
+		&& mock.inboxCalls.length === 1 && mock.inboxCalls[0].deleteCount === 1, JSON.stringify(mock.inbox.nextTurn));
+	const again = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "remove" }));
+	check("double remove -> 404 item-not-found", again.status === 404 && (await again.json()).code === "session/queue-item-not-found");
+}
+{
+	const mock = makeCtx();
+	nodeHalf.apply(mock.ctx);
+	const route = mock.registered[0];
+	const bad = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "edit", text: "   " }));
+	check("blank edit -> 400 edit-invalid, nothing mutated", bad.status === 400 && (await bad.json()).code === "queue/edit-invalid"
+		&& mock.inbox.nextTurn[1].content[0].text === "m1", String(bad.status));
+	const noText = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "edit" }));
+	check("edit without text -> 400", noText.status === 400);
+	const res = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "edit", text: "rewritten prompt" }));
+	const body = await res.json();
+	check("edit accepted", res.status === 200 && body.accepted === true, JSON.stringify(body));
+	check("edit rewrote content in place", mock.inbox.nextTurn.length === 3 && mock.inbox.nextTurn[1].id === "m1"
+		&& mock.inbox.nextTurn[1].content[0].text === "rewritten prompt", JSON.stringify(mock.inbox.nextTurn[1]));
+	check("edited replacement is frozen", Object.isFrozen(mock.inbox.nextTurn[1]));
+}
+{
+	const mock = makeCtx();
+	nodeHalf.apply(mock.ctx);
+	const route = mock.registered[0];
+	const res = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "steer" }));
+	check("steer while idle -> 409 steer-unavailable, queue untouched", res.status === 409
+		&& (await res.json()).code === "session/steer-unavailable"
+		&& mock.inbox.nextTurn.map((m) => m.id).join(",") === "m0,m1,m2" && mock.steered.length === 0, String(res.status));
+}
+{
+	const mock = makeCtx("running");
+	nodeHalf.apply(mock.ctx);
+	const route = mock.registered[0];
+	const target = mock.inbox.nextTurn[1];
+	const res = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "steer" }));
+	const body = await res.json();
+	check("steer while running accepted", res.status === 200 && body.accepted === true && body.steered === true, JSON.stringify(body));
+	check("steer removed the row and handed the original to agent.steer", mock.inbox.nextTurn.map((m) => m.id).join(",") === "m0,m2"
+		&& mock.steered.length === 1 && mock.steered[0] === target, JSON.stringify(mock.steered.map((m) => m.id)));
+}
+{
+	const mock = makeCtx();
+	nodeHalf.apply(mock.ctx);
+	const route = mock.registered[0];
+	const original = mock.inbox.nextTurn[1];
+	const res = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "fork" }));
+	const body = await res.json();
+	check("fork accepted with fresh id below the original", res.status === 200 && body.accepted === true
+		&& body.at === 2 && typeof body.forkedId === "string" && body.forkedId !== "m1", JSON.stringify(body));
+	check("fork inserted a clone directly below", mock.inbox.nextTurn.map((m) => m.id).join(",") === "m0,m1,clone,m2".replace("clone", body.forkedId)
+		&& mock.inboxCalls.length === 1 && mock.inboxCalls[0].start === 2 && mock.inboxCalls[0].deleteCount === 0, JSON.stringify(mock.inbox.nextTurn.map((m) => m.id)));
+	check("clone is frozen, content-identical, and the original object is untouched", Object.isFrozen(mock.inbox.nextTurn[2])
+		&& JSON.stringify(mock.inbox.nextTurn[2].content) === JSON.stringify(original.content)
+		&& mock.inbox.nextTurn[1] === original);
+	const bogus = await route.fetch(jsonBody({ sessionId: "session-live", itemId: "m1", action: "explode" }));
+	check("unknown action -> 400", bogus.status === 400);
+}
 {
 	const mock = makeCtx();
 	nodeHalf.apply(mock.ctx);
@@ -147,7 +262,13 @@ console.log("browser half (vm):");
 			projectUserText: (text) => text,
 			Tooltip: ({ children }) => children,
 			IconChevronUpOutline14: () => null,
-			IconChevronDownOutline14: () => null
+			IconChevronDownOutline14: () => null,
+			IconEditOutline16: () => null,
+			IconTrashOutline16: () => null,
+			IconCheckOutline16: () => null,
+			IconCloseOutline16: () => null,
+			IconSendOutline14: () => null,
+			IconCopyOutline16: () => null
 		}
 	};
 	const context = {

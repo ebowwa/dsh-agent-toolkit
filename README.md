@@ -40,7 +40,7 @@ Two execution modes:
 | `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
 | `plugins/dsh-flight-recorder/` | transcript blind-spot recorder — `job/*` lifecycle/output events and `plugin/*` loader-fiber activity into session logs plus a host-side firehose; history-preserving repo import (unmounted on the persistent install pending the dsh-session event-type hotfix — see its README coupling note) |
 | `plugins/dsh-session-id/` | chat-header copy button for the active session id (full `session-<uuid>` form) — pure browser feature over the `conversation.session.header.utilities` slot; stub host half exists only to make the patch row mountable |
-| `plugins/dsh-queue-priority/` | reorder a chat's pending prompt queue from the web UI — cookie-authed host route performing ONE durable adjacent swap on the next-turn inbox (`agent/inbox/spliced`, same shape the stock queue EDIT writes) + a bump-up/down dock panel under the composer |
+| `plugins/dsh-queue-priority/` | full queue control for a chat's pending prompts from the web UI — cookie-authed host route: move (ONE durable adjacent swap on the next-turn inbox, `agent/inbox/spliced`), plus stock-mirroring delete / edit / steer and fork (duplicate in place) + a dock panel under the composer with per-row action buttons |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
@@ -164,13 +164,20 @@ mount contract as above.
 ## Queue priority (persistent web install, mounted by hand)
 
 [`plugins/dsh-queue-priority/`](plugins/dsh-queue-priority/README.md) —
-reorder a chat's pending prompt queue before turns start. The stock
-`session/updateQueue` RPC only edits/removes/steers; the inbox's public
-`splice` covers the move natively as one adjacent swap journaled as a
-single `agent/inbox/spliced` event (atomic against turn claiming — no
-remove+insert gap where a moved prompt could be skipped). Browser half is
-a numbered "Queue order" dock panel (order 21, under the stock Queue dock)
-with per-item bump-up/bump-down buttons, visible at ≥2 pending prompts.
-Same mount contract as above (route hot-loads via the patch row; browser
-half ships on tab reload; future node-half code changes need the fresh-URL
-`lib/hot.js` swap).
+full control of a chat's pending prompt queue before turns start: move,
+delete, edit, steer, fork. The stock dock hides its edit/remove/steer
+behind a collapsed header once >1 item queues, so this panel carries the
+whole set and stays visible at ≥1 pending prompt. The stock
+`session/updateQueue` RPC has no move or fork; the inbox's public `splice`
+covers the move natively as one adjacent swap journaled as a single
+`agent/inbox/spliced` event (atomic against turn claiming — no
+remove+insert gap where a moved prompt could be skipped), and fork is a
+structuredClone with a fresh id spliced directly below the original — also
+one durable event. Delete / edit / steer mirror the stock handler's
+semantics (steer refused while no turn is running, `409
+session/steer-unavailable`). Browser half is a numbered "Queue order" dock
+panel (order 21, under the stock Queue dock) with per-row buttons:
+chevrons, pencil (inline editor), trash, send, copy. Same mount contract
+as above (route hot-loads via the patch row; browser half ships on tab
+reload; future node-half code changes need a NEW fresh-URL copy — the
+installed row points at `lib/hot.js`, now a re-export shim).
