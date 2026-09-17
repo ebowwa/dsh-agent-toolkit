@@ -39,6 +39,7 @@ Two execution modes:
 | `plugins/tool-search-compose/` | the composition search tool — counts, file-lists, case-folding, context, total result caps, path/mtime ordering in one search call (see its README for the packaging contract) |
 | `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
 | `plugins/dsh-flight-recorder/` | transcript blind-spot recorder — `job/*` lifecycle/output events and `plugin/*` loader-fiber activity into session logs plus a host-side firehose; history-preserving repo import (unmounted on the persistent install pending the dsh-session event-type hotfix — see its README coupling note) |
+| `plugins/dsh-session-id/` | chat-header copy button for the active session id (full `session-<uuid>` form) — pure browser feature over the `conversation.session.header.utilities` slot; stub host half exists only to make the patch row mountable |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
@@ -148,3 +149,13 @@ per-cell launcher mount — the READMEs carry the mount contract, the
 module-cache live-swap recipe (`lib/hot.js` shims), and the
 no-symlinks-into-this-repo rule (Node realpath leaves the
 `@deepseek-ai/*` peers unresolvable — a boot-time fiber failure).
+
+## Session-id copy button (persistent web install, mounted by hand)
+
+[`plugins/dsh-session-id/`](plugins/dsh-session-id/README.md) — a chat-header
+copy button for the active session id (the full `session-<uuid>` form, the
+exact string the RPC surface and dispatch tooling expect). Pure browser
+feature over the same `conversation.session.header.utilities` slot as the
+system-prompt dialog; the host half is a stub whose only job is making the
+patch row mountable so `dsh-client-modules` serves the browser bundle. Same
+mount contract as above.
