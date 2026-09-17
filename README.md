@@ -40,6 +40,7 @@ Two execution modes:
 | `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
 | `plugins/dsh-flight-recorder/` | transcript blind-spot recorder — `job/*` lifecycle/output events and `plugin/*` loader-fiber activity into session logs plus a host-side firehose; history-preserving repo import (unmounted on the persistent install pending the dsh-session event-type hotfix — see its README coupling note) |
 | `plugins/dsh-session-id/` | chat-header copy button for the active session id (full `session-<uuid>` form) — pure browser feature over the `conversation.session.header.utilities` slot; stub host half exists only to make the patch row mountable |
+| `plugins/dsh-queue-priority/` | reorder a chat's pending prompt queue from the web UI — cookie-authed host route performing ONE durable adjacent swap on the next-turn inbox (`agent/inbox/spliced`, same shape the stock queue EDIT writes) + a bump-up/down dock panel under the composer |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
@@ -159,3 +160,17 @@ feature over the same `conversation.session.header.utilities` slot as the
 system-prompt dialog; the host half is a stub whose only job is making the
 patch row mountable so `dsh-client-modules` serves the browser bundle. Same
 mount contract as above.
+
+## Queue priority (persistent web install, mounted by hand)
+
+[`plugins/dsh-queue-priority/`](plugins/dsh-queue-priority/README.md) —
+reorder a chat's pending prompt queue before turns start. The stock
+`session/updateQueue` RPC only edits/removes/steers; the inbox's public
+`splice` covers the move natively as one adjacent swap journaled as a
+single `agent/inbox/spliced` event (atomic against turn claiming — no
+remove+insert gap where a moved prompt could be skipped). Browser half is
+a numbered "Queue order" dock panel (order 21, under the stock Queue dock)
+with per-item bump-up/bump-down buttons, visible at ≥2 pending prompts.
+Same mount contract as above (route hot-loads via the patch row; browser
+half ships on tab reload; future node-half code changes need the fresh-URL
+`lib/hot.js` swap).

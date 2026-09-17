@@ -1,0 +1,23 @@
+{
+	"name": "@local/dsh-queue-priority",
+	"version": "0.1.0",
+	"description": "Queue priority for the dsh web UI: reorder a chat's pending prompt queue (bump up/down) — a host route performing one durable adjacent swap on the next-turn inbox, plus a dock panel under the composer with per-item bump buttons",
+	"type": "module",
+	"main": "./lib/index.js",
+	"exports": {
+		".": "./lib/index.js",
+		"./client": "./lib/client.js",
+		"./package.json": "./package.json"
+	},
+	"dsh": {
+		"client": {
+			"inject": [
+				"@deepseek-ai/dsh-client-locale",
+				"@deepseek-ai/dsh-client-ui-conversation"
+			],
+			"platform": "web"
+		}
+	},
+	"license": "MIT",
+	"private": true
+}
