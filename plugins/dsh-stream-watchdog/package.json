@@ -8,5 +8,8 @@
 		"./package.json": "./package.json"
 	},
 	"license": "MIT",
-	"private": true
+	"private": true,
+	"peerDependencies": {
+		"@deepseek-ai/schemastery": "^3.18.1"
+	}
 }
