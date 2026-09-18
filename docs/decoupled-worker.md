@@ -72,8 +72,9 @@ git clone --depth 1 https://github.com/ebowwa/dsh-agent-toolkit "$HOME/dsh-bot"
 cp "$HOME/dsh-bot/config/dsh-worker.env.example" "$HOME/.dsh-worker/env"
 chmod 600 "$HOME/.dsh-worker/env"
 #   edit: GH_TOKEN, DOPPLER_SERVICE_TOKEN (REQUIRED — the agent launches
-#   only via `doppler run --token ...`; the driver fails typed, exit 2,
-#   without it), DSH_WORKER_REPOS
+#   only via `doppler run`, with the token passed through the DOPPLER_TOKEN
+#   env, never argv; the driver fails typed, exit 2, without it),
+#   DSH_WORKER_REPOS
 
 # 3a. systemd (the box has passwordless sudo — the issue #6 path):
 #     sudo ~/factory-runner/svc.sh install && sudo ~/factory-runner/svc.sh start
