@@ -75,6 +75,73 @@ jobs:
               }
             ' "$f" || fail=1
           done
+      - name: Install plugin smoke-test deps
+        # Offline smokes import their lib, and the libs import the
+        # @deepseek-ai/* packages the dsh runtime provides in production
+        # (the profile's flat module tree) — plus cross-plugin @local/*
+        # imports (ui -> editor). CI has no profile tree: without this
+        # step the suite silently depended on a stale workspace
+        # node_modules, pruned by a disk-clean pass on 2026-09-18 — every
+        # gates run since (main included) failed ERR_MODULE_NOT_FOUND.
+        # Approach: install the union of deps+peers of tested plugins at
+        # the repo root (ESM resolution walks up from each plugin lib),
+        # and symlink @local/* names the same way the profile does.
+        run: |
+          set -euo pipefail
+          specs="$(node -e '
+            const fs = require("fs");
+            const out = new Set();
+            for (const dir of fs.readdirSync("plugins")) {
+              const pj = "plugins/" + dir + "/package.json";
+              if (!fs.existsSync(pj) || !fs.existsSync("plugins/" + dir + "/test")) continue;
+              const p = JSON.parse(fs.readFileSync(pj, "utf8"));
+              for (const k of ["dependencies", "peerDependencies"])
+                for (const n of Object.keys(p[k] || {})) out.add(n + "@" + p[k][n]);
+            }
+            console.log([...out].join(" "));
+          ')"
+          mkdir -p node_modules/@local
+          for d in plugins/*; do
+            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
+            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
+            case "$n" in
+              @local/*) ln -sfn "../../$d" "node_modules/$n" && echo "link $n -> $d" ;;
+            esac
+          done
+          if [ -n "$specs" ]; then
+            echo "install: $specs"
+            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $specs
+          fi
+          # The @deepseek-ai family peer-depends on each other (flat profile
+          # tree in production — nothing declares hard deps). npm's root
+          # install reconciles to the spec list it is given, so install the
+          # ACCUMULATED union each round or each round prunes the last.
+          all_specs="$specs"
+          for _ in 1 2 3 4 5; do
+            extra="$(node -e '
+              const fs = require("fs");
+              const root = "node_modules/@deepseek-ai";
+              if (!fs.existsSync(root)) process.exit(0);
+              const need = new Set();
+              for (const pkg of fs.readdirSync(root)) {
+                const pj = JSON.parse(fs.readFileSync(root + "/" + pkg + "/package.json", "utf8"));
+                for (const [n, r] of Object.entries(pj.peerDependencies || {})) {
+                  if (!fs.existsSync("node_modules/" + n)) need.add(n + "@" + r);
+                }
+              }
+              console.log([...need].join(" "));
+            ')"
+            [ -n "$extra" ] || break
+            all_specs="$all_specs $extra"
+            echo "install (union): $extra"
+            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $all_specs
+          done
+          # npm may prune the @local symlinks while reconciling — re-link last
+          for d in plugins/*; do
+            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
+            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
+            case "$n" in @local/*) ln -sfn "../../$d" "node_modules/$n" ;; esac
+          done
       - name: Unit tests
         # bare --test auto-discovers *.test.mjs (a directory argument is not
         # portable across the node versions on the runner lanes)
