@@ -10,8 +10,8 @@
 	},
 	"license": "MIT",
 	"peerDependencies": {
-		"@deepseek-ai/dsh-agent": "^0.1.0",
-		"@deepseek-ai/dsh-system-prompt": "^0.1.0",
-		"@deepseek-ai/dsh-tools": "^0.1.0"
+		"@deepseek-ai/dsh-agent": "^0.1.0-rc.7",
+		"@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.7",
+		"@deepseek-ai/dsh-tools": "^0.1.0-rc.7"
 	}
 }
