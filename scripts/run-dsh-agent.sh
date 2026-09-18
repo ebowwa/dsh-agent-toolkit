@@ -67,6 +67,20 @@ if [ -z "${HOME:-}" ]; then
   [ -n "$HOME" ] && export HOME || { echo "::error::no $HOME and no passwd entry — cannot run" >&2; exit 1; }
 fi
 
+# Launch cwd must be readable AND searchable by this uid: doppler resolves
+# its scope by stat-ing the working directory, and an unreadable cwd (the
+# common producer: `sudo -u <user>` from a directory the target user cannot
+# enter, e.g. an operator shell) kills it before `dsh` ever starts —
+# "Invalid scope: . / Doppler Error: stat .: permission denied", agent
+# lifetime 0s. The fast-fail classifier reads that as throttle-wave and
+# burns the whole retry ladder against it (observed 2026-09-18: 3/3
+# attempts died identically; none were provider deaths). Relocate instead:
+# $HOME is derived above and readable by construction.
+if [ ! -r . ] || [ ! -x . ]; then
+  echo "::warning::launch cwd not accessible to $(id -un) — cd to \$HOME before launching" >&2
+  cd "$HOME" 2>/dev/null || cd /tmp || true
+fi
+
 # Fallback task for scheduled runs (workflow_dispatch provides a real task).
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: check this repository for issues labeled agent-todo, pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request. Otherwise report what you found.}"
 
