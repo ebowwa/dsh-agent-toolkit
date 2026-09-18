@@ -37,6 +37,12 @@ set -euo pipefail
 
 DSH_SHIP_REPO="${DSH_SHIP_REPO:?review-pr: DSH_SHIP_REPO unset}"
 PR_NUM="${PR_NUM:?review-pr: PR_NUM unset}"
+# LEGACY-NAME SHIM (retired DSH_BOT_DIR, drift BLOCK run 34803136038): direct
+# callers on pre-rename env files keep working, loudly; fail-closed unchanged.
+if [ -z "${DSH_AGENT_TOOLKIT_DIR:-}" ] && [ -n "${DSH_BOT_DIR:-}" ]; then
+  echo "review-pr: DSH_BOT_DIR is retired — set DSH_AGENT_TOOLKIT_DIR (accepted for this run)" >&2
+  DSH_AGENT_TOOLKIT_DIR="$DSH_BOT_DIR"
+fi
 DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_DIR:?review-pr: DSH_AGENT_TOOLKIT_DIR unset}"
 DSH_WORKTREE="${DSH_WORKTREE:?review-pr: DSH_WORKTREE unset}"
 DSH_REVIEW_OUT="${DSH_REVIEW_OUT:-${RUNNER_TEMP:-/tmp}/dsh-review-output.txt}"

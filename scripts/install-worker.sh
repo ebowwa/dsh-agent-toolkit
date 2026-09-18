@@ -36,7 +36,14 @@ CHECK WORKER_GH_CRED
 CHECK WORKER_DOPPLER_CRED
 CHECK WORKER_REPOS
 
-DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_INSTALL_DIR:-$HOME/dsh-agent-toolkit}"
+# LEGACY-NAME SHIM (retired DSH_BOT_INSTALL_DIR, drift BLOCK run 34803136038):
+# provisioning automation passing the old var must keep landing on its existing
+# checkout — a silently ignored var used to clone a SECOND toolkit beside the
+# old one and leave the stale clone sweeping cron-era state.
+DSH_AGENT_TOOLKIT_DIR="${DSH_AGENT_TOOLKIT_INSTALL_DIR:-${DSH_BOT_INSTALL_DIR:-$HOME/dsh-agent-toolkit}}"
+if [ -z "${DSH_AGENT_TOOLKIT_INSTALL_DIR:-}" ] && [ -n "${DSH_BOT_INSTALL_DIR:-}" ]; then
+  echo "install-worker: DSH_BOT_INSTALL_DIR is retired — set DSH_AGENT_TOOLKIT_INSTALL_DIR (accepted for this install)" >&2
+fi
 WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 
 # 1. toolkit checkout (clone when absent) and ALWAYS refresh the pin to

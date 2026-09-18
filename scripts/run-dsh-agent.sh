@@ -173,11 +173,13 @@ export DSH_SCRUB_EXTRA_HOSTS="${EXTRA_SCRUB_HOSTS:-}"
 #      toolchain (a missing doppler at `doppler run` means no ZAI_API_KEY
 #      and a dead agent; a missing gh means no identity, no verdict).
 CELL_BIN="${DSH_CELL_BIN:-$HOME/.dsh-agent-toolkit-bin}"
-# Probe order: the persistent cell prefix, the brew prefixes a mac/linux
-# runner service PATH may have regressed away from, and doppler's own
-# default. CELL_PROBE_DIRS is a TEST SEAM (space list) — callers never set
+# Probe order: the persistent cell prefix, the LEGACY cell prefix cells were
+# provisioned into before the rename (same dual fallback the gh guards keep —
+# drift BLOCK run 34803136038), the brew prefixes a mac/linux runner service
+# PATH may have regressed away from, and doppler's own default.
+# CELL_PROBE_DIRS is a TEST SEAM (space list) — callers never set
 # it; the offline suite needs to rule out the dev machine's real prefixes.
-CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-$CELL_BIN /opt/homebrew/bin /usr/local/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
+CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
 CELL_ADDED_PREFIXES=""
 cell_probe_prefixes() {
   local p
