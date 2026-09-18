@@ -43,6 +43,26 @@
 #                       @deepseek-ai deps resolve through the profile's flat
 #                       fallback (the f2972e7 bare-path mount resolved
 #                       nothing). Unset = off, byte-identical launch line.
+#   DSH_ARCHIVE_KEEP    transcript archive bound (issue #96): when
+#                       DSH_KEEP_SESSIONS=1 and the harness home is
+#                       persistent, the kept transcript is additionally
+#                       tar'd into $DSH_HOME/transcript-archive/ — a tree
+#                       the node boot sweep (-mtime +7 on sessions/) never
+#                       touches — and the archive is pruned to the newest
+#                       DSH_ARCHIVE_KEEP files (default 50).
+#
+# Run accounting (issue #96), both best-effort, never fatal:
+#   $DSH_HOME/boot-tombstones.jsonl — one JSONL line per FAILED attempt
+#   {at, lifetime_s, exit_code, class, had_session, attempt}. A claim that
+#   dies before the recorder's first flush used to leave an uncountable
+#   empty session dir; on a persistent home the ledger survives the claim
+#   workdir rm -rf and the boot sweep, so a census can distinguish
+#   never-booted / booted-but-died-pre-record / transcript-swept.
+#   $DSH_HOME/transcript-archive/ — see DSH_ARCHIVE_KEEP above.
+#   Fast failures are CLASSIFIED from the captured attempt stderr:
+#   environmental signatures (doppler-env / network-env / missing-binary)
+#   surface immediately instead of consuming the throttle-wave retry
+#   ladder — an identical relaunch walks into the identical environment.
 #   DOPPLER_SERVICE_TOKEN required by `doppler run`
 #   DSH_CELL_BIN        persistent prefix for the cell-tool bootstrap
 #                       (default $HOME/.dsh-agent-toolkit-bin); the relay/reply
@@ -731,17 +751,115 @@ DSH_FAST_FAIL_S="${DSH_FAST_FAIL_S:-420}"
 DSH_RETRY_WALL_S="${DSH_RETRY_WALL_S:-2700}"
 FIRST_ATTEMPT_EPOCH="$(date +%s)"
 ATTEMPT_START="$FIRST_ATTEMPT_EPOCH"
+# Run-scoped mtime mark (issue #96): the transcript archive's fallback
+# source finder needs an mtime anchor older than ANY attempt's session, and
+# MARKER is recreated per attempt — a run-start file anchors the whole run.
+RUN_START_MARK="$(mktemp /tmp/dsh-agent-runmark.XXXXXX)"
+
+# --- FAILURE CLASSIFICATION + BOOT TOMBSTONES + TRANSCRIPT ARCHIVE ----------
+# (issue #96 — transcript retention / boot-death accounting)
+#
+# A fast death used to be labeled "throttle-wave" unconditionally and walked
+# the full backoff ladder (180s+600s) even when the cause was ENVIRONMENTAL —
+# the measured case (2026-09-18): an unreadable launch cwd killed doppler at
+# "stat .: permission denied", agent lifetime 0s, THREE identical deaths, and
+# every retry paid the throttle schedule against a condition no backoff cures.
+# The attempt's stderr is captured at the launch line (see ATTEMPT_ERR_LOG),
+# so a POSITIVE environmental signature short-circuits the ladder — an
+# identical relaunch walks into the identical environment. Throttle
+# signatures and empty/unknown output keep the production ladder: fail-safe
+# to the pre-classification behavior.
+
+# classify_attempt_failure <errlog> — prints one class token by matching the
+# captured attempt stderr. Order matters: specific before generic. Empty log
+# (instant death before any output) classifies "unknown" and keeps the ladder.
+classify_attempt_failure() {
+  local log="$1"
+  [ -s "$log" ] || { echo "unknown"; return; }
+  # doppler transport/scope/token: dies BEFORE dsh starts (no session file,
+  # no API call — the throttle-wave never got a chance to happen).
+  if grep -aqE 'Doppler Error|Invalid scope|does not have access to requested project|stat .*: [Pp]ermission denied' "$log"; then
+    echo "doppler-env"; return
+  fi
+  # network: undici's "fetch failed", resolver/refused/timeout shapes.
+  if grep -aqE 'fetch failed|Could not resolve|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|no route to host|Network is unreachable' "$log"; then
+    echo "network-env"; return
+  fi
+  if grep -aq 'command not found' "$log"; then echo "missing-binary"; return; fi
+  if grep -aqE '429|rate.?limit|throttl' "$log"; then echo "throttle-wave"; return; fi
+  echo "unknown"
+}
+
+# write_attempt_tombstone <class> <lifetime_s> <rc> <had_session 0|1> — one
+# JSONL line per FAILED attempt in the harness home. Where DSH_HOME is
+# persistent (the native nodes — the cell that measured 112 empty session
+# dirs against 19 transcripts), the ledger survives the claim workdir
+# rm -rf AND the boot sweep, so boot-death counts become real: transcript
+# present = ran; tombstone = booted and died; neither = never booted.
+# Best-effort everywhere — accounting must never break the run.
+write_attempt_tombstone() {
+  local class="$1" life="$2" rc="$3" had="$4" lines had_json
+  # real JSON booleans — the census reads this with jq, not regex
+  [ "$had" = "1" ] && had_json=true || had_json=false
+  { mkdir -p "$DSH_HOME" && printf '{"at":"%s","lifetime_s":%s,"exit_code":%s,"class":"%s","had_session":%s,"attempt":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$life" "$rc" "$class" "$had_json" "$ATTEMPT" \
+      >> "$DSH_HOME/boot-tombstones.jsonl"; } 2>/dev/null || true
+  # Bound the ledger: failures are rare post-classification, but a
+  # pathological cell must not grow it unboundedly — keep the newest 5000.
+  lines="$([ -f "$DSH_HOME/boot-tombstones.jsonl" ] && wc -l < "$DSH_HOME/boot-tombstones.jsonl" | tr -d ' ' || true)"
+  if [ "${lines:-0}" -gt 5000 ] 2>/dev/null; then
+    tail -n 4000 "$DSH_HOME/boot-tombstones.jsonl" > "$DSH_HOME/boot-tombstones.jsonl.tmp" 2>/dev/null \
+      && mv "$DSH_HOME/boot-tombstones.jsonl.tmp" "$DSH_HOME/boot-tombstones.jsonl" 2>/dev/null || true
+  fi
+}
+
+# archive_session_transcript <session_file> — sweep-proofing for KEPT
+# transcripts (issue #96): the native node's boot sweep deletes
+# sessions/*/* older than 7 days on every boot, taking finished-run
+# transcripts (the flight recorder's raw material — final summaries of
+# merged work included) with it. The kept transcript's directory is tar'd —
+# NO recompression; the payload is already zstd — into
+# $DSH_HOME/transcript-archive/, a tree the sweep never touches, and the
+# archive is pruned to the newest DSH_ARCHIVE_KEEP files (default 50) so it
+# cannot become the next disk incident. Persistent homes only: a job-scoped
+# home is rm -rf'd whole at exit, so an archive inside it is dead weight.
+archive_session_transcript() {
+  local src="$1" sess_dir arch_dir name keep old
+  [ -n "$src" ] && [ -f "$src" ] || return 0
+  [ "${JOB_SCOPED_HOME:-0}" != "1" ] || return 0
+  sess_dir="$(dirname "$src")"
+  arch_dir="$DSH_HOME/transcript-archive"
+  name="$(basename "$sess_dir").rc${RC}.tar"
+  if ! { mkdir -p "$arch_dir" && tar -cf "$arch_dir/$name" -C "$(dirname "$sess_dir")" "$(basename "$sess_dir")" 2>/dev/null; }; then
+    echo "::warning::transcript archive failed for $(basename "$sess_dir") — the node boot sweep will take it after 7 days" >&2
+    return 0
+  fi
+  keep="${DSH_ARCHIVE_KEEP:-50}"
+  case "$keep" in ''|*[!0-9]*) keep=50 ;; esac
+  old="$(ls -1t "$arch_dir" 2>/dev/null | tail -n +"$((keep + 1))" || true)"
+  if [ -n "$old" ]; then
+    while IFS= read -r f; do rm -f "$arch_dir/$f" 2>/dev/null || true; done <<< "$old"
+  fi
+}
+
 while :; do
 ATTEMPT_START="$(date +%s)"
 # Per-attempt artifacts must not leak across backoff iterations: a retried
 # wave orphaned every dead attempt's answer/marker temp files and doppler
 # isolation home on the runner (only the LAST attempt's was cleaned up).
 # The :- guards make the first iteration a no-op.
-rm -f "${FINAL_OUT:-}" "${MARKER:-}" 2>/dev/null || true
+rm -f "${FINAL_OUT:-}" "${MARKER:-}" "${ATTEMPT_ERR_LOG:-}" 2>/dev/null || true
 rm -rf "${DOPPLER_ISOLATED_HOME:-}" 2>/dev/null || true
 FINAL_OUT="$(mktemp /tmp/dsh-agent-answer.XXXXXX)"
 MARKER="$(mktemp /tmp/dsh-agent-marker.XXXXXX)"
 touch "$MARKER"
+# Per-attempt stderr capture (issue #96): the launch's stderr is the raw
+# material for failure classification (doppler scope/token deaths, network
+# refusals, missing binaries — none of which any backoff cures). tee keeps
+# the live passthrough byte-identical (the native node's fifo-tee and the
+# Actions log still stream everything) while the file copy outlives the
+# attempt for the classifier.
+ATTEMPT_ERR_LOG="$(mktemp /tmp/dsh-agent-err.XXXXXX)"
 
 # Scope isolation (mac-mini-ane, 2026-08-28 — ANE review runs 33281316457+,
 # every dispatch red in ~20s with workflow, driver and secret all untouched):
@@ -770,7 +888,7 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT \
   doppler run --token "$DOPPLER_SERVICE_TOKEN" -- \
     env -u DOPPLER_SERVICE_TOKEN -u DOPPLER_CONFIG -u DOPPLER_PROJECT -u DOPPLER_ENVIRONMENT \
         HOME="${HOME:?}" \
-    dsh --profile headless ${DSH_LAUNCH_ARGS[@]+"${DSH_LAUNCH_ARGS[@]}"} "$TASK" >"$FINAL_OUT" &
+    dsh --profile headless ${DSH_LAUNCH_ARGS[@]+"${DSH_LAUNCH_ARGS[@]}"} "$TASK" >"$FINAL_OUT" 2> >(tee "$ATTEMPT_ERR_LOG" >&2) &
 DSH_PID=$!
 
 stream_session_progress() {
@@ -826,11 +944,33 @@ RC=0
 wait "$DSH_PID" || RC=$?
 wait "$PROGRESS_PID" 2>/dev/null || true
 echo "::endgroup::" >&2
-# Throttle-wave decision: success or slow failure exits the loop; a fast
-# failure retries with hard backoff while attempts and the wall clock allow.
-if [ "${RC}" -eq 0 ]; then break; fi
+# Attempt accounting (issue #96) — class + boot tombstone, BEFORE any
+# loop-exit decision so even the last attempt and every short-circuit path
+# is counted. The tee may still hold the attempt's last stderr bytes when
+# wait returns; give it a beat to drain before classification.
 NOW_EPOCH="$(date +%s)"; LIFE=$(( NOW_EPOCH - ATTEMPT_START ))
+ATTEMPT_HAD_SESSION=0
+if [ -n "$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
+  ATTEMPT_HAD_SESSION=1
+fi
+FAIL_CLASS="success"
+if [ "${RC}" -ne 0 ]; then
+  sleep 0.2 2>/dev/null || true
+  FAIL_CLASS="$(classify_attempt_failure "$ATTEMPT_ERR_LOG")"
+  write_attempt_tombstone "$FAIL_CLASS" "$LIFE" "$RC" "$ATTEMPT_HAD_SESSION"
+fi
+# Throttle-wave decision: success or slow failure exits the loop; a fast
+# failure retries with hard backoff while attempts and the wall clock allow —
+# EXCEPT an environmental boot death (doppler-env / network-env /
+# missing-binary): no backoff cures the environment it would re-enter, so
+# surfacing immediately IS the fix for "three identical deaths, zero signal".
+if [ "${RC}" -eq 0 ]; then break; fi
 if [ "$LIFE" -ge "$DSH_FAST_FAIL_S" ]; then break; fi
+case "$FAIL_CLASS" in
+  doppler-env|network-env|missing-binary)
+    echo "::error::agent died fast (lifetime ${LIFE}s < ${DSH_FAST_FAIL_S}s, exit ${RC}) — ${FAIL_CLASS}: environmental boot death, NOT throttle-wave; the retry ladder would re-run the identical environment, surfacing now" >&2
+    break ;;
+esac
 if [ $(( NOW_EPOCH - FIRST_ATTEMPT_EPOCH )) -ge "$DSH_RETRY_WALL_S" ]; then
   echo "::error::retry wall clock (${DSH_RETRY_WALL_S}s) exhausted — surfacing the failure" >&2
   break
@@ -872,6 +1012,20 @@ DSH_RUN_TOKENS_OUT=${out}
       });
     ' >/dev/null 2>&1 || true
 fi
+# Transcript archive (issue #96) — BEFORE the default-path cleanup below.
+# With DSH_KEEP_SESSIONS=1 the transcript survives THIS run but not the
+# node's NEXT boot (the -mtime +7 sweep deletes it wherever it reached);
+# the archive copy in transcript-archive/ does survive. Source preference:
+# the streamer's exact path, else a run-scoped find (a run whose streamer
+# degraded still gets archived). Persistent homes only — the function
+# itself returns 0 for job-scoped homes (they are rm -rf'd whole at exit).
+if [ "${DSH_KEEP_SESSIONS:-0}" = "1" ]; then
+  ARCHIVE_SRC="$SESSION_PATH_ACC"
+  if [ -z "$ARCHIVE_SRC" ]; then
+    ARCHIVE_SRC="$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$RUN_START_MARK" -print -quit 2>/dev/null || true)"
+  fi
+  archive_session_transcript "$ARCHIVE_SRC"
+fi
 if [ "${DSH_KEEP_SESSIONS:-0}" != "1" ]; then
   SESSION_PATH="$(cat "${DSH_SESSION_PATH_FILE:-${TMPDIR:-/tmp}/dsh-session-path.$$}" 2>/dev/null || true)"
   if [ -n "$SESSION_PATH" ]; then
@@ -882,7 +1036,7 @@ fi
 
 # stdout carries ONLY the agent's final answer (the comment workflow tees it).
 cat "$FINAL_OUT"
-rm -f "$FINAL_OUT" "$MARKER"
+rm -f "$FINAL_OUT" "$MARKER" "$RUN_START_MARK" "${ATTEMPT_ERR_LOG:-}" 2>/dev/null || true
 # the scope-isolation home held only doppler's own scratch state (version
 # check); rm it so no per-run doppler debris accumulates on the cell.
 rm -rf "$DOPPLER_ISOLATED_HOME" 2>/dev/null || true
