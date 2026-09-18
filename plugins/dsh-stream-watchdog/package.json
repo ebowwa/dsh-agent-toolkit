@@ -1,0 +1,12 @@
+{
+	"name": "@local/dsh-stream-watchdog",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./lib/index.js",
+	"exports": {
+		".": "./lib/index.js",
+		"./package.json": "./package.json"
+	},
+	"license": "MIT",
+	"private": true
+}
