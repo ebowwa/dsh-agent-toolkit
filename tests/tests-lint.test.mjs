@@ -15,6 +15,19 @@
 // rejected wherever `node --test` runs — dev machines included. These
 // tests fail without the fix: revert the linter and the corpus scan
 // below goes blind; re-land the 8557fb5 pattern and it stays red.
+//
+// Rule 2 (driver-spawn backoff seam) regression anchor: the throttle-
+// wave retry (PR #85) made the driver's failure path walk 180s+600s of
+// backoff; a test whose stub fails cannot complete inside any spawn
+// budget — spawnSync killed the driver, status came back null, and
+// gates went red four times (34748403843, 34788769043, 34795917609,
+// and 34803136058, where the failure-path contract test itself died).
+// PR #88 added the DSH_RETRY_BACKOFF_S seam; this lint's rule 2 keeps
+// the class out — every spawn of the driver pins the seam. The corpus
+// scan below failed on exactly four shipped spawn sites before this
+// rule's pins landed (run-dsh-agent.test.mjs soft-gh / runLauncher /
+// doppler-isolation, driver-token-guard.test.mjs) — that red is the
+// fails-without-the-fix proof.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -130,6 +143,139 @@ test("comment lines are not flagged (explanations may cite the pattern)", () => 
     "",
   ].join("\n");
   assert.deepEqual(lintTests(source, "comments.test.mjs"), []);
+});
+
+// --- rule 2: the driver-spawn backoff seam (runs 34748403843 /
+// 34788769043 / 34795917609 / 34803136058). The driver's name is
+// assembled at runtime — a plainly-written fixture would make THIS file
+// carry a real driver const and trip the very guard that must stay
+// green (the revert-guard corpus scan scans this file too).
+
+const DRIVER_NAME = ["run", "dsh", "agent.sh"].join("-");
+
+const driverSpawnFixture = (envLines) =>
+  [
+    'import { test } from "node:test";',
+    'import { spawnSync } from "node:child_process";',
+    `const SCRIPT = path.join(ROOT, "scripts", "${DRIVER_NAME}");`,
+    'test("a task", () => {',
+    ...envLines,
+    '  const proc = spawnSync("bash", [SCRIPT, "a task"], { encoding: "utf8", env, timeout: 60_000 });',
+    "  assert.equal(proc.status, 0);",
+    "});",
+    "",
+  ].join("\n");
+
+test("an unpinned driver spawn is rejected: the retry backoff wedges the suite (run 34803136058)", () => {
+  const source = driverSpawnFixture([
+    "  const env = { ...process.env };",
+  ]);
+  const errors = lintTests(source, "wedge.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].line, 6);
+  assert.match(errors[0].message, /DSH_RETRY_BACKOFF_S/);
+  assert.match(errors[0].message, /34803136058/);
+});
+
+test("a pinned driver spawn lints clean (the PR #88 seam, pinned everywhere)", () => {
+  const source = driverSpawnFixture([
+    '  const env = { ...process.env, DSH_RETRY_BACKOFF_S: "0" };',
+  ]);
+  assert.deepEqual(lintTests(source, "pinned.test.mjs"), []);
+});
+
+test("an inline env literal is inspected too: unpinned rejected, pinned clean", () => {
+  const unpinned = [
+    'import { test } from "node:test";',
+    'import { spawnSync } from "node:child_process";',
+    `const SCRIPT = path.join(ROOT, "scripts", "${DRIVER_NAME}");`,
+    'test("a task", () => {',
+    "  const proc = spawnSync(",
+    "    \"bash\",",
+    "    [SCRIPT, \"a task\"],",
+    "    { encoding: \"utf8\", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, timeout: 60_000 },",
+    "  );",
+    "});",
+    "",
+  ].join("\n");
+  const errors = lintTests(unpinned, "inline.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /DSH_RETRY_BACKOFF_S/);
+
+  const pinned = unpinned.replace(
+    "PATH: `${bin}:${process.env.PATH}` },",
+    'PATH: `${bin}:${process.env.PATH}`, DSH_RETRY_BACKOFF_S: "0" },',
+  );
+  assert.deepEqual(lintTests(pinned, "inline-pinned.test.mjs"), []);
+});
+
+test("a commented-out pin is not a pin (dead text stays dead)", () => {
+  const source = driverSpawnFixture([
+    "  const env = {",
+    "    ...process.env,",
+    '    // DSH_RETRY_BACKOFF_S: "0",',
+    "  };",
+  ]);
+  const errors = lintTests(source, "deadpin.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /DSH_RETRY_BACKOFF_S/);
+});
+
+test("an unresolvable env identifier fails closed (flagged, not skipped)", () => {
+  // The env object lives in another file (or is built dynamically): the
+  // lint cannot see a pin, so it must FLAG the site rather than wave it
+  // through — fail closed, like every scrubber here.
+  const source = [
+    'import { test } from "node:test";',
+    'import { spawnSync } from "node:child_process";',
+    `const SCRIPT = path.join(ROOT, "scripts", "${DRIVER_NAME}");`,
+    'test("a task", () => {',
+    "  const proc = spawnSync(\"bash\", [SCRIPT, \"a task\"], { encoding: \"utf8\", env: buildEnv(), timeout: 60_000 });",
+    "  assert.equal(proc.status, 0);",
+    "});",
+    "",
+  ].join("\n");
+  const errors = lintTests(source, "unresolved.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /cannot resolve in-file/);
+  assert.match(errors[0].message, /DSH_RETRY_BACKOFF_S/);
+});
+
+test("shapes that cannot run the driver stay green (no false positives)", () => {
+  const decl = `const SCRIPT = path.join(ROOT, "scripts", "${DRIVER_NAME}");`;
+  // bash -n only parses; sed only reads; bash -c runs a string, not the
+  // file; a plain task script is not the driver.
+  const shapes = [
+    'spawnSync("bash", ["-n", SCRIPT], { encoding: "utf8" });',
+    'spawnSync("sed", ["-n", "/^f()/,/^}/p", SCRIPT], { encoding: "utf8" });',
+    'spawnSync("bash", ["-c", `${SCRIPT} --help`], { env: { A: "1" } });',
+    'spawnSync("node", [SCRIPT, "--check"], { env });',
+  ];
+  for (const line of shapes) {
+    const source = [
+      'import { test } from "node:test";',
+      'import { spawnSync } from "node:child_process";',
+      decl,
+      'test("a task", () => {',
+      `  ${line}`,
+      "});",
+      "",
+    ].join("\n");
+    assert.deepEqual(lintTests(source, `shape.test.mjs: ${line}`), []);
+  }
+});
+
+test("a comment-only driver mention does not arm the rule", () => {
+  const source = [
+    'import { test } from "node:test";',
+    'import { spawnSync } from "node:child_process";',
+    `// const SCRIPT = path.join(ROOT, "scripts", "${DRIVER_NAME}");`,
+    'test("a task", () => {',
+    '  spawnSync("bash", [OTHER, "a task"], { env: { A: "1" } });',
+    "});",
+    "",
+  ].join("\n");
+  assert.deepEqual(lintTests(source, "commentonly.test.mjs"), []);
 });
 
 test("all shipped test files lint clean (revert guard)", () => {

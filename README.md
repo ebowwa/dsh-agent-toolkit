@@ -45,7 +45,7 @@ Two execution modes:
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
 | `scripts/workflow-lint.mjs` | structural workflow-YAML lint (block-indent consistency; gates runs it — run 32705244305 regression) |
-| `scripts/tests-lint.mjs` | structural test-source lint: rejects PATH assignments that hard-code system dirs without the ambient PATH — they cannot construct a lane-installed CLI's absence (run 32933615526 regression; the corpus test rides `node --test`) |
+| `scripts/tests-lint.mjs` | structural test-source lint: (1) rejects PATH assignments that hard-code system dirs without the ambient PATH — they cannot construct a lane-installed CLI's absence (run 32933615526 regression); (2) rejects a spawn of `run-dsh-agent.sh` whose env does not pin `DSH_RETRY_BACKOFF_S` — the driver's failure path walks the production retry backoff (180s+600s), so an unpinned failing stub wedges the suite past any spawn budget until `status` comes back `null` (runs 34748403843/34788769043/34795917609/34803136058; the corpus test rides `node --test`) |
 | `scripts/drift-verdict.mjs` | line-strict verdict extraction for drift-check (TAG / TAG-WITH-FINDINGS / BLOCK; fail-closed on absence) + scrubbed review-body surfacing to the run log |
 | `scripts/resolve-push-token.sh` | Doppler-first git push credential for agent jobs, shared by the legacy workflows and the worker (the checkout's ephemeral token cannot push workflows) |
 | `config/settings.zai.yaml` | DSH settings template (zai provider, glm-5.3) |
