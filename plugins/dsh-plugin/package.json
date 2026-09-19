@@ -1,0 +1,9 @@
+{
+  "name": "@gh-tracker/dsh-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dsh plugin embedding github-activity-tracker's 8 portable agent skills (pr-body-dod, gh-cli-techniques, parent-commit-verification, sed-yaml-escaping, conflict-recovery, cross-repo-guest, ship-and-exit, flight-recorder-audit) via ctx.skills.register()",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT"
+}

@@ -1,0 +1,3 @@
+- insert:
+    - id: gh-tracker-skills
+      name: "@gh-tracker/dsh-plugin"
