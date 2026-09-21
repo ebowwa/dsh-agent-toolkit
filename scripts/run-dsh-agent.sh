@@ -523,6 +523,37 @@ if [ -n "${DSH_SUBAGENT_MODEL:-}" ]; then
   } > "$SUBAGENT_PATCH_FILE"
   echo "subagent model: $SUB_PROVIDER/$SUB_MODEL_ID (subagent + subagent_fork; head stays $PROVIDER/$MODEL_ID)" >&2
 fi
+# --- 2e-pre. lane-plugin delegation (config/lane-plugins.json) ------------
+# ONE manifest declares which plugins mount WHERE, keyed by platform (the
+# node's OS) + node (glob vs the runner name) — the same shape lane routing
+# already uses for WORK (mac repos -> mac cells; TS/shell -> linux). The
+# consult runs at SPAWN time: 'native-web' entries prime the env of the
+# section-2e seam right below (the proven mount code is unchanged);
+# 'plugin' entries mount compose-style (per-job package copy + insert-row
+# overlay, written by the consult). A gated entry SKIPs loud — never a dead
+# mount, never a failed run. External plugins' canonical per-box sources
+# are materialized by scripts/sync-lane-plugins.sh from the keepalive, so
+# pins advance on tag bump. Manual per-box mounts are retired: landing a
+# plugin = landing it in the manifest.
+LANE_PATCH_FILES=()
+LANE_PLUGINS_MANIFEST="${DSH_LANE_PLUGINS_MANIFEST:-$SCRIPT_DIR/../config/lane-plugins.json}"
+if [ -f "$LANE_PLUGINS_MANIFEST" ] && command -v python3 >/dev/null 2>&1; then
+  LANE_NODE_NAME="${DSH_RUNNER_NAME:-${DSH_NODE_ID:-$(hostname)}}"
+  # The 2e seam gates on RUNNER_NAME (the CI-era name); native nodes carry
+  # DSH_RUNNER_NAME/DSH_NODE_ID — bridge once, here.
+  [ -n "${RUNNER_NAME:-}" ] || export RUNNER_NAME="$LANE_NODE_NAME"
+  while IFS="$(printf '\t')" read -r LP_KIND LP_A LP_B; do
+    [ -n "${LP_KIND:-}" ] || continue
+    case "$LP_KIND" in
+      ENV)    export "$LP_A=$LP_B";;
+      PATCH)  LANE_PATCH_FILES+=("$LP_A");;
+      MOUNTED) echo "lane-plugins: $LP_A mounted ($LP_B)" >&2;;
+      SKIP)   echo "lane-plugins: $LP_A skipped — ${LP_B:-gated}" >&2;;
+    esac
+  done < <(python3 "$SCRIPT_DIR/lane-plugins-consult.py" \
+             --platform "$(uname -s)" --node "$LANE_NODE_NAME" \
+             --home "$DSH_HOME" "$LANE_PLUGINS_MANIFEST" 2>/dev/null)
+fi
 # --- 2e. local web search + fetch provider (per-cell, default-off) ---------
 # DSH_WEB_SEARCH_CELLS mounts the local key-free ctx.web provider
 # (@local/dsh-web-search-browser, issue #293) — but ONLY on cells the caller
@@ -717,6 +748,11 @@ fi
 if [ -n "$COMPOSE_PATCH_FILE" ]; then
   DSH_LAUNCH_ARGS+=(--patch "$COMPOSE_PATCH_FILE")
 fi
+# lane-plugin overlays (section 2e-pre): one --patch per mounted plugin.
+# ${arr[@]+...} guard per the bash-3.2 set -u rule above.
+for lp_patch in ${LANE_PATCH_FILES[@]+"${LANE_PATCH_FILES[@]}"}; do
+  DSH_LAUNCH_ARGS+=(--patch "$lp_patch")
+done
 
 # --- 3. Doppler-injected run, with live progress ---------------------------
 # The launch runs with the service token's OWN project/config binding: the

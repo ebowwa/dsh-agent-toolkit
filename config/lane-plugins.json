@@ -1,0 +1,44 @@
+{
+  "_doc": "Lane-plugin delegation — the single source of truth for which dsh plugins mount WHERE, keyed the same way lane routing keys work: platform (the node's OS) and node (glob vs the runner name). Two seams: 'native-web' primes the env of the runner's own proven web-search mount (run-dsh-agent.sh section 2e — per-job copy + regenerated patch overlay); 'plugin' mounts compose-style (in-tree package copied per-job into the profile module tree + insert-row overlay). The runner consults this at SPAWN time (scripts/lane-plugins-consult.py) — no node env changes, no node restarts, plugins land by landing this file. External sources are materialized to the per-box canonical location by scripts/sync-lane-plugins.sh from the keepalive (after the v1 checkout), so pins advance on tag bump.",
+  "_gates": "Every entry gates before mounting: platform must match, node glob must match, and the entry's own gate must pass (require_browser: at least one probed browser exists — probed paths must be space-free for the env pin; probe_port: 127.0.0.1:port must answer — engine-dependent plugins mount only where the engine runs). A gated-out entry is a LOUD skip, never a dead mount and never a failed run.",
+  "_adoption": "Gated like the ADR (2026-08-27): pinned refs, deliberate advancement, smoke before fleet-wide. Manual per-box mounts are the 2026-09-21 incident class — never again.",
+  "macos": [
+    {
+      "id": "web-search-browser",
+      "seam": "native-web",
+      "nodes": ["*"],
+      "_doc": "ctx.web provider 'headless-browser' (issue #293, ADR 2026-08-27). Rode the CI-era cell; the decouple orphaned it — this re-mounts it on every macOS node via the runner's native seam. Canonical source kept by the keepalive sync at ~/.dsh/profiles/node_modules/@local/dsh-web-search-browser (2e's default path).",
+      "source": {
+        "repo": "ebowwa/HelloMacOScreator",
+        "path": "web-search-browser",
+        "ref": "d4f0213d31975ea55113de04103a4d91adef4e22",
+        "_ref_note": "v0.40.0 (2026-09-04): network bodies + idle"
+      },
+      "canonical_dest": "~/.dsh/profiles/node_modules/@local/dsh-web-search-browser",
+      "browsers_probe": [
+        "~/.dsh-bot-bin/chrome-headless-shell/*/chrome-headless-shell",
+        "/opt/homebrew/bin/chromium",
+        "/usr/bin/chromium"
+      ],
+      "_browsers_note": "Space-free paths only (the env pin validates [A-Za-z0-9._/@+-]); Brave/Chrome .app paths carry spaces and stay to the plugin's internal discovery. chrome-headless-shell is the cell-proven renderer (ADR mount notes).",
+      "config": {
+        "engines": ["duckduckgo", "bing", "mojeek"],
+        "timeoutMs": 30000,
+        "fetchMaxChars": 100000
+      },
+      "require_browser": true
+    },
+    {
+      "id": "dsh-reflex",
+      "seam": "plugin",
+      "nodes": ["*"],
+      "_doc": "reflex_* session tools — thin client for the Reflex command server in the Gauge host (one engine, many hosts; TCC grants live in the engine). Mounts only where the engine actually answers.",
+      "source": {
+        "path": "plugins/dsh-reflex"
+      },
+      "probe_port": 49173,
+      "require_probe": true
+    }
+  ],
+  "linux": []
+}
