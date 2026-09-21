@@ -90,10 +90,11 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
   mkdirSync(bin);
   mkdirSync(runnerTemp);
 
-  // doppler stub: `doppler run --token <tok> -- <cmd...>` -> exec <cmd...>
+  // doppler stub: `doppler run -- <cmd...>` -> exec <cmd...> (since the
+  // issue-#95 argv fix the token rides the env, not argv)
   writeFileSync(
     path.join(bin, "doppler"),
-    "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n",
+    "#!/bin/sh\nshift; shift\nexec \"$@\"\n",  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
   );
   // dsh stub: answers --version, then fails immediately (the failure path)
   writeFileSync(
@@ -198,7 +199,7 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
 
   writeFileSync(
     path.join(bin, "doppler"),
-    "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n",
+    "#!/bin/sh\nshift; shift\nexec \"$@\"\n",  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
   );
   // dsh stub: fails instantly EVERY attempt — the throttle-wave class.
   writeFileSync(
@@ -272,10 +273,11 @@ test("gh uninstallable (no egress): the full driver still launches the agent and
   mkdirSync(home);
   mkdirSync(runnerTemp);
 
-  // doppler stub: `doppler run --token <tok> -- <cmd...>` -> exec <cmd...>
+  // doppler stub: `doppler run -- <cmd...>` -> exec <cmd...> (since the
+  // issue-#95 argv fix the token rides the env, not argv)
   writeFileSync(
     path.join(bin, "doppler"),
-    "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n",
+    "#!/bin/sh\nshift; shift\nexec \"$@\"\n",  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
   );
   // dsh stub: answers --version, then succeeds with a final answer
   writeFileSync(
@@ -397,7 +399,7 @@ const runLauncher = (extraEnv = {}) => {
   mkdirSync(runnerTemp);
   writeFileSync(
     path.join(bin, "doppler"),
-    "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n",
+    "#!/bin/sh\nshift; shift\nexec \"$@\"\n",  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
   );
   // dsh stub: --version answers, otherwise record argv; when --patch <file>
   // appears, also capture the overlay content (the thing under test).
@@ -957,14 +959,15 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
   );
 
   // doppler stub: RECORD the env + argv it was launched with, then exec the
-  // child chain (same exec shape as the other tests' stubs).
+  // child chain (same exec shape as the other tests' stubs: `doppler run --
+  // <cmd...>`, the argv shape since the issue-#95 token-via-env fix).
   writeFileSync(
     path.join(bin, "doppler"),
     [
       "#!/bin/sh",
       'env > "$DOPPLER_ENV_SNAPSHOT"',
       'printf \'%s\\n\' "$@" > "$DOPPLER_ARGS_SNAPSHOT"',
-      "shift; shift; shift; shift",
+      "shift; shift",
       'exec "$@"',
     ].join("\n") + "\n",
   );
@@ -994,6 +997,9 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
     // ambient host env of the same hijack class: env beats the token's own
     // binding, so the launch must clear it for the doppler process.
     DOPPLER_PROJECT: "ambient-poison-project",
+    // ambient DOPPLER_TOKEN of the override class: the driver's required
+    // DOPPLER_SERVICE_TOKEN must WIN — the prefix assignment overwrites it.
+    DOPPLER_TOKEN: "ambient-poison-token",
     DOPPLER_ENV_SNAPSHOT: path.join(dir, "doppler.env"),
     DOPPLER_ARGS_SNAPSHOT: path.join(dir, "doppler.args"),
     DSH_ENV_SNAPSHOT: path.join(dir, "dsh.env"),
@@ -1034,14 +1040,32 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
   // 2. no ambient DOPPLER_* reached doppler (env overrides the token's scope).
   assert.equal(dEnv.DOPPLER_PROJECT, undefined, "DOPPLER_PROJECT must be cleared for doppler");
   assert.equal(dEnv.DOPPLER_CONFIG, undefined, "DOPPLER_CONFIG must be cleared for doppler");
+  // 2b. (issue #95) the token rides the ENVIRONMENT, not argv: doppler's env
+  // carries the driver's REQUIRED value — an ambient DOPPLER_TOKEN is
+  // overridden by the prefix assignment (ambient-poison must not win).
+  assert.equal(
+    dEnv.DOPPLER_TOKEN, "stub-token",
+    "doppler must receive the driver's token via the DOPPLER_TOKEN env (the CLI ignores DOPPLER_SERVICE_TOKEN as an env name)",
+  );
   // 3. the child got the REAL home back, and never the doppler token.
   assert.equal(cEnv.HOME, home, "the child (dsh) must get the real HOME back");
   assert.equal(cEnv.DOPPLER_SERVICE_TOKEN, undefined, "the doppler token must never reach the agent");
   assert.equal(cEnv.DOPPLER_PROJECT, undefined, "no ambient DOPPLER_PROJECT may reach the agent");
+  // doppler passes its parent env THROUGH to the child (canary-verified
+  // against the real CLI), so the child chain must strip DOPPLER_TOKEN too.
+  assert.equal(cEnv.DOPPLER_TOKEN, undefined, "the DOPPLER_TOKEN env input must be stripped from the child like the raw token");
   // 4. the launch shape survived the re-plumbing.
   const dargs = readFileSync(path.join(dir, "doppler.args"), "utf8");
   assert.match(dargs, /--profile/, "the headless profile flag must survive");
   assert.match(dargs, /integration test task/, "the task must survive");
+  // 4b. (issue #95) the ARGV-LEAK pin: doppler's argv (which contains the
+  // whole child chain as its arguments) must carry neither the token value
+  // nor a --token flag — argv is world-readable via ps/proc cmdline for the
+  // process's whole lifetime. Reintroducing `doppler run --token ...` goes
+  // red HERE.
+  assert.doesNotMatch(dargs, /stub-token/, "the token value must never appear in any argv");
+  assert.doesNotMatch(dargs, /--token/, "no --token flag may appear in any argv");
+  assert.doesNotMatch(dargs, /ambient-poison-token/, "the ambient token value must be overridden, not passed through");
   // 5. the isolation home is cleaned up with the other launch artifacts.
   assert.ok(!existsSync(dEnv.HOME), "the pristine doppler home must be removed after the run");
 
@@ -1105,7 +1129,7 @@ const runAccounting = ({ dshStub, extraEnv = {} }) => {
   mkdirSync(bin);
   mkdirSync(home);
   mkdirSync(runnerTemp);
-  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n");
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
   writeFileSync(path.join(bin, "dsh"), dshStub.join("\n") + "\n");
   writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");

@@ -71,7 +71,8 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
   const argsFile = path.join(dir, "dsh-args.txt");
   mkdirSync(bin);
   mkdirSync(runnerTemp);
-  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n");
+  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
   writeFileSync(
     path.join(bin, "dsh"),
     [

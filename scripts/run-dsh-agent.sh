@@ -10,6 +10,10 @@
 #      are left untouched.
 #   3. Runs `doppler run -- dsh --profile headless "<task>"` so Doppler injects
 #      ZAI_API_KEY (and anything else in the project) into the process env.
+#      The service token reaches doppler through the ENVIRONMENT (DOPPLER_TOKEN,
+#      the CLI's env input for --token) — never argv: argv is world-readable
+#      via ps / /proc/<pid>/cmdline for the doppler process's whole lifetime,
+#      environ is uid-scoped (issue #95).
 #
 # Usage:
 #   DOPPLER_SERVICE_TOKEN=<token> bash run-dsh-agent.sh "implement X and open a PR"
@@ -63,7 +67,10 @@
 #   environmental signatures (doppler-env / network-env / missing-binary)
 #   surface immediately instead of consuming the throttle-wave retry
 #   ladder — an identical relaunch walks into the identical environment.
-#   DOPPLER_SERVICE_TOKEN required by `doppler run`
+#   DOPPLER_SERVICE_TOKEN required by `doppler run`; handed to it via the
+#                         DOPPLER_TOKEN env (the CLI's env input for --token;
+#                         probed v3.76.0: DOPPLER_SERVICE_TOKEN itself is NOT
+#                         read as an env name) so it never appears in argv
 #   DSH_CELL_BIN        persistent prefix for the cell-tool bootstrap
 #                       (default $HOME/.dsh-agent-toolkit-bin); the relay/reply
 #                       guards in the workflows honor the same seam. gh
@@ -116,13 +123,14 @@ if [ -z "$TASK" ]; then
   exit 2
 fi
 
-# The agent always launches via `doppler run --token "$DOPPLER_SERVICE_TOKEN"`
-# — there is no local-auth fallback. Under set -u an unset token died with a
-# bare "unbound variable" at the launch line (after installing dsh + probing
-# cell tools); make it a typed, early, cheap failure instead. This is a
-# REQUIRED env in every caller (CI secrets, dsh-worker's env file).
+# The agent always launches via `doppler run` with the service token passed
+# through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.
+# Under set -u an unset token died with a bare "unbound variable" at the
+# launch line (after installing dsh + probing cell tools); make it a typed,
+# early, cheap failure instead. This is a REQUIRED env in every caller (CI
+# secrets, dsh-worker's env file).
 if [ -z "${DOPPLER_SERVICE_TOKEN:-}" ]; then
-  echo "error: DOPPLER_SERVICE_TOKEN unset — the agent launches through \`doppler run --token\`; CI and the worker env file must provide it" >&2
+  echo "error: DOPPLER_SERVICE_TOKEN unset — the agent launches through \`doppler run\` with the token via DOPPLER_TOKEN env; CI and the worker env file must provide it" >&2
   exit 2
 fi
 
@@ -905,8 +913,9 @@ ATTEMPT_ERR_LOG="$(mktemp /tmp/dsh-agent-err.XXXXXX)"
 
 # Scope isolation (mac-mini-ane, 2026-08-28 — ANE review runs 33281316457+,
 # every dispatch red in ~20s with workflow, driver and secret all untouched):
-# `doppler run --token T` does NOT launch in the token's own scope by
-# default — project/config resolution is flags > DOPPLER_PROJECT /
+# `doppler run` (token via --token or DOPPLER_TOKEN env) does NOT launch in
+# the token's own scope by default — project/config resolution is
+# flags > DOPPLER_PROJECT /
 # DOPPLER_CONFIG env > the scoped entries in $HOME/.doppler/.doppler.yaml >
 # the token's binding. A shared cell whose user ran `doppler setup` (the
 # factory cells scope seed/prd at $HOME) therefore makes every CI launch
@@ -922,13 +931,27 @@ ATTEMPT_ERR_LOG="$(mktemp /tmp/dsh-agent-err.XXXXXX)"
 # the child's -u chain already strips the token and ambient DOPPLER_*).
 DOPPLER_ISOLATED_HOME="$(mktemp -d "${TMPDIR:-/tmp}/dsh-doppler-home.XXXXXX")"
 
-# env -u: the Doppler token is consumed by `doppler run` itself before exec;
-# the agent must never see it (an `env` tool call would ship it to the model
-# provider). ZAI_API_KEY must remain — it IS the inference credential.
+# Token placement (issue #95, observed live on a Linux cell): `--token T`
+# puts the service token in doppler's ARGV — world-readable for the whole
+# agent lifetime via ps / /proc/<pid>/cmdline, whatever the file perms.
+# DOPPLER_TOKEN is the CLI's env input for --token (probed v3.76.0: a bogus
+# DOPPLER_TOKEN reproduces --token's auth error exactly, while a bogus
+# DOPPLER_SERVICE_TOKEN env is IGNORED — doppler falls through to local
+# auth). The bash PREFIX assignment hands the token to the doppler process's
+# ENVIRONMENT only — assignments never touch argv, so no process in the
+# launch chain carries the token in ps. (environ is readable only by the
+# same uid/root — the same class as the caller-supplied DOPPLER_SERVICE_TOKEN
+# this driver already holds; argv is the leak.)
+# env -u: doppler passes its parent env THROUGH to the child (canary
+# verified), so the child chain strips DOPPLER_TOKEN alongside
+# DOPPLER_SERVICE_TOKEN — the agent must never see the token (an `env` tool
+# call would ship it to the model provider). ZAI_API_KEY must remain — it IS
+# the inference credential.
+DOPPLER_TOKEN="$DOPPLER_SERVICE_TOKEN" \
 env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT \
     HOME="$DOPPLER_ISOLATED_HOME" \
-  doppler run --token "$DOPPLER_SERVICE_TOKEN" -- \
-    env -u DOPPLER_SERVICE_TOKEN -u DOPPLER_CONFIG -u DOPPLER_PROJECT -u DOPPLER_ENVIRONMENT \
+  doppler run -- \
+    env -u DOPPLER_SERVICE_TOKEN -u DOPPLER_TOKEN -u DOPPLER_CONFIG -u DOPPLER_PROJECT -u DOPPLER_ENVIRONMENT \
         HOME="${HOME:?}" \
     dsh --profile headless ${DSH_LAUNCH_ARGS[@]+"${DSH_LAUNCH_ARGS[@]}"} "$TASK" >"$FINAL_OUT" 2> >(tee "$ATTEMPT_ERR_LOG" >&2) &
 DSH_PID=$!

@@ -34,9 +34,10 @@
 #   DSH_WORKER_REPOS    required — space/comma-separated "owner/repo" list
 #                       of consumer repos to poll
 #   DOPPLER_SERVICE_TOKEN  REQUIRED — the agent launches only via
-#                       `doppler run --token ...`; the driver exits 2
-#                       (typed) without it. Also used by the
-#                       push-credential resolver.
+#                       `doppler run`, with the token passed through the
+#                       DOPPLER_TOKEN env (never argv, which ps exposes —
+#                       issue #95); the driver exits 2 (typed) without it.
+#                       Also used by the push-credential resolver.
 #   DSH_WORKER_DATA_ROOT    run artifacts root (default $HOME/.dsh-worker)
 #   DSH_WORKER_MODEL        agent model (default zai/glm-5.3)
 #   DSH_WORKER_MODEL_RULES  task-class routing, space-separated
