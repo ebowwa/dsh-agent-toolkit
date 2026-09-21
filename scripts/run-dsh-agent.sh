@@ -82,7 +82,13 @@ if [ ! -r . ] || [ ! -x . ]; then
 fi
 
 # Fallback task for scheduled runs (workflow_dispatch provides a real task).
-DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: check this repository for issues labeled agent-todo, pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request. Otherwise report what you found.}"
+# OWNER-SCOPED + TIERED (2026-09-21): the old text said "this repository", but
+# taskless spawns launch from non-repo cwds, so agents resolved it with a
+# GitHub-wide agent-todo search and adopted other accounts' repos
+# (frason/origins: fork + 7 overnight PRs). The default now fixes the owner
+# AND the order: fleet-infra first, products second, owner-named third —
+# config/fleet-priority.md is the authoritative tier file.
+DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
 TASK="${1:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then
