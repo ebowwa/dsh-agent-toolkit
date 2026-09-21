@@ -18,7 +18,6 @@ Work these first; an open issue here outranks any tier-2 issue.
 | ebowwa/github-activity-tracker | activity tracking, autoscale, runner oversight |
 | ebowwa/GitActionsRunner | self-hosted Actions runner management (mini) |
 | ebowwa/deepseek-harness | the dsh engine mirror; format and type rules live here |
-| ebowwa/ipadmini2-agent | autonomous GLM agent node (iPad mini 2) |
 
 ## Tier 2 — products (default tier for every other ebowwa-owned repo)
 
