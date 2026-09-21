@@ -27,7 +27,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1237,15 +1237,25 @@ test("success with DSH_KEEP_SESSIONS=1 archives the transcript into transcript-a
     ],
     extraEnv: { DSH_KEEP_SESSIONS: "1", DSH_ARCHIVE_KEEP: "2" },
   });
-  // Pre-age the prune test: three junk archives OLDER than what this run
-  // will write (the 1.1s gap keeps ls -1t ordering deterministic).
+  // Pre-age the prune test with PINNED explicit mtimes, strictly ordered
+  // junk-a < junk-b < junk-c < now. Back-to-back writeFileSync calls can
+  // land on one identical coarse-granularity mtime on a runner filesystem
+  // (CI run 35386633832 failed exactly there: with equal mtimes ls -1t's
+  // name-ascending tie-break listed session,junk-a,junk-b,junk-c, so the
+  // KEEP=2 prune kept junk-a instead of junk-c), and the old 1.1s sleep
+  // only separated junk-vs-run — it never covered junk-vs-junk. Pinning
+  // the mtimes makes the prune order deterministic regardless of
+  // filesystem timestamp granularity, 10s steps being orders of magnitude
+  // past any of them.
   const arch = path.join(home, "transcript-archive");
   mkdirSync(arch, { recursive: true });
-  for (const j of ["junk-a.tar", "junk-b.tar", "junk-c.tar"]) {
-    writeFileSync(path.join(arch, j), "junk");
-  }
-  const wait = spawnSync("sleep", ["1.1"]);
-  if (wait.status !== 0) throw new Error("sleep failed");
+  const nowMs = Date.now();
+  ["junk-a.tar", "junk-b.tar", "junk-c.tar"].forEach((j, i) => {
+    const p = path.join(arch, j);
+    writeFileSync(p, "junk");
+    const t = new Date(nowMs - (30 - i * 10) * 1000); // -30s, -20s, -10s
+    utimesSync(p, t, t);
+  });
 
   const proc = spawnSync("bash", [SCRIPT, "integration test task"], {
     encoding: "utf8", env, timeout: 60_000,
