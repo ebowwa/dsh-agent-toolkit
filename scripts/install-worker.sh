@@ -58,7 +58,7 @@ if [ ! -d "$DSH_AGENT_TOOLKIT_DIR/.git" ]; then
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
 if git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
-   && git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" checkout v1; then
+   && git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" checkout --force v1; then
   PIN_OK=1
   echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
 else
@@ -82,6 +82,12 @@ touch "$WORKER_HOME/worker.log" 2>/dev/null || true
 
 # 3. cron keepalive — idempotent (skipped when the line exists). The
 #    credentials are NOT in the line: it sources the 0600 env file.
+#    NOTE --force (2026-09-21 incident): a bare `checkout v1` SILENTLY
+#    KEEPS local modifications — an in-place patch of settings.zai.yaml
+#    (the door switch) left every box's checkout dirty, and the sweep then
+#    shadowed v1.73.0→v1.74.0 for hours while agent homes regenerated from
+#    the stale template. --force discards stray local edits; the template
+#    channel is tag-only by design.
 #    `checkout v1` failing degrades to running the previously pinned
 #    release (the fetch error lands in worker.log) — never a broken sweep.
 # Overlap guard = flock, NOT pgrep. Every pgrep form self-matches here:
@@ -97,7 +103,7 @@ command -v flock >/dev/null 2>&1 \
 # ships scripts mode 644 — a direct invocation is "Permission denied"
 # (live-proven: the keepalive fired every minute from 17:52 and died at
 # exactly this word until fixed).
-LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
+LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q --force v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
 # The canonical-line rule: ALWAYS drop any existing dsh-worker line and
 # install the current one. Append-only idempotence ships upgrades never
 # (the box keeps its first, buggier line forever); rewrite-always is the

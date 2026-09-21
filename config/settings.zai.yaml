@@ -1,11 +1,22 @@
 # DSH settings for the GLM CI bot.
 # Copied to $DSH_HOME/settings.yaml on first run by run-dsh-agent.sh.
 #
-# llm-pi-ai: provider routes for the pi-ai multi-provider adapter. The `zai`
-# route is hand-declared (pi-ai ships nothing under this key): OpenAI-compatible
-# wire protocol against Z.AI's coding PAAS endpoint. apiKeyEnv is a credential
-# *reference* — ZAI_API_KEY must exist in the process env (Doppler injects it);
-# no secret lives in this file.
+# llm-pi-ai: provider routes for the pi-ai multi-provider adapter. Both `zai`
+# routes are hand-declared (pi-ai ships nothing under these keys); apiKeyEnv is
+# a credential *reference* — ZAI_API_KEY must exist in the process env (Doppler
+# injects it); no secret lives in this file.
+#
+# DOOR (2026-09-21): the default `zai` route rides the anthropic door
+# (api: anthropic-messages, https://api.z.ai/api/anthropic) — verified live
+# with the coding key (HTTP 200 on /v1/messages, glm-5.3, both auth header
+# styles). The anthropic dialect carries explicit prompt caching
+# (cache_control is offered by the dialect) and measured 500K-token prefixes
+# served from cache at ~5s TTFT where the completions door stalled (the
+# 2026-09-18 same-chat A/B). streamIdleTimeoutMs 600000 = prefill-scale
+# patience (rule 6: the first-token budget must exceed the worst-case COLD
+# prefill TTFT; a short budget converts throttle into certain death).
+# `zai-completions` keeps the old OpenAI-compatible coding PAAS door as a
+# per-run escape hatch (DSH_MODEL=zai-completions/<id>).
 #
 # The models list is the live endpoint catalog (verified against the /models
 # API) so per-run overrides (DSH_MODEL=zai/<id>) resolve.
@@ -19,8 +30,74 @@ agent-default-model:
 llm-pi-ai:
   providers:
     zai:
-      displayName: Z.AI Coding Plan
+      displayName: Z.AI Coding Plan (anthropic door)
       apiKeyEnv: ZAI_API_KEY
+      retryPolicy:
+        mode: normal
+        maxRetries: 10
+        backoff:
+          initialDelayMs: 10000
+          maxDelayMs: 300000
+          jitterRatio: 0.5
+      streamIdleTimeoutMs: 600000
+      api: anthropic-messages
+      baseURL: https://api.z.ai/api/anthropic
+      models:
+        - id: glm-5.3
+          name: GLM-5.3
+          contextWindow: 1000000
+          maxTokens: 131072
+        - id: glm-5.3-flash
+          name: GLM-5.3 Flash
+          contextWindow: 1000000
+          maxTokens: 131072
+        - id: glm-5.3-flashx
+          name: GLM-5.3 FlashX
+          contextWindow: 1000000
+          maxTokens: 131072
+        - id: glm-5.2
+          name: GLM-5.2
+          contextWindow: 1000000
+          maxTokens: 131072
+        - id: glm-5.1
+          name: GLM-5.1
+          contextWindow: 202752
+          maxTokens: 32768
+        - id: glm-5-turbo
+          name: GLM-5 Turbo
+          contextWindow: 204800
+          maxTokens: 131072
+        - id: glm-5
+          name: GLM-5
+          contextWindow: 204800
+          maxTokens: 131072
+        - id: glm-4.7
+          name: GLM-4.7
+          contextWindow: 200000
+          maxTokens: 65536
+        - id: glm-4.6
+          name: GLM-4.6
+          contextWindow: 200000
+          maxTokens: 65536
+        - id: glm-4.5
+          name: GLM-4.5
+          contextWindow: 131072
+          maxTokens: 65536
+        - id: glm-4.5-air
+          name: GLM-4.5 Air
+          contextWindow: 131072
+          maxTokens: 65536
+    zai-completions:
+      displayName: Z.AI Coding Plan (completions door, fallback)
+      apiKeyEnv: ZAI_API_KEY
+      retryPolicy:
+        mode: normal
+        maxRetries: 10
+        backoff:
+          initialDelayMs: 10000
+          maxDelayMs: 300000
+          jitterRatio: 0.5
+      streamIdleTimeoutMs: 600000
       api: openai-completions
       baseURL: https://api.z.ai/api/coding/paas/v4
       models:
@@ -28,17 +105,14 @@ llm-pi-ai:
           name: GLM-5.3
           contextWindow: 1000000
           maxTokens: 131072
-        # A/B lane twin of the flagship: same coding-plan pricing, faster.
-        # Present so per-run overrides (DSH_MODEL=zai/glm-5.3-flash) resolve.
         - id: glm-5.3-flash
           name: GLM-5.3 Flash
           contextWindow: 1000000
-          maxTokens: 128000
-          # native multimodal — admit image inputs (glm-5.3 stays text-only:
-          # under-claiming refuses at attach time, over-claiming dies mid-run)
-          input:
-            - text
-            - image
+          maxTokens: 131072
+        - id: glm-5.3-flashx
+          name: GLM-5.3 FlashX
+          contextWindow: 1000000
+          maxTokens: 131072
         - id: glm-5.2
           name: GLM-5.2
           contextWindow: 1000000
