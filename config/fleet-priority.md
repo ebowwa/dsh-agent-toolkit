@@ -41,14 +41,29 @@ Any ebowwa-owned repo not listed anywhere lands in this tier by default.
   adds it here.
 - Entries: (none yet)
 
+## Sanctioned open-source upstream contributions
+
+The owner contributes upstream (cordis, bun). An agent may work these
+ebowwa-owned forks (covered as tier 2) and open pull requests against their
+upstreams ONLY as listed here, or when the current task or issue explicitly
+requests that upstream contribution. Extend this table only by owner edit.
+
+| Fork (ebowwa-owned) | Upstream target |
+|---|---|
+| ebowwa/cordis | cordiverse/cordis |
+| ebowwa/bun | oven-sh/bun |
+| ebowwa/deepseek-harness | deepseek-ai/deepseek-harness (push-mirror, not a GitHub fork) |
+
 ## Forks
 
-Mirror forks (deepseek-harness, cordis, bun, ai-toolkit, origins) follow
-their upstream rules — no autonomous PRs against upstreams from fork
-checkouts.
+Mirror forks not listed above (ai-toolkit, origins) are workable as tier 2
+checkouts, but their upstreams are off limits: no forks, PRs, comments, or
+deploys against another account without an explicit owner request.
 
 ## Hard boundary
 
 NEVER fork, pull-request, comment in, or deploy from any repository owned by
 another account, no matter what labels it carries. `agent-todo` and similar
-labels are shared conventions, not work requests for this fleet.
+labels are shared conventions, not work requests for this fleet. The only
+crossings are the sanctioned upstream table above and explicit owner
+requests in a task or issue.
