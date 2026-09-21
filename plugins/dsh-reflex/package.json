@@ -1,0 +1,11 @@
+{
+  "name": "@local/dsh-reflex",
+  "description": "Reflex engine tools for the DeepSeek Harness — a thin client for the Reflex command server (JSON over TCP, default 127.0.0.1:49173) that runs inside the Gauge host. Tools: reflex_status, reflex_windows, reflex_capture_display, reflex_capture_window, reflex_click, reflex_type, reflex_key, reflex_ax, reflex_command. The engine keeps ONE home (the Gauge host, with its TCC grants); this plugin never duplicates it.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./lib/index.js",
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0"
+  }
+}
