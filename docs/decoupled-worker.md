@@ -152,6 +152,20 @@ else here.
   multiple boxes each running `--once` on the same repos share the queue
   safely via the claim DELETE. `--loop` is for single-processor service
   mode; when used, ensure only one loop per box (`pgrep` guard in cron).
+- **Boot accounting (issue #96)**: the driver appends one JSONL tombstone
+  per FAILED agent attempt to `$DSH_HOME/boot-tombstones.jsonl`
+  (`at`, `lifetime_s`, `exit_code`, `class`, `had_session`, `attempt`), and
+  classifies fast deaths from the captured attempt stderr — environmental
+  signatures (`doppler-env`, `network-env`, `missing-binary`) surface
+  immediately instead of walking the throttle-wave retry ladder (180s+600s
+  against, e.g., an unreadable launch cwd cured no backoff). On a
+  persistent home the ledger + `$DSH_HOME/transcript-archive/` (kept
+  transcripts tar'd outside `sessions/`, pruned to `DSH_ARCHIVE_KEEP`,
+  default 50) survive both the claim-workdir `rm -rf` and the node boot
+  sweep's `-mtime +7` — so a census can finally tell *never booted*
+  (no dir, no tombstone) from *booted, died pre-record* (tombstone,
+  `had_session: false`) from *transcript swept* (archive present).
+
 ## The perimeter rule (local-plane audits)
 
 The air-native-linux incident (2026-08-31 → 09-01): a laptop LaunchAgent

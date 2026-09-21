@@ -27,7 +27,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1046,4 +1046,273 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
   assert.ok(!existsSync(dEnv.HOME), "the pristine doppler home must be removed after the run");
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- issue #96: boot-death accounting + transcript retention --------------
+//
+// Three measured defects, one accounting pipeline:
+//   1. the node boot sweep (-mtime +7 on sessions/) deletes transcripts of
+//      FINISHED runs — the flight recorder's raw material becomes
+//      unrecoverable after a week;
+//   2. claims that die between session-dir creation and the recorder's
+//      first flush leave EMPTY session dirs — uncountable downstream (a
+//      census cannot tell "never booted" from "booted and died pre-record"
+//      from "transcript swept"; measured 112 empty / 19 transcripts);
+//   3. the fast-fail classifier labeled EVERY fast death "throttle-wave"
+//      and walked the 180s+600s ladder against ENVIRONMENTAL deaths (the
+//      live repro: an unreadable cwd killed doppler at "stat .: permission
+//      denied", lifetime 0s — three identical deaths, full ladder each).
+
+// --- 8. the classifier maps captured stderr signatures to classes --------
+
+test("classify_attempt_failure maps captured stderr signatures to failure classes (issue #96)", () => {
+  const fn = extractFunction("classify_attempt_failure");
+  assert.ok(fn.includes("classify_attempt_failure()"), "function extracted from script");
+  const cases = [
+    // the live repro, verbatim
+    ["Invalid scope: . / Doppler Error: stat .: permission denied", "doppler-env"],
+    ["Error: This token does not have access to requested project 'seed'", "doppler-env"],
+    ["fetch failed", "network-env"],
+    ["Get: ENOTFOUND api.example.test", "network-env"],
+    ["bash: doppler: command not found", "missing-binary"],
+    ["429 too many requests", "throttle-wave"],
+    ["provider rate limit exceeded", "throttle-wave"],
+    ["some unknown harness crash", "unknown"],
+    ["", "unknown"], // instant death before any output keeps the ladder
+  ];
+  for (const [text, want] of cases) {
+    const dir = mkdtempSync(path.join(tmpdir(), "dsh-classify-"));
+    const log = path.join(dir, "err.log");
+    writeFileSync(log, text);
+    const out = spawnSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${fn}\nclassify_attempt_failure "${log}"`],
+      { encoding: "utf8" },
+    );
+    rmSync(dir, { recursive: true, force: true });
+    assert.equal(out.stdout.trim(), want, `signature ${JSON.stringify(text)} must classify ${want} (stderr: ${out.stderr})`);
+  }
+});
+
+// Shared harness for the accounting tests: stub doppler (exec through),
+// recording dsh stub, PERSISTENT DSH_HOME (tombstones + archive live in the
+// harness home — a job-scoped home is rm -rf'd at exit and keeps nothing).
+const runAccounting = ({ dshStub, extraEnv = {} }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-accounting-"));
+  const bin = path.join(dir, "bin");
+  const home = path.join(dir, "home");
+  const runnerTemp = path.join(dir, "runner");
+  mkdirSync(bin);
+  mkdirSync(home);
+  mkdirSync(runnerTemp);
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift; shift; shift\nexec \"$@\"\n");
+  writeFileSync(path.join(bin, "dsh"), dshStub.join("\n") + "\n");
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: dir,
+    RUNNER_TEMP: runnerTemp,
+    DOPPLER_SERVICE_TOKEN: "stub-token",
+    DSH_HOME: home,
+    DSH_PERSISTENT_HOME: "1",
+    // tests-lint rule 2: every driver spawn pins the backoff seam.
+    DSH_RETRY_BACKOFF_S: "0",
+    GH_BIN: path.join(bin, "gh"),
+    DOPPLER_BIN: path.join(bin, "doppler"),
+    CELL_PROBE_DIRS: "",
+    ...extraEnv,
+  };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_ENV;
+  delete env.GITHUB_PATH;
+  delete env.DSH_SESSION_PATH_FILE;
+  return { dir, bin, home, runnerTemp, env };
+};
+
+// --- 9. an ENVIRONMENTAL fast death short-circuits the throttle ladder ----
+
+test("doppler-env boot death surfaces immediately: one attempt, no throttle ladder, classified tombstone (issue #96 repro)", () => {
+  const { dir, home, env } = runAccounting({
+    dshStub: [
+      '#!/bin/sh',
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'echo "Invalid scope: . / Doppler Error: stat .: permission denied" >&2',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ],
+  });
+
+  const proc = spawnSync("bash", [SCRIPT, "integration test task"], {
+    encoding: "utf8", env, timeout: 60_000,
+  });
+
+  assert.equal(proc.status, 1, `the environmental death must surface (stderr: ${proc.stderr})`);
+  assert.match(proc.stdout, /STUB-FINAL-ANSWER/, "the last attempt's answer is still relayed");
+  assert.match(
+    proc.stderr,
+    /doppler-env: environmental boot death, NOT throttle-wave/,
+    "the death must be CLASSIFIED, not read as throttle-wave",
+  );
+  assert.match(
+    proc.stderr,
+    /the retry ladder would re-run the identical environment/,
+    "the reason the ladder is skipped must be stated",
+  );
+  assert.equal(
+    (proc.stderr.match(/::error::agent died fast/g) || []).length,
+    1,
+    `exactly ONE attempt — no ladder against an environmental death, stderr: ${proc.stderr}`,
+  );
+  assert.doesNotMatch(proc.stderr, /throttle-wave class; retry/, "the throttle ladder message must not fire");
+
+  // the tombstone made the death COUNTABLE: one line, the right class,
+  // pre-record (no session had been written when it died).
+  const ledger = path.join(home, "boot-tombstones.jsonl");
+  assert.ok(existsSync(ledger), "the boot-tombstones ledger must exist in a persistent home");
+  const lines = readFileSync(ledger, "utf8").trimEnd().split("\n");
+  assert.equal(lines.length, 1, `one failed attempt = one tombstone, got: ${lines.length}`);
+  const tomb = JSON.parse(lines[0]);
+  assert.equal(tomb.class, "doppler-env");
+  assert.equal(tomb.had_session, false, "died before the recorder flushed — the countable signal");
+  assert.equal(tomb.exit_code, 1);
+  assert.equal(tomb.attempt, 1);
+  assert.ok(tomb.lifetime_s < 420, "the death was fast");
+  assert.ok(typeof tomb.at === "string" && tomb.at.endsWith("Z"), "ISO timestamp");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 10. unknown/throttle fast failures keep the production ladder --------
+
+test("unknown fast failure still walks the throttle ladder and leaves one tombstone per attempt (fail-safe to pre-#96 behavior)", () => {
+  const { dir, home, env } = runAccounting({
+    // fails fast, but the captured stderr carries NO environmental
+    // signature — the classifier must stay silent and the ladder must run.
+    dshStub: [
+      '#!/bin/sh',
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ],
+  });
+
+  const proc = spawnSync("bash", [SCRIPT, "integration test task"], {
+    encoding: "utf8", env, timeout: 60_000,
+  });
+
+  assert.equal(proc.status, 1);
+  assert.equal(
+    (proc.stderr.match(/throttle-wave class; retry/g) || []).length,
+    2,
+    `the production ladder is intact for unknown fast failures, stderr: ${proc.stderr}`,
+  );
+  assert.doesNotMatch(proc.stderr, /environmental boot death/);
+
+  const lines = readFileSync(path.join(home, "boot-tombstones.jsonl"), "utf8").trimEnd().split("\n");
+  assert.equal(lines.length, 3, "every failed attempt is tombstoned, not just the last");
+  assert.deepEqual(
+    lines.map((l) => JSON.parse(l).attempt),
+    [1, 2, 3],
+    "tombstones carry the attempt number",
+  );
+  assert.ok(lines.every((l) => JSON.parse(l).class === "unknown"), "no signature = unknown, not a guessed class");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 11. kept transcripts are archived outside the boot sweep's reach -----
+
+test("success with DSH_KEEP_SESSIONS=1 archives the transcript into transcript-archive/ and prunes to DSH_ARCHIVE_KEEP (issue #96)", () => {
+  const { dir, home, env } = runAccounting({
+    dshStub: [
+      '#!/bin/sh',
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'mkdir -p "$DSH_HOME/sessions/ws-test/session-abc123"',
+      'printf \'{"role":"user"}\\n\' > "$DSH_HOME/sessions/ws-test/session-abc123/session.jsonl.zstd"',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ],
+    extraEnv: { DSH_KEEP_SESSIONS: "1", DSH_ARCHIVE_KEEP: "2" },
+  });
+  // Pre-age the prune test with PINNED explicit mtimes, strictly ordered
+  // junk-a < junk-b < junk-c < now. Back-to-back writeFileSync calls can
+  // land on one identical coarse-granularity mtime on a runner filesystem
+  // (CI run 35386633832 failed exactly there: with equal mtimes ls -1t's
+  // name-ascending tie-break listed session,junk-a,junk-b,junk-c, so the
+  // KEEP=2 prune kept junk-a instead of junk-c), and the old 1.1s sleep
+  // only separated junk-vs-run — it never covered junk-vs-junk. Pinning
+  // the mtimes makes the prune order deterministic regardless of
+  // filesystem timestamp granularity, 10s steps being orders of magnitude
+  // past any of them.
+  const arch = path.join(home, "transcript-archive");
+  mkdirSync(arch, { recursive: true });
+  const nowMs = Date.now();
+  ["junk-a.tar", "junk-b.tar", "junk-c.tar"].forEach((j, i) => {
+    const p = path.join(arch, j);
+    writeFileSync(p, "junk");
+    const t = new Date(nowMs - (30 - i * 10) * 1000); // -30s, -20s, -10s
+    utimesSync(p, t, t);
+  });
+
+  const proc = spawnSync("bash", [SCRIPT, "integration test task"], {
+    encoding: "utf8", env, timeout: 60_000,
+  });
+
+  assert.equal(proc.status, 0, `driver must succeed, stderr: ${proc.stderr.slice(-400)}`);
+  assert.match(proc.stdout, /STUB-FINAL-ANSWER/);
+  const kept = readdirSync(arch).sort();
+  assert.deepEqual(
+    kept,
+    ["junk-c.tar", "session-abc123.rc0.tar"],
+    `archive pruned to the newest DSH_ARCHIVE_KEEP=2 files, got: ${kept.join(", ")}`,
+  );
+  const members = spawnSync("tar", ["-tf", path.join(arch, "session-abc123.rc0.tar")], { encoding: "utf8" });
+  assert.match(
+    members.stdout,
+    /session-abc123\/session\.jsonl\.zstd/,
+    "the archive carries the transcript, not just a marker",
+  );
+  // the original is still in place (KEEP=1 keeps it; the archive is a copy)
+  assert.ok(
+    existsSync(path.join(home, "sessions", "ws-test", "session-abc123", "session.jsonl.zstd")),
+    "KEEP=1 semantics unchanged: the session dir itself is not removed",
+  );
+  // a successful run writes no tombstone — the transcript IS its record
+  assert.ok(!existsSync(path.join(home, "boot-tombstones.jsonl")), "success must not tombstone");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 12. structural pins: the accounting cannot silently detach -----------
+
+test("issue #96 structural pins: capture feeds the classifier, archive precedes cleanup, tombstone precedes loop exits", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  // the launch line captures attempt stderr for the classifier
+  assert.match(src, /2> >\(tee "\$ATTEMPT_ERR_LOG" >&2\)/, "attempt stderr must be captured (tee keeps live passthrough)");
+  // the archive runs BEFORE the default-path transcript cleanup — after it,
+  // the session dir is already gone
+  const archIdx = src.indexOf('archive_session_transcript "$ARCHIVE_SRC"');
+  const cleanupIdx = src.indexOf('if [ "${DSH_KEEP_SESSIONS:-0}" != "1" ]');
+  assert.ok(archIdx !== -1 && cleanupIdx !== -1 && archIdx < cleanupIdx,
+    "the transcript archive must run before the KEEP!=1 cleanup removes the session dir");
+  // the tombstone is written BEFORE any loop-exit decision — even the last
+  // attempt and every short-circuit path must be counted
+  const tombIdx = src.indexOf('write_attempt_tombstone "$FAIL_CLASS" "$LIFE" "$RC" "$ATTEMPT_HAD_SESSION"');
+  const rcExitIdx = src.indexOf('if [ "${RC}" -eq 0 ]; then break; fi');
+  assert.ok(tombIdx !== -1 && rcExitIdx !== -1 && tombIdx < rcExitIdx,
+    "attempt accounting must precede the loop-exit decisions");
+  // the env-class short-circuit sits BEFORE the backoff schedule line
+  const envIdx = src.indexOf("environmental boot death, NOT throttle-wave");
+  const backoffIdx = src.indexOf('case "$ATTEMPT" in 2) BACKOFF=');
+  assert.ok(envIdx !== -1 && backoffIdx !== -1 && envIdx < backoffIdx,
+    "the environmental short-circuit must precede the throttle backoff schedule");
+  // the pinned PR-#85 seam stays byte-identical (test 2c re-checks it; this
+  // is the same pin from the accounting side)
+  assert.match(
+    src,
+    /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
+  );
 });
