@@ -86,3 +86,29 @@ test("the doppler launch carries the token via env, never argv (issue #95 class 
     "the child env chain must strip the DOPPLER_TOKEN env input too",
   );
 });
+
+// Review round 1 (PR #100) pin-coverage follow-through: the class guard above
+// pins only the DRIVER's source. The two workflow mask probes launch doppler
+// through the same shape and would trip no pin if reverted to `--token` —
+// pin their source too (same class, same failure mode: loud, never silent).
+test("the workflow doppler probes carry the token via env, never argv (issue #95 class guard)", () => {
+  for (const wf of ["agent-review.yml", "drift-check.yml"]) {
+    const src = readFileSync(path.join(ROOT, ".github", "workflows", wf), "utf8");
+    // No executable `doppler run --token` anywhere in the workflow (the
+    // probe comments document the env seam and may mention `--token`; this
+    // pin matches the full launch phrase, not the flag alone).
+    assert.doesNotMatch(
+      src,
+      /doppler run --token/,
+      `${wf} must not pass the token on the doppler command line (world-readable argv)`,
+    );
+    // The env handoff must sit ON the probe line: the bash prefix assignment
+    // feeding the scope-isolation `env -u` chain (&&-chained inside the
+    // workflow's run: block).
+    assert.match(
+      src,
+      /&& DOPPLER_TOKEN="\$DOPPLER_SERVICE_TOKEN" \\\n\s+env -u DOPPLER_PROJECT/,
+      `${wf} must hand the token to doppler's environment via the prefix assignment on the env -u chain`,
+    );
+  }
+});
