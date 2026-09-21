@@ -82,7 +82,12 @@ if [ ! -r . ] || [ ! -x . ]; then
 fi
 
 # Fallback task for scheduled runs (workflow_dispatch provides a real task).
-DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: check this repository for issues labeled agent-todo, pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request. Otherwise report what you found.}"
+# OWNER-SCOPED (2026-09-21): the old text said "this repository", but taskless
+# spawns launch from non-repo cwds, so agents resolved it with a GitHub-wide
+# agent-todo search and adopted other accounts' repos (frason/origins: fork +
+# 7 overnight PRs). agent-todo is a shared convention, not a work request for
+# this fleet; the default names the account and forbids crossing it.
+DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account. List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are used by other projects and are never work requests for this fleet. If no ebowwa-owned issue qualifies, report that and stop.}"
 
 TASK="${1:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then

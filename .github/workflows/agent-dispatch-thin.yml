@@ -91,8 +91,12 @@ jobs:
 
           TASK="$TASK_INPUT"
           if [ -z "$TASK" ]; then
-            # Same fallback text the legacy driver used for scheduled fires.
-            TASK="Routine maintenance task: check this repository for issues labeled agent-todo, pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request. Otherwise report what you found."
+            # Same fallback text the legacy driver used for scheduled fires,
+            # with the owner boundary the 2026-09-21 frason/origins incident
+            # added: an empty local agent-todo queue made agents resolve
+            # "this repository" with a GitHub-wide label search and adopt
+            # other accounts' repos.
+            TASK="Routine maintenance task: check this repository for open issues labeled agent-todo, pick the highest-priority one, and if the fix is clear, implement it, test it, and open a pull request. Work only this repository and other repositories owned by the github.com/ebowwa account — NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries; agent-todo and similar labels are shared conventions, not work requests from this fleet. Otherwise report what you found."
           fi
 
           # charset guards: these values ride structured text the worker
