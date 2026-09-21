@@ -84,7 +84,7 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
     // live twice). flock is the canonical cron mutual exclusion.
     assert.match(cron, /flock -n .*sweep\.lock/, "flock-overlapped, no pgrep self-match possible");
     assert.ok(!cron.includes("pgrep"), "no pgrep guard may ship in the keepalive");
-    assert.match(cron, /checkout -q v1/, "re-pins to the moving v1 tag each sweep");
+    assert.match(cron, /checkout -q --force v1/, "re-pins to the moving v1 tag each sweep (--force: dirty trees must never shadow the tag — 2026-09-21 incident)");
     assert.match(cron, /fetch --tags --force/, "force-moves the moving tag (plain fetch clobbers: \"would clobber existing tag\")");
     assert.ok(!cron.includes(GH_CRED), "NO credential in the cron line");
     assert.ok(!cron.includes(DOPPLER_CRED), "NO doppler credential in the cron line");
@@ -118,7 +118,7 @@ test("always refreshes the toolkit pin to v1 (with safe.directory; no silent fai
     assert.match(res.stdout, /toolkit pinned at/);
     const git = readFileSync(f.gitLog, "utf8");
     assert.match(git, /fetch --tags/, "fetches tags every install");
-    assert.match(git, /checkout v1/, "checks out the moving v1 pin");
+    assert.match(git, /checkout --force v1/, "checks out the moving v1 pin (--force — local edits never shadow tags)");
     assert.match(git, /safe\.directory=/, "ownership guard explicitly satisfied");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
