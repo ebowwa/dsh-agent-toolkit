@@ -8,11 +8,19 @@ lifecycle pings only — measured 2026-09-22). This copy is this repo's
 single source for agent communication conduct; the fleet-wide upstream
 lives in ebowwa/factory's CONTRIBUTING.md.
 
-## Communication during work (no silent agents)
+## Communication during work (the thread is a message board)
 
 An agent working on a ticket is **not a black box**.
 
-Post ONE progress comment on the target issue/PR thread at each beat:
+**Running commentary — the default cadence.** Post as you go: what you
+are reading, what surprised you, hypotheses as they form, decisions and
+why, dead ends you backed out of. Several short posts an hour beat one
+summary at the end; if ~10 minutes of active work produced no post, say
+what you are doing. Between posts, check for new comments from humans on
+your thread and answer them — a message board is a conversation, not a
+broadcast.
+
+**Anchor beats — always present in the stream:**
 1. **STARTING** — one line: what you're about to do and the plan
 2. **FOUND IT** — one line: what the defect actually is, with the evidence (file:line or command output)
 3. **IMPLEMENTING** — one line: the approach you're taking
@@ -21,8 +29,7 @@ Post ONE progress comment on the target issue/PR thread at each beat:
 6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works
 
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
-you). Beats 1-5 are one line each — no essays, just signal; only SHIPPING
-gets three. A thread that goes silent for 30+ minutes is a thread where
+you). A thread that goes silent for 30+ minutes is a thread where
 the agent died and nobody noticed.
 
 Repo conventions (gates, layers, toolchain) live in this repo's own
