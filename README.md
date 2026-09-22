@@ -37,6 +37,7 @@ Two execution modes:
 | `scripts/review-verdict.mjs` | line-strict verdict extraction (APPROVE / REQUEST CHANGES; fail-closed on absence) |
 | `scripts/run-dsh-agent.sh` | driver: dsh install, settings bootstrap, gh/git identity, scrub shims, live trace, Doppler exec; head model via `DSH_MODEL`, subagent/subagent_fork children via `DSH_SUBAGENT_MODEL` (unset = inherit the head); local web search + fetch via `DSH_WEB_SEARCH_CELLS` (per-cell, default off); composition search tool via `DSH_SEARCH_COMPOSE=1` (default off); boot accounting (issue #96): per-attempt boot tombstones (`$DSH_HOME/boot-tombstones.jsonl`), failure classification (environmental boot deaths surface immediately instead of consuming the throttle-wave retry ladder), and a bounded transcript archive (`$DSH_HOME/transcript-archive/`, `DSH_ARCHIVE_KEEP`) outside the node boot sweep's reach |
 | `plugins/tool-search-compose/` | the composition search tool — counts, file-lists, case-folding, context, total result caps, path/mtime ordering in one search call (see its README for the packaging contract) |
+| `plugins/tool-session-query/` | vendored build of the five model-facing session history tools (`session_search` et al., issue #110) — the native search behind verify-before-dismissal; mount is declared in `config/lane-plugins.json`, not a launcher flag |
 | `plugins/dsh-system-prompt-editor/` + `plugins/dsh-system-prompt-ui/` | scoped, live-editable system-prompt block for a persistent web install — session → workspace → global chain (first non-empty wins), agent read/write tools, and a chat-header editor dialog; see each README for the mount contract |
 | `plugins/dsh-flight-recorder/` | transcript blind-spot recorder — `job/*` lifecycle/output events and `plugin/*` loader-fiber activity into session logs plus a host-side firehose; history-preserving repo import (unmounted on the persistent install pending the dsh-session event-type hotfix — see its README coupling note) |
 | `plugins/dsh-session-id/` | chat-header copy button for the active session id (full `session-<uuid>` form) — pure browser feature over the `conversation.session.header.utilities` slot; stub host half exists only to make the patch row mountable |
@@ -131,6 +132,43 @@ through the profile's flat fallback — the packaging that failed at f2972e7,
 where the overlay pointed at the bare in-tree script path and resolved
 nothing. Requires no per-cell provisioning; unset stays a byte-identical
 launch line.
+
+## Prior-session search (verify-before-dismissal, on by default where declared)
+
+`config/lane-plugins.json` carries three `session-*` entries (issue #110) that
+turn the shipped-but-off session search into working tools for dispatched
+agents:
+
+- `session-persistence-jsonl` (**profile-config** seam) — the shipped row
+  roots persistence at the (job-fresh) home's `sessions/`; the restatement
+  roots it at the box-shared `~/.dsh/sessions`, so every dispatched job reads
+  AND writes the box's accumulated history. This is the load-bearing half of
+  "shared": without it the index derives from an empty corpus and every
+  search silently returns nothing.
+- `session-query-sqlite` (**profile-config** seam) — the backend ships in
+  every profile as `path: ':memory:'`, `openAt: never` (FTS5 search
+  deliberately off). The restatement turns it on with `openAt: first-search`
+  (boot unaffected; an unopenable index fails one search, never activation)
+  and hands out a **per-job db file under the shared** `~/.dsh/session-index/`
+  — ONE shared file would break the backend's single-process-owner contract:
+  it reconciles under `BEGIN IMMEDIATE` with no busy timeout, and
+  `node:sqlite` throws immediately on lock contention, so the worker's
+  parallel slots would flake every search. The index is the backend's own
+  "dedicated disposable database"; the durable half of sharing is the corpus
+  row above.
+- `tool-session-query` (**plugin** seam) — the five model-facing tools
+  (`session_search`, `session_event_search`, `session_trace`,
+  `session_event_trace`, `session_event_read`). The build is vendored at
+  [`plugins/tool-session-query/`](plugins/tool-session-query/README.md)
+  because no `dsh` release depends on it and the upstream git tree has no
+  built `lib/`; it is gated on the backend shipping in the profile tree.
+
+Honest scope: cross-session authorization is exact-`cwd` (upstream package
+contract), so visibility is per-box per-workdir — same-lane jobs on a box see
+each other's history; other boxes' history is invisible.
+[`.agents/skills/verify-before-dismissal/`](.agents/skills/verify-before-dismissal/SKILL.md)
+teaches the workflow: search the claim's own words before dismissing, cite
+the prior session, and only then write the disposition.
 
 ## System-prompt plugins (persistent web install, mounted by hand)
 

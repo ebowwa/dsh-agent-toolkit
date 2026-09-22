@@ -14,10 +14,14 @@ Emits line-based directives on stdout (tab-separated):
     SKIP\\t<id>\\t<reason>      gated out — loud, never fatal
 
 Plugin-seam entries additionally get their package copied per-job (the
-compose pattern) and their overlay written under $DSH_HOME. Every gate
-fails SAFE: platform mismatch, node-glob mismatch, missing canonical copy,
-dead probe port, or missing package => SKIP, and the run proceeds without
-that plugin. Nothing here ever exits non-zero for a gated plugin.
+compose pattern) and their overlay written under $DSH_HOME.
+'profile-config'-seam entries mount NO package: they restate the config of a
+plugin that ALREADY ships in the profile's module tree (patch rows replace
+whole plugin config), gating on its presence there — a restated row naming a
+missing package would be a dead mount. Every gate fails SAFE: platform
+mismatch, node-glob mismatch, missing canonical copy, dead probe port, or
+missing package => SKIP, and the run proceeds without that plugin. Nothing
+here ever exits non-zero for a gated plugin.
 """
 import glob
 import json
@@ -25,6 +29,7 @@ import os
 import shutil
 import socket
 import sys
+import time
 
 PLATFORM_MAP = {"Darwin": "macos", "Linux": "linux"}
 
@@ -75,6 +80,82 @@ def package_complete(pkg_dir):
         os.path.isfile(os.path.join(pkg_dir, "package.json"))
         and os.path.isdir(os.path.join(pkg_dir, "lib"))
     )
+
+
+def profile_package_dir(home, name):
+    """Where a profile-tree package must sit for `name` (e.g.
+    '@deepseek-ai/dsh-session-query-sqlite')."""
+    ns, leaf = (name.split("/", 1) + [name])[:2] if "/" in name else ("@local", name)
+    return os.path.join(home, "profiles", "node_modules", ns, leaf)
+
+
+def require_profile_packages_ok(home, entry):
+    """Gate: every named package must ship in THIS job's profile module tree.
+    A restated or tool row whose backend cannot resolve is a dead mount, and
+    a dead mount must SKIP loud, never look mounted."""
+    for name in entry.get("require_profile_packages") or []:
+        d = profile_package_dir(home, name)
+        if not package_complete(d):
+            return name, d
+    return None, None
+
+
+def expand_config(c):
+    """`~/...` strings expand against the invoking user's home — the box a
+    dispatched job's DSH_HOME is job-scoped, so shared per-box paths in the
+    manifest must ride the real home, not the job home."""
+    return {k: (os.path.expanduser(v) if isinstance(v, str) else v) for k, v in c.items()}
+
+
+def shared_index_db(entry, cfg):
+    """Per-job db path under a SHARED per-box index directory. One shared
+    index FILE would break the backend's single-process-owner contract: it
+    reconciles under BEGIN IMMEDIATE with no busy timeout, and node:sqlite
+    throws immediately on lock contention (measured), so the worker's
+    parallel slots would flake every search. The index is the backend's own
+    'dedicated disposable database' — the durable half of sharing is the
+    persistence corpus, not this file. Any failure here SKIPs loud."""
+    d = os.path.expanduser(entry["shared_index"])
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        keep_s = float(os.environ.get("DSH_SESSION_INDEX_KEEP_DAYS", "14")) * 86400.0
+        now = time.time()
+        for f in glob.glob(os.path.join(d, "session-search-*.db*")):
+            try:
+                if now - os.path.getmtime(f) > keep_s:
+                    os.unlink(f)
+            except OSError:
+                pass  # best-effort prune; a stuck file is never fatal
+        cfg["path"] = os.path.join(d, f"session-search-{int(now * 1000)}-{os.getpid()}.db")
+        return None
+    except OSError as e:
+        return str(e)
+
+
+def write_patch(patch_file, manifest_name, node, pid, name, cfg, insert):
+    with open(patch_file, "w") as f:
+        f.write(f"# Stamped by lane-plugins-consult.py (manifest: {manifest_name}; node {node}).\n")
+        if insert:
+            # A bare row with an unknown id only warns and is silently
+            # skipped — new plugins must ride the explicit insert grammar.
+            f.write("# insert: because a bare row with an unknown id only warns and is silently skipped.\n")
+            f.write("- insert:\n")
+            f.write(f"    - id: {pid}\n")
+            f.write(f"      name: '{name}'\n")
+            if cfg:
+                f.write("      config:\n")
+                indent = "        "
+        else:
+            # A bare row REPLACES the whole config of an id that already
+            # ships in the profile — every field it shipped must be restated.
+            f.write("# Bare row: replaces the shipped row's whole config (restatement, not addition).\n")
+            f.write(f"- id: {pid}\n")
+            f.write(f"  name: '{name}'\n")
+            if cfg:
+                f.write("  config:\n")
+                indent = "    "
+        for k, v in (cfg or {}).items():
+            f.write(f"{indent}{k}: {yaml_scalar(v)}\n")
 
 
 def main():
@@ -131,9 +212,41 @@ def main():
             print(f"MOUNTED\t{pid}\tnative seam primed (canonical {canon})")
             continue
 
+        # seam == "profile-config": restate the config of a plugin that
+        # ALREADY ships in the profile module tree — no package copy. This is
+        # how shipped-off capabilities turn on (the session-query backend
+        # ships as path ':memory:' / openAt 'never'): patch rows replace the
+        # whole config, so the overlay restates every shipped field it cares
+        # about. Config strings expand `~/`; `shared_index` swaps in a
+        # per-job db path under a shared per-box directory (owner contract).
+        if seam == "profile-config":
+            if home is None:
+                print(f"SKIP\t{pid}\tno --home given")
+                continue
+            pkg_name = entry.get("package", "")
+            pkg_at = profile_package_dir(home, pkg_name) if pkg_name else ""
+            if not pkg_name or not package_complete(pkg_at):
+                print(f"SKIP\t{pid}\tprofile package '{pkg_name or '?'}' missing/incomplete at {pkg_at} (a restated row naming a missing package is a dead mount)")
+                continue
+            cfg = expand_config(entry.get("config") or {})
+            if entry.get("shared_index"):
+                err = shared_index_db(entry, cfg)
+                if err:
+                    print(f"SKIP\t{pid}\tshared index dir unusable ({err})")
+                    continue
+            patch_file = os.path.join(home, f"lane-plugin-{pid}.patch.yml")
+            write_patch(patch_file, os.path.basename(manifest_path), node, pid, pkg_name, cfg, insert=False)
+            print(f"PATCH\t{patch_file}")
+            print(f"MOUNTED\t{pid}\tprofile-config seam ({pkg_name} restated; no copy)")
+            continue
+
         # seam == "plugin": the compose pattern — per-job copy + overlay
         if home is None:
             print(f"SKIP\t{pid}\tno --home given")
+            continue
+        missing, missing_at = require_profile_packages_ok(home, entry)
+        if missing:
+            print(f"SKIP\t{pid}\tprofile package '{missing}' missing/incomplete at {missing_at} (the tools would register and fail every call)")
             continue
         src = entry.get("source", {}).get("path", "")
         pkg_dir = os.path.join(root, src) if src else ""
@@ -155,17 +268,7 @@ def main():
                 shutil.rmtree(dest)
             shutil.copytree(pkg_dir, dest)
         patch_file = os.path.join(home, f"lane-plugin-{pid}.patch.yml")
-        with open(patch_file, "w") as f:
-            f.write(f"# Stamped by lane-plugins-consult.py (manifest: {os.path.basename(manifest_path)}; node {node}).\n")
-            f.write("# insert: because a bare row with an unknown id only warns and is silently skipped.\n")
-            f.write("- insert:\n")
-            f.write(f"    - id: {pid}\n")
-            f.write(f"      name: '{name}'\n")
-            cfg = entry.get("config") or {}
-            if cfg:
-                f.write("      config:\n")
-                for k, v in cfg.items():
-                    f.write(f"        {k}: {yaml_scalar(v)}\n")
+        write_patch(patch_file, os.path.basename(manifest_path), node, pid, name, entry.get("config") or {}, insert=True)
         print(f"PATCH\t{patch_file}")
         print(f"MOUNTED\t{pid}\tplugin seam ({name} -> {dest})")
 
