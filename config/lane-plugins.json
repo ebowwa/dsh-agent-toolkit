@@ -1,6 +1,6 @@
 {
-  "_doc": "Lane-plugin delegation — the single source of truth for which dsh plugins mount WHERE, keyed the same way lane routing keys work: platform (the node's OS) and node (glob vs the runner name). Two seams: 'native-web' primes the env of the runner's own proven web-search mount (run-dsh-agent.sh section 2e — per-job copy + regenerated patch overlay); 'plugin' mounts compose-style (in-tree package copied per-job into the profile module tree + insert-row overlay). The runner consults this at SPAWN time (scripts/lane-plugins-consult.py) — no node env changes, no node restarts, plugins land by landing this file. External sources are materialized to the per-box canonical location by scripts/sync-lane-plugins.sh from the keepalive (after the v1 checkout), so pins advance on tag bump.",
-  "_gates": "Every entry gates before mounting: platform must match, node glob must match, and the entry's own gate must pass (require_browser: at least one probed browser exists — probed paths must be space-free for the env pin; probe_port: 127.0.0.1:port must answer — engine-dependent plugins mount only where the engine runs). A gated-out entry is a LOUD skip, never a dead mount and never a failed run.",
+  "_doc": "Lane-plugin delegation — the single source of truth for which dsh plugins mount WHERE, keyed the same way lane routing keys work: platform (the node's OS) and node (glob vs the runner name). Three seams: 'native-web' primes the env of the runner's own proven web-search mount (run-dsh-agent.sh section 2e — per-job copy + regenerated patch overlay); 'plugin' mounts compose-style (in-tree package copied per-job into the profile module tree + insert-row overlay); 'profile-config' turns ON a capability a package already ships but ships OFF — it copies nothing, gates on the package being present in the job's profile module tree, and stamps a bare restating row (patch rows REPLACE whole plugin config, so every shipped field the entry cares about must be restated; entry 'shared_index' swaps the config 'path' for a per-job db file under a shared per-box directory, because the backend owns one process per index path and node:sqlite throws immediately on lock contention). The runner consults this at SPAWN time (scripts/lane-plugins-consult.py) — no node env changes, no node restarts, plugins land by landing this file. External sources are materialized to the per-box canonical location by scripts/sync-lane-plugins.sh from the keepalive (after the v1 checkout), so pins advance on tag bump.",
+  "_gates": "Every entry gates before mounting: platform must match, node glob must match, and the entry's own gate must pass (require_browser: at least one probed browser exists — probed paths must be space-free for the env pin; probe_port: 127.0.0.1:port must answer — engine-dependent plugins mount only where the engine runs; require_profile_packages: every named package must ship complete in the job's profile module tree; profile-config 'package': same presence check for the restated row's own package). A gated-out entry is a LOUD skip, never a dead mount and never a failed run.",
   "_adoption": "Gated like the ADR (2026-08-27): pinned refs, deliberate advancement, smoke before fleet-wide. Manual per-box mounts are the 2026-09-21 incident class — never again.",
   "macos": [
     {
@@ -38,7 +38,78 @@
       },
       "probe_port": 49173,
       "require_probe": true
+    },
+    {
+      "id": "session-persistence-jsonl",
+      "seam": "profile-config",
+      "nodes": ["*"],
+      "_doc": "Shared session corpus (issue #110, the load-bearing half of 'shared location'): the shipped row roots persistence at dshHomePath('sessions') — under the JOB-FRESH dispatched home that is an empty dir, so prior-session search would silently see nothing. Restating root at the box-shared sessions dir makes every dispatched job read AND write the box's accumulated history (the store the zstd parsers hand-mined). Persistent-home runs already resolve here — a no-op for them. Per-session files, so concurrent jobs do not contend. Cross-session tool authorization is exact-cwd (package README), so visibility is per-box per-workdir: same-lane jobs see each other; that is the honest scope.",
+      "package": "@deepseek-ai/dsh-session-persistence-jsonl",
+      "config": {
+        "root": "~/.dsh/sessions"
+      }
+    },
+    {
+      "id": "session-query-sqlite",
+      "seam": "profile-config",
+      "nodes": ["*"],
+      "_doc": "Session search backend ON (issue #110): the profile ships this row as path ':memory:' / openAt 'never' — FTS5 search deliberately off. Both shipped fields are restated (patch rows replace whole config). openAt 'first-search' keeps boot unaffected (an unopenable index fails one search, never service activation). 'shared_index' stamps a per-job db under the shared per-box dir: ONE shared file would break the backend's single-process-owner contract — it reconciles under BEGIN IMMEDIATE with no busy timeout, and node:sqlite throws immediately on lock contention, so the worker's parallel slots would flake every search. The index is the backend's own 'dedicated disposable database'; the durable half of sharing is the corpus row above.",
+      "package": "@deepseek-ai/dsh-session-query-sqlite",
+      "config": {
+        "openAt": "first-search"
+      },
+      "shared_index": "~/.dsh/session-index"
+    },
+    {
+      "id": "tool-session-query",
+      "seam": "plugin",
+      "nodes": ["*"],
+      "_doc": "The five model-facing session tools (issue #110): session_search / session_event_search / session_trace / session_event_trace / session_event_read — verify-before-dismissal's native search. Vendored build (plugins/tool-session-query, upstream npm @deepseek-ai/dsh-tool-session-query 0.1.0-rc.8 — no dsh release depends on it and the harness git tree has no built lib/, so in-tree is the only self-contained mount; the newer alpha line imports session APIs the deployed rc-era profile tree does not export and fails the live boot proof). Gated on the backend shipping in the profile tree; without it the tools would register and fail every call — a dead mount wearing a working one's clothes.",
+      "source": {
+        "path": "plugins/tool-session-query"
+      },
+      "require_profile_packages": ["@deepseek-ai/dsh-session-query-sqlite"],
+      "config": {
+        "maxSearchResults": 100,
+        "searchTimeoutMs": 30000
+      }
     }
   ],
-  "linux": []
+  "linux": [
+    {
+      "id": "session-persistence-jsonl",
+      "seam": "profile-config",
+      "nodes": ["*"],
+      "_doc": "See the macos entry — identical seam, box-shared corpus.",
+      "package": "@deepseek-ai/dsh-session-persistence-jsonl",
+      "config": {
+        "root": "~/.dsh/sessions"
+      }
+    },
+    {
+      "id": "session-query-sqlite",
+      "seam": "profile-config",
+      "nodes": ["*"],
+      "_doc": "See the macos entry — identical seam, per-job index db under the shared dir.",
+      "package": "@deepseek-ai/dsh-session-query-sqlite",
+      "config": {
+        "openAt": "first-search"
+      },
+      "shared_index": "~/.dsh/session-index"
+    },
+    {
+      "id": "tool-session-query",
+      "seam": "plugin",
+      "nodes": ["*"],
+      "_doc": "See the macos entry — identical seam, vendored build, backend-gated.",
+      "source": {
+        "path": "plugins/tool-session-query"
+      },
+      "require_profile_packages": ["@deepseek-ai/dsh-session-query-sqlite"],
+      "config": {
+        "maxSearchResults": 100,
+        "searchTimeoutMs": 30000
+      }
+    }
+  ]
 }
