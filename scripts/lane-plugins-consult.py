@@ -262,11 +262,20 @@ def main():
         # same-tree guard (compose review r1 finding 1)
         src_real = os.path.realpath(pkg_dir)
         dst_real = os.path.realpath(dest) if os.path.isdir(dest) else dest
-        if src_real != dst_real:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            if os.path.isdir(dest):
-                shutil.rmtree(dest)
-            shutil.copytree(pkg_dir, dest)
+        try:
+            if src_real != dst_real:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                shutil.copytree(pkg_dir, dest)
+        except OSError as e:
+            # A crashed consult dies MID-LOOP: every later entry silently
+            # never mounts (the wrapper used to swallow this traceback with
+            # 2>/dev/null — a lane running with fewer plugins than its
+            # manifest, zero signal). Degrade to a LOUD skip for THIS entry
+            # and keep consulting the rest.
+            print(f"SKIP\t{pid}\tcannot refresh plugin copy at {dest}: {e}")
+            continue
         patch_file = os.path.join(home, f"lane-plugin-{pid}.patch.yml")
         write_patch(patch_file, os.path.basename(manifest_path), node, pid, name, entry.get("config") or {}, insert=True)
         print(f"PATCH\t{patch_file}")

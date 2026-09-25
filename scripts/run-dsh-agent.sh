@@ -560,7 +560,7 @@ if [ -f "$LANE_PLUGINS_MANIFEST" ] && command -v python3 >/dev/null 2>&1; then
     esac
   done < <(python3 "$SCRIPT_DIR/lane-plugins-consult.py" \
              --platform "$(uname -s)" --node "$LANE_NODE_NAME" \
-             --home "$DSH_HOME" "$LANE_PLUGINS_MANIFEST" 2>/dev/null)
+             --home "$DSH_HOME" "$LANE_PLUGINS_MANIFEST" 2> >(sed 's/^/lane-plugins-consult: /' >&2))
 fi
 # --- 2e. local web search + fetch provider (per-cell, default-off) ---------
 # DSH_WEB_SEARCH_CELLS mounts the local key-free ctx.web provider
@@ -956,6 +956,14 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT \
     dsh --profile headless ${DSH_LAUNCH_ARGS[@]+"${DSH_LAUNCH_ARGS[@]}"} "$TASK" >"$FINAL_OUT" 2> >(tee "$ATTEMPT_ERR_LOG" >&2) &
 DSH_PID=$!
 
+# Box-shared session corpus (lane-plugins.json session-persistence-jsonl):
+# dispatched jobs WRITE their session to the box-shared dir (~/.dsh/sessions
+# by manifest config), NOT the job-fresh $DSH_HOME — every session-file
+# probe must search BOTH roots or it reports "no live session file" on every
+# healthy run. Progress streaming, per-run token accounting, attempt
+# tombstone had_session, and transcript archiving all ride these finds.
+SESSION_ROOTS=("${DSH_BOX_SESSIONS:-$HOME/.dsh/sessions}" "$DSH_HOME/sessions")
+
 stream_session_progress() {
   # $1: marker newer-than, $2: pid of dsh wrapper
   # session_file must be initialized: when the wrapper pid is already dead
@@ -971,7 +979,7 @@ stream_session_progress() {
   # The session file appears once the agent is created (a few seconds in).
   for _ in $(seq 1 60); do
     kill -0 "$2" 2>/dev/null || break
-    session_file="$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$1" -print -quit 2>/dev/null)"
+    session_file="$(find "${SESSION_ROOTS[@]}" -name 'session.jsonl.zstd' -newer "$1" -print -quit 2>/dev/null)"
     [ -n "$session_file" ] && break
     sleep 2
   done
@@ -1015,7 +1023,7 @@ echo "::endgroup::" >&2
 # wait returns; give it a beat to drain before classification.
 NOW_EPOCH="$(date +%s)"; LIFE=$(( NOW_EPOCH - ATTEMPT_START ))
 ATTEMPT_HAD_SESSION=0
-if [ -n "$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
+if [ -n "$(find "${SESSION_ROOTS[@]}" -name 'session.jsonl.zstd' -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
   ATTEMPT_HAD_SESSION=1
 fi
 FAIL_CLASS="success"
@@ -1087,7 +1095,7 @@ fi
 if [ "${DSH_KEEP_SESSIONS:-0}" = "1" ]; then
   ARCHIVE_SRC="$SESSION_PATH_ACC"
   if [ -z "$ARCHIVE_SRC" ]; then
-    ARCHIVE_SRC="$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$RUN_START_MARK" -print -quit 2>/dev/null || true)"
+    ARCHIVE_SRC="$(find "${SESSION_ROOTS[@]}" -name 'session.jsonl.zstd' -newer "$RUN_START_MARK" -print -quit 2>/dev/null || true)"
   fi
   archive_session_transcript "$ARCHIVE_SRC"
 fi
