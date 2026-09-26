@@ -16,11 +16,28 @@
 # Dates are KEPT (DSH_SCRUB_KEEP_DATES=1): a commit message that carries a
 # date is authored prose and lands permanently in history — rewriting it at
 # commit time corrupts the stored message (ebowwa/FleetTower#301).
+#
+# Fail-closed (REVIEW.md): if the scrubber cannot run, this shim exits
+# non-zero and the real git is NEVER exec'd — an unscrubbed message is not
+# signed into history on a scrubber outage. The failure is loud (the
+# scrubber's stderr passes through + one context line); the MESSAGE itself
+# is never echoed, since it may be the secret. Shell seam: every call site
+# captures `msg="$(scrub_or_die ...)" || exit 1` because a bare exit inside
+# $( ) kills only the substitution — the status must reach the parent shell
+# for the abort to land before the exec.
 set -uo pipefail
 REAL="${GIT_SCRUB_REAL:?git shim: GIT_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?git shim: SCRUB_SCRIPT not set}"
 
-scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+die() { echo "git-scrub-shim: $*" >&2; exit 1; }
+
+scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1"; }
+
+scrub_or_die() { # <text> -> scrubbed text on stdout; aborts the shim on failure
+  local out
+  out="$(scrub_text "$1")" || die "scrubber failed; refusing to write an unscrubbed commit/tag message (fail-closed, REVIEW.md)"
+  printf '%s' "$out"
+}
 
 args=()
 while [ $# -gt 0 ]; do
@@ -28,13 +45,15 @@ while [ $# -gt 0 ]; do
   case "$flag" in
     -m|--message)
       if [ $# -gt 0 ]; then
-        args+=("$flag" "$(scrub_text "$1")"); shift
+        msg="$(scrub_or_die "$1")" || exit 1
+        args+=("$flag" "$msg"); shift
       else
         args+=("$flag")
       fi;;
     --message=*)
       key="${flag%%=*}"; val="${flag#*=}"
-      args+=("$key=$(scrub_text "$val")");;
+      msg="$(scrub_or_die "$val")" || exit 1
+      args+=("$key=$msg");;
     *)
       args+=("$flag");;
   esac
