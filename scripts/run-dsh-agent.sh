@@ -161,6 +161,35 @@ Your task (from the triggering comment):
 $TASK"
 fi
 
+# Standing agent contract (issue #113): the discovery protocol every lane
+# agent inherits — out-of-scope observations are filed as 'found:' issues
+# carrying receipts and referenced in the exit summary, never silently
+# fixed into the claim (scope-creep). The append sits OUTSIDE the
+# REPLY_TARGET guard on purpose: dispatched worker tasks (REPLY_TARGET
+# empty) and legacy CI comment jobs must both carry it. The full reference
+# text lives in .agents/README.md; tests/agent-contract.test.mjs pins the
+# block, its unconditional placement, and the exit-summary shape.
+STANDING_CONTRACT='Standing contract — every dsh lane agent inherits this.
+
+DISCOVERY — file what you notice, never silently scope-creep. While working
+this claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
+1. File an issue in the repo where you observed it. Title starts with
+   "found:". The body carries receipts: file:line, command output, and the
+   claim you were working (gh issue create --title "found: ..." --body "...").
+2. Label it with the todo label this repo uses (agent-todo where it
+   exists; the closest todo label otherwise — say which you used).
+3. Reference every filed issue in your final summary on ONE
+   filed-followups: line — exact shape:
+     filed-followups: #114, #115
+   comma-space separated issue refs, nothing else on the line. Filed
+   nothing: omit the line entirely — never write filed-followups: none.
+4. Do NOT fix it in the current claim — that is scope-creep — unless the
+   fix is trivial AND in-scope. The claim diff stays on-task; PRs are task
+   work-products, not discoveries.'
+TASK="${TASK}
+
+${STANDING_CONTRACT}"
+
 # Comment-agent-toolkit mode: the workflow posts the reply itself (as github-actions[bot]
 # via GITHUB_TOKEN), so the agent must NOT comment. It may still push commits
 # and open PRs; author commits as the bot so attribution is not the runner user.
