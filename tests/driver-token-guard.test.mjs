@@ -20,13 +20,31 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DRIVER = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 
+// Hermetic base env (issue #144 — the #131 class in the sibling suites): an
+// agent job's ambient dsh exports (DSH_HOME, DSH_RUNNER_NAME, RUNNER_NAME,
+// ...) must not reach the child driver. The typed guard below fires before
+// any driver seam is read (exit 2 precedes even the manifest seam,
+// run-dsh-agent.sh:710), so on this path the scrub is defense-in-depth —
+// the spawn sees only what the harness pins, by construction rather than
+// by the driver's tolerance of ambient names (no manifest fixture pin is
+// needed here: this driver run can never reach the consult). CI's clean
+// env is unaffected.
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  return env;
+})();
+
 test("driver without DOPPLER_SERVICE_TOKEN fails typed (exit 2) before any work", () => {
   // The typed guard fires before the retry loop, so the backoff never
   // waits here — the seam is pinned anyway: every driver spawn pins it,
   // so a stub that starts failing degrades to instant attempts, never a
   // wedge (tests-lint rule 2; gates runs 34748403843/34788769043/
-  // 34795917609/34803136058).
-  const env = { ...process.env, DSH_RETRY_BACKOFF_S: "0" };
+  // 34795917609/34803136058). The env is the hermetic base (issue #144)
+  // plus this test's own pins — the seam pin stays IN the literal.
+  const env = { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" };
   delete env.DOPPLER_SERVICE_TOKEN;
   // Deliberately bare: the guard must fire before dsh install / cell-tool
   // probes, so no node/dsh/doppler availability is required here.
