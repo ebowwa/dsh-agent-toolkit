@@ -111,9 +111,13 @@ while [ $# -gt 0 ]; do
         args+=("$flag")
       fi;;
     *)
-      if is_value_flag "$flag" && [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
-        # consume a value only when one is plausibly present (next arg is not
-        # a flag) — keeps boolean uses like `gh pr merge -m` safe
+      if is_value_flag "$flag" && [ $# -gt 0 ] && [ "$1" != "--" ]; then
+        # These flags can never be boolean in gh's CLI, so gh consumes the
+        # next argv element as the value EVEN WHEN it starts with `-` — a
+        # leading-dash value used to ride the catch-all and exec raw (issue
+        # #159). Consume-and-scrub it too. Only `--` is skipped: its follower
+        # is a gh positional, not this flag's value. Boolean-only flags like
+        # `gh pr merge -m` are untouched — -m is not a value flag here.
         scrubbed="$(scrub_or_die "$1")" || exit 1
         args+=("$flag" "$scrubbed"); shift
       else

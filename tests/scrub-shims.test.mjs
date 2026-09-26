@@ -211,6 +211,64 @@ test("gh shim: scrubber failure aborts --notes-file= (equals-form file)", (t) =>
   assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
 });
 
+// --- gh shim: leading-dash next-arg values (issue #159) ---------------------
+// The catch-all guard `[ "${1#-}" = "$1" ]` never consumed a next-arg value
+// starting with `-`, so `gh release create --notes "- dash ghp_…"` exec'd the
+// raw notes body: gh really does send a leading-dash separate-arg value
+// (verified in the issue receipts). These flags can never be boolean in gh's
+// CLI, so the shim now consume-and-scrubs — while boolean-only flags like
+// `gh pr merge -m` stay untouched.
+
+test("gh shim: leading-dash next-arg --notes value is scrubbed before exec", (t) => {
+  const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "release", "create", "v1.0.0", "--notes", `- dash ${SECRET}`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  const seen = fs.readFileSync(capture, "utf8");
+  assert.ok(seen.includes("[redacted:token]"), "the leading-dash notes value was scrubbed");
+  assert.ok(!seen.includes("a1B2c3D4e5F6"), "the raw token did not reach gh");
+  assert.ok(seen.includes("- dash"), "the non-secret shape of the value rides through");
+});
+
+test("gh shim: leading-dash next-arg --notes value fails closed on scrubber failure", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["release", "create", "v1.0.0", "--notes", `- dash ${SECRET}`]),
+    "exit-1 scrubber on a leading-dash --notes value",
+  );
+});
+
+test("gh shim: equals-form leading-dash --notes= remains scrubbed", (t) => {
+  const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "release", "create", "v1.0.0", `--notes=- dash ${SECRET}`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8");
+  assert.ok(seen.includes("[redacted:token]"), "the equals-form value was scrubbed");
+  assert.ok(!seen.includes("a1B2c3D4e5F6"), "the raw token did not reach gh");
+});
+
+test("gh shim: boolean-style flag use is untouched (gh pr merge -m keeps working)", (t) => {
+  const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "pr", "merge", "12", "-m",
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.equal(
+    fs.readFileSync(capture, "utf8").trim().split("\n").pop(), "-m",
+    "-m reaches gh verbatim, never consumed as a value",
+  );
+});
+
+test("gh shim: `--` after a value flag is not eaten as the value", (t) => {
+  const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "release", "create", "--notes", "--", "v1.0.0",
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(seen.includes("--"), "`--` rides through for gh's positional parsing");
+  assert.ok(seen.includes("v1.0.0"), "the `--` follower reaches gh as a positional");
+});
+
 // --- git shim ---------------------------------------------------------------
 
 test("git shim: scrubber failure aborts commit -m (real git never exec'd)", (t) => {
