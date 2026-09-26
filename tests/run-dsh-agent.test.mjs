@@ -34,6 +34,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
+// Hermetic lane-plugin consult (issue #129): empty-entry manifest — nothing
+// mounts regardless of what answers on the box.
+const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
 
 // Extract one shell function from the script by name (sed range from the
 // `name()` definition line to the closing brace at column 0).
@@ -443,6 +446,12 @@ const runLauncher = (extraEnv = {}) => {
     // instant attempts, never a wedge (tests-lint rule 2; gates runs
     // 34748403843/34788769043/34795917609/34803136058).
     DSH_RETRY_BACKOFF_S: "0",
+    // Hermeticity (issue #129): the default manifest's dsh-reflex row is
+    // require_probe on 49173 — on any host where the Reflex engine answers
+    // (Gauge hosts) the consult materializes a reflex --patch and every
+    // byte-identical-launch assertion goes red. Pin the consult to an
+    // empty-entry manifest: nothing mounts, here or anywhere.
+    DSH_LANE_PLUGINS_MANIFEST: HERMETIC_LANE_PLUGINS,
   };
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;

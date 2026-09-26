@@ -39,6 +39,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const PLUGIN = path.join(ROOT, "plugins", "tool-search-compose");
 const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+// Hermetic lane-plugin consult (issue #129): empty-entry manifest — the
+// default manifest's dsh-reflex row is require_probe on 49173, so on hosts
+// where the Reflex engine answers (Gauge hosts) the consult materializes an
+// extra --patch and the byte-identical-launch assertions go red.
+const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
 
 // A launcher script + its two runtime script deps, rooted at `base`, with an
 // optional plugins/tool-search-compose layout. Running a COPY (not the repo)
@@ -115,6 +120,9 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
     // `return path.join(...)`), a shape tests-lint rule 2 cannot see —
     // the pin here is manual; keep it if the harness moves.
     DSH_RETRY_BACKOFF_S: "0",
+    // Hermeticity (issue #129): pin the consult to an empty-entry manifest —
+    // nothing mounts, here or anywhere (see HERMETIC_LANE_PLUGINS above).
+    DSH_LANE_PLUGINS_MANIFEST: HERMETIC_LANE_PLUGINS,
   };
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
