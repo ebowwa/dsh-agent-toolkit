@@ -39,11 +39,31 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const PLUGIN = path.join(ROOT, "plugins", "tool-search-compose");
 const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+
 // Hermetic lane-plugin consult (issue #129): empty-entry manifest — the
 // default manifest's dsh-reflex row is require_probe on 49173, so on hosts
 // where the Reflex engine answers (Gauge hosts) the consult materializes an
 // extra --patch and the byte-identical-launch assertions go red.
 const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
+
+// Hermetic base env (issue #131): strip the ambient dsh-agent exports
+// (DSH_*, RUNNER_NAME) so driver spawns see only what the harness pins —
+// an agent job's ambient set drives real launcher behavior (lane-plugin
+// overlay stamping) and turns the absence-pins red on unmodified main.
+// See the longer note in run-dsh-agent.test.mjs. Stripping is not enough
+// (review finding 1 on PR #136): with the env quiet the driver re-derives
+// node identity from the box (`$(hostname)`) and consults the repo's own
+// manifest, whose macos entries glob `nodes: ["*"]` — so the BASE also pins
+// the no-mount fixture; every spawn path is deterministic on every box, and
+// a test wanting a live consult re-pins via extraEnv (applied last).
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
+  return env;
+})();
 
 // A launcher script + its two runtime script deps, rooted at `base`, with an
 // optional plugins/tool-search-compose layout. Running a COPY (not the repo)
@@ -101,7 +121,7 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -276,7 +296,7 @@ test("the stamped overlay composes into the real profile: the insert row resolve
   const dump = spawnSync(
     "dsh",
     ["--profile", "headless", "--patch", overlay, "--dump-config"],
-    { encoding: "utf8", env: { ...process.env, DSH_HOME: home }, timeout: 60_000 },
+    { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 60_000 },
   );
   assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
   assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/, "the insert row must appear in the composed config");
@@ -295,7 +315,7 @@ test("the packaged plugin's tree BOOTS against the stamped overlay (skip when ds
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-compose-bootcwd-"));
   // Strip every plausible inference credential: the boot must die at
   // credential resolution (fast, offline), never place a live call.
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
