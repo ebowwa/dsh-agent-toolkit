@@ -29,8 +29,36 @@ const PINNED_VERSION = "0.1.0-rc.8";
 
 const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
 
+// Hermetic lane-plugin consult (issue #129): empty-entry manifest — nothing
+// mounts regardless of what answers on the box.
+const HERMETIC_LANE_PLUGINS = join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
+
+// Hermetic base env (issue #144 — the #131 class in the sibling suites): an
+// agent job's ambient dsh exports (DSH_HOME, DSH_SESSION_JSONL,
+// DSH_SESSION_ID, DSH_SHELL, DSH_RUNNER_NAME, DSH_LANE_PLUGINS_MANIFEST,
+// RUNNER_NAME, ...) must not reach the spawns below. The live half hands
+// real dsh boots to whatever the caller exported — a dispatched job's
+// session seams (DSH_SESSION_JSONL/DSH_SESSION_ID) would redirect the very
+// persistence behavior the boot proof exercises — and even the harness-side
+// consult reads ambient env (lane-plugins-consult.py reads
+// DSH_SESSION_INDEX_KEEP_DAYS). Strip the whole ambient DSH_* family plus
+// the RUNNER_NAME seam at the base; each spawn then re-pins exactly what it
+// wants (DSH_HOME here, per-test extras last). CI's clean env is unaffected.
+// The BASE also pins the no-mount manifest fixture: dsh does not read that
+// seam today (it is the driver's, run-dsh-agent.sh:710), so the pin is
+// inert in this file — it keeps every spawn deterministic against a future
+// reader and matches the sibling suites' base.
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
+  return env;
+})();
+
 function consult(args) {
-  const out = execFileSync("python3", [CONSULT, ...args], { encoding: "utf8" });
+  const out = execFileSync("python3", [CONSULT, ...args], { encoding: "utf8", env: HERMETIC_ENV });
   return out.split("\n").filter((l) => l.trim());
 }
 
@@ -119,7 +147,7 @@ test("the three overlays compose into the real profile (skip when dsh is absent)
   const { home, patches } = stampOverlays();
   const dump = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"], {
     encoding: "utf8",
-    env: { ...process.env, DSH_HOME: home },
+    env: { ...HERMETIC_ENV, DSH_HOME: home },
     timeout: 90_000,
   });
   assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
@@ -136,7 +164,7 @@ test("the composed tree BOOTS: all three plugins load, boot dies at the credenti
   // credential resolution (fast, offline), never place a live call. A
   // plugin-tree load failure dies EARLIER with a different error — which is
   // exactly the failure that caught the alpha-line API drift (SessionSeq).
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   const boot = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "reply ok"], {
     encoding: "utf8",
