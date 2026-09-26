@@ -30,6 +30,9 @@
 # Honest limits: an agent invoking the real binary by absolute path, or
 # curl-ing api.github.com directly, bypasses the shim. Those are deliberate
 # circumvention, not accidents — the review stage and trace make both visible.
+# Also not yet covered: the `-` (stdin) spelling of the *-file flags and the
+# equals-form of --body-file=/--title-file= — pre-existing spellings that ride
+# the catch-all unscrubbed, filed for a follow-up claim.
 
 set -uo pipefail
 REAL="${GH_SCRUB_REAL:?gh shim: GH_SCRUB_REAL not set}"
@@ -58,7 +61,7 @@ scrub_file() { # <path> -> echoes a scrubbed temp file path; aborts the shim on 
 # value flags whose ARGUMENT is agent-authored GitHub-bound text
 is_value_flag() {
   case "$1" in
-    --body|--title|--message|--description|-t|-b) return 0;;
+    --body|--title|--message|--description|--notes|-t|-b|-n) return 0;;
     *) return 1;;
   esac
 }
@@ -73,14 +76,24 @@ args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift
   case "$flag" in
-    --body=*|--title=*|--message=*|--description=*)
+    --body=*|--title=*|--message=*|--description=*|--notes=*)
       key="${flag%%=*}"; val="${flag#*=}"
       scrubbed="$(scrub_or_die "$val")" || exit 1
       args+=("$key=$scrubbed");;
-    --body-file|--title-file)
+    --body-file|--title-file|--notes-file)
       if [ $# -gt 0 ] && [ -f "$1" ]; then
         scrubbed_file="$(scrub_file "$1")" || exit 1
         args+=("$flag" "$scrubbed_file"); shift
+      else
+        args+=("$flag")
+      fi;;
+    --notes-file=*)
+      # equals-form spelling of the notes-file flag (gh's parser accepts
+      # both) — same fail-closed scrub_file, scrubbed temp path to gh
+      val="${flag#*=}"
+      if [ -f "$val" ]; then
+        scrubbed_file="$(scrub_file "$val")" || exit 1
+        args+=("--notes-file" "$scrubbed_file")
       else
         args+=("$flag")
       fi;;
