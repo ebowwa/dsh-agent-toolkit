@@ -135,10 +135,32 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
   return { proc, dir, home, args };
 };
 
-test("DSH_SEARCH_COMPOSE unset: byte-identical launch line — no --patch, no overlay, no copy", () => {
+// Same shape as the run-dsh-agent.test.mjs helper (issue #123): the launcher's
+// --patch argv carries two families of overlay — the feature-owned ones these
+// tests pin and the lane-plugin mounts from config/lane-plugins.json (section
+// 2e-pre, one --patch per gated entry, node-dependent by design). Assertions
+// about a feature being OFF must ignore the lane-plugin family — on engine
+// boxes the consult mounts them even with every feature env unset.
+const FEATURE_OWNED_PATCH_RE = /(^|\/)(subagent-model|web-search-browser|search-compose)\.patch\.yml$/;
+const nonLanePatchFiles = (args) => {
+  // argv lines only: the dsh stub also embeds each overlay's CONTENT after a
+  // `--- patch file: ...` marker — skip those blocks.
+  const lines = args.split("\n").filter((l) => l !== "" && !l.startsWith("---") && !l.startsWith("#"));
+  const files = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === "--patch" && i + 1 < lines.length) files.push(lines[i + 1]);
+  }
+  return files.filter((f) => FEATURE_OWNED_PATCH_RE.test(f));
+};
+
+test("DSH_SEARCH_COMPOSE unset: byte-identical launch line — no feature-owned --patch, no overlay, no copy", () => {
   const { proc, home, args } = runLauncher({});
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
-  assert.ok(!args.includes("--patch"), `no --patch when unset, got argv: ${args}`);
+  // lane-plugin mounts (section 2e-pre) are legitimate default behavior on
+  // this node; the OFF invariant covers the overlays this feature owns
+  // (issue #123).
+  const stray = nonLanePatchFiles(args);
+  assert.deepEqual(stray, [], `no feature-owned --patch when unset, got: ${stray.join(", ")}\nfull argv: ${args}`);
   assert.ok(!existsSync(path.join(home, "search-compose.patch.yml")), "no overlay stamped when unset");
   assert.ok(
     !existsSync(path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit")),
@@ -168,7 +190,8 @@ test("DSH_SEARCH_COMPOSE=1: copies the package, stamps the insert overlay, passe
   assert.ok(!/name: \.\/|name: ['"]?\.{0,2}\//.test(body.replace(/#.*$/gm, "")), "no bare-path row (the f2972e7 shape)");
 
   // And the launch line carries it: --patch directly after --profile headless
-  // (this is the only patch in a compose-only run).
+  // (the compose overlay is the FIRST patch; lane-plugin mounts may add their
+  // own after it on nodes where their gates pass).
   const lines = args.split("\n").filter((l) => l !== "" && !l.startsWith("---") && !l.startsWith("#"));
   const patchAt = lines.indexOf("--patch");
   assert.ok(patchAt > 0, `dsh must receive --patch, got argv: ${lines.join(" ")}`);

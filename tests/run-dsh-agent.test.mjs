@@ -461,6 +461,24 @@ const runLauncher = (extraEnv = {}) => {
   return { proc, dir, home, args };
 };
 
+// The launcher's --patch argv carries two families of overlay: the feature-owned
+// ones these tests pin (subagent-model / web-search-browser / search-compose) and
+// the lane-plugin mounts from config/lane-plugins.json (section 2e-pre: one
+// --patch per gated entry, node-dependent by design). Assertions about a feature
+// being OFF must ignore the lane-plugin family — on engine boxes the consult
+// mounts them even with every feature env unset (issue #123).
+const FEATURE_OWNED_PATCH_RE = /(^|\/)(subagent-model|web-search-browser|search-compose)\.patch\.yml$/;
+const nonLanePatchFiles = (args) => {
+  // argv lines only: the dsh stub also embeds each overlay's CONTENT after a
+  // `--- patch file: ...` marker — skip those blocks.
+  const lines = args.split("\n").filter((l) => l !== "" && !l.startsWith("---") && !l.startsWith("#"));
+  const files = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === "--patch" && i + 1 < lines.length) files.push(lines[i + 1]);
+  }
+  return files.filter((f) => FEATURE_OWNED_PATCH_RE.test(f));
+};
+
 test("DSH_SUBAGENT_MODEL stamps the overlay and passes --patch to dsh", () => {
   const { proc, home, args } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5-turbo" });
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
@@ -491,10 +509,16 @@ test("DSH_SUBAGENT_MODEL stamps the overlay and passes --patch to dsh", () => {
   }
 });
 
-test("DSH_SUBAGENT_MODEL unset launches dsh with NO --patch and no overlay (inherit = today's behavior)", () => {
+test("DSH_SUBAGENT_MODEL unset launches dsh with NO feature-owned --patch and no overlay (inherit = today's behavior)", () => {
   const { proc, home, args } = runLauncher({});
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
-  assert.ok(!args.includes("--patch"), `no --patch flag when unset, got argv: ${args}`);
+  // Lane-plugin delegation (section 2e-pre, config/lane-plugins.json) legitimately
+  // mounts one --patch per gated entry on this node — those are default behavior,
+  // not the subagent feature. Scope the no-patch invariant to the overlays THIS
+  // feature owns (issue #123): only subagent-model/web-search-browser/search-compose
+  // patch files are forbidden when the feature is unset.
+  const stray = nonLanePatchFiles(args);
+  assert.deepEqual(stray, [], `no feature-owned --patch when unset, got: ${stray.join(", ")}\nfull argv: ${args}`);
   assert.ok(
     !existsSync(path.join(home, "subagent-model.patch.yml")),
     "no overlay file must be stamped when unset",
@@ -773,13 +797,23 @@ test("DSH_WEB_SEARCH_CELLS mounts the provider on a listed runner: plugin copied
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no copy, byte-identical default", () => {
+test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no copy, no feature-owned --patch", () => {
   const { proc, home, args } = runLauncher({ DSH_WEB_SEARCH_CELLS: "some-other-cell", RUNNER_NAME: "mini-dsh-2" });
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
   assert.doesNotMatch(proc.stderr, /web-search-browser: mounted/);
   assert.ok(!existsSync(path.join(home, "web-search-browser.patch.yml")), "no web overlay stamped");
-  assert.ok(!existsSync(path.join(home, "profiles", "node_modules", "@local")), "no plugin copy performed");
-  assert.ok(!args.includes("--patch"), "launch line stays byte-identical");
+  // Scoped to the web-owned package: @local is a SHARED scope by design — the
+  // lane-plugin plugin seam (section 2e-pre) copies its own packages (e.g.
+  // @local/dsh-reflex) into the same tree on engine nodes, so only the
+  // feature's package proves the web copy did not run (issue #123).
+  assert.ok(
+    !existsSync(path.join(home, "profiles", "node_modules", "@local", "dsh-web-search-browser")),
+    "no web plugin copy performed",
+  );
+  // lane-plugin mounts (section 2e-pre) are legitimate default behavior on this
+  // node; the OFF invariant covers the overlays this feature owns (issue #123).
+  const stray = nonLanePatchFiles(args);
+  assert.deepEqual(stray, [], `launch line carries no feature-owned --patch, got: ${stray.join(", ")}\nfull argv: ${args}`);
   // glob matching is anchored at an entry level: an entry that merely CONTAINS
   // the runner name must not enable it
   const prefix = runLauncher({ DSH_WEB_SEARCH_CELLS: "mini-dsh-2.backup", RUNNER_NAME: "mini-dsh-2" });
