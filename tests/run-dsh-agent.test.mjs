@@ -38,6 +38,38 @@ const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 // mounts regardless of what answers on the box.
 const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
 
+// Hermeticity (issue #131): a job running INSIDE a dsh agent session exports
+// ambient DSH_* vars (today DSH_HOME, DSH_SHELL, DSH_SESSION_JSONL,
+// DSH_SESSION_ID — the set grows with the driver's surface). A spawn that
+// inherits process.env wholesale keeps the OFF-pins green only by
+// coincidence: the driver happens to ignore today's ambient set, so one new
+// ambient export (DSH_KEEP_SESSIONS, DSH_WEB_SEARCH_CELLS, …) — or one site
+// that forgets to override an ambient DSH_HOME, which aims the launcher at
+// the agent's REAL home — re-reddens the suite from inside any dsh job.
+// hermeticEnv is the tests-2/2c posture generalized: scrub the WHOLE ambient
+// DSH_* namespace, then apply exactly the env the test means. Per-site
+// `delete env.DSH_*` lines become redundant under the scrub and stay as
+// intent documentation. Per-test extraEnv still wins: it is applied LAST.
+const hermeticEnv = (pins = {}) => {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith("DSH_")) delete env[k];
+  return Object.assign(env, pins);
+};
+
+// The pin for the scrub above: an ambient DSH_* export must never reach a
+// driver spawn through the harness, while the test's own pins survive it.
+test("hermeticEnv scrubs the ambient DSH_* namespace; the harness's own pins win (issue #131)", () => {
+  process.env.DSH_INJECTION_PROBE = "ambient-leak";
+  try {
+    const env = hermeticEnv({ DSH_HOME: "/pinned-home", DSH_RETRY_BACKOFF_S: "0" });
+    assert.equal(env.DSH_INJECTION_PROBE, undefined, "an ambient DSH_* export must not reach the spawn");
+    assert.equal(env.DSH_HOME, "/pinned-home", "the harness's own DSH_* pin must survive the scrub");
+    assert.equal(env.DSH_RETRY_BACKOFF_S, "0", "the backoff seam pin must survive the scrub (tests-lint rule 2)");
+  } finally {
+    delete process.env.DSH_INJECTION_PROBE;
+  }
+});
+
 // Extract one shell function from the script by name (sed range from the
 // `name()` definition line to the closing brace at column 0).
 const extractFunction = (name) =>
@@ -72,7 +104,7 @@ test("stream_session_progress degrades gracefully when the wrapper pid is alread
       `${fn}
        stream_session_progress /nonexistent-marker ${dead}`,
     ],
-    { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } },
+    { encoding: "utf8", env: hermeticEnv({ PATH: `${dir}:${process.env.PATH}` }) },
   );
   rmSync(dir, { recursive: true, force: true });
 
@@ -118,8 +150,7 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -136,7 +167,7 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
-  };
+  });
   delete env.GH_TOKEN;      // skip the gh-identity block entirely
   delete env.GITHUB_ENV;    // no workflow env file to publish to
   delete env.DSH_HOME;      // force the job-scoped home under RUNNER_TEMP
@@ -218,8 +249,7 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -229,7 +259,7 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
-  };
+  });
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
   delete env.DSH_HOME;
@@ -308,8 +338,7 @@ test("the job-scoped home mint is per-run: two concurrent drivers on one shared 
       const record = path.join(dir, `recorded-home-${tag}`);
       const githubEnv = path.join(dir, `github-env-${tag}`);
       mkdirSync(home);
-      const env = {
-        ...process.env,
+      const env = hermeticEnv({
         PATH: `${bin}:${process.env.PATH}`,
         HOME: home,
         RUNNER_TEMP: runnerTemp,
@@ -324,13 +353,11 @@ test("the job-scoped home mint is per-run: two concurrent drivers on one shared 
         CELL_PROBE_DIRS: "",
         DSH_HOME_RECORD: record,
         GITHUB_ENV: githubEnv,
-      };
-      // Same hermeticity as tests 2/2c: a lane-exported DSH_HOME (or
-      // persistent-home opt) must not shadow the job-scoped mint under
-      // test — force the mint branch.
-      delete env.DSH_HOME;
-      delete env.DSH_PERSISTENT_HOME;
-      delete env.DSH_SESSION_PATH_FILE;
+      });
+      // (issue #131) the hermeticEnv scrub above replaces this site's old
+      // deletes: a lane-exported DSH_HOME (or persistent-home opt) cannot
+      // shadow the job-scoped mint under test — the mint branch is forced
+      // by construction now, not by an explicit delete list.
       const proc = spawn(
         "bash",
         [SCRIPT, `integration test task ${tag}`],
@@ -424,8 +451,7 @@ test("gh uninstallable (no egress): the full driver still launches the agent and
   );
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -440,7 +466,7 @@ test("gh uninstallable (no egress): the full driver still launches the agent and
     // instant attempts, never a wedge (tests-lint rule 2; gates runs
     // 34748403843/34788769043/34795917609/34803136058).
     DSH_RETRY_BACKOFF_S: "0",
-  };
+  });
   delete env.GH_TOKEN;      // skip the gh-identity block entirely
   delete env.GITHUB_ENV;    // no workflow env file to publish to
   delete env.GITHUB_PATH;   // no workflow path file to append to
@@ -551,8 +577,7 @@ const runLauncher = (extraEnv = {}) => {
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -574,9 +599,11 @@ const runLauncher = (extraEnv = {}) => {
     // byte-identical-launch assertion goes red. Pin the consult to an
     // empty-entry manifest: nothing mounts, here or anywhere.
     DSH_LANE_PLUGINS_MANIFEST: HERMETIC_LANE_PLUGINS,
-  };
+  });
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
+  // (issue #131) the DSH_* deletes that used to live here are covered by the
+  // hermeticEnv scrub — the namespace cannot reach this spawn at all.
   delete env.DSH_SESSION_PATH_FILE;
   delete env.DSH_MODEL;
   delete env.DSH_SUBAGENT_MODEL;
@@ -671,7 +698,7 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
   // Isolated real composition: fresh DSH_HOME (dsh scaffolds the profile),
   // so nothing touches this runner's own harness home.
   const isoHome = mkdtempSync(path.join(tmpdir(), "dsh-dump-home-"));
-  const dumpEnv = { ...process.env, DSH_HOME: isoHome, PATH: process.env.PATH };
+  const dumpEnv = hermeticEnv({ DSH_HOME: isoHome, PATH: process.env.PATH });
   delete dumpEnv.DSH_MODEL;
   delete dumpEnv.DSH_SUBAGENT_MODEL;
   try {
@@ -791,7 +818,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-submodel-bootcwd-"));
   // Strip every plausible inference credential: the boot must die at
   // credential resolution (fast, offline), never place a live call.
-  const env = { ...process.env, DSH_HOME: home };
+  const env = hermeticEnv({ DSH_HOME: home });
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -838,7 +865,7 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
 
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-submodel-maincwd-"));
-  const env = { ...process.env, DSH_HOME: home };
+  const env = hermeticEnv({ DSH_HOME: home });
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -1063,7 +1090,7 @@ test("the stamped web overlay boots: the insert-listed provider tree loads (skip
   assert.ok(existsSync(overlay), "web overlay stamped by the launcher run");
 
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-web-bootcwd-"));
-  const env = { ...process.env, DSH_HOME: home };
+  const env = hermeticEnv({ DSH_HOME: home });
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -1153,8 +1180,7 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: home,
     RUNNER_TEMP: runnerTemp,
@@ -1176,7 +1202,7 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
     // instant attempts, never a wedge (tests-lint rule 2; gates runs
     // 34748403843/34788769043/34795917609/34803136058).
     DSH_RETRY_BACKOFF_S: "0",
-  };
+  });
   delete env.GH_TOKEN;      // skip the gh-identity block entirely
   delete env.GITHUB_ENV;    // no workflow env file to publish to
   delete env.DSH_HOME;      // force the job-scoped home under RUNNER_TEMP
@@ -1299,8 +1325,7 @@ const runAccounting = ({ dshStub, extraEnv = {} }) => {
   writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -1313,7 +1338,7 @@ const runAccounting = ({ dshStub, extraEnv = {} }) => {
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
     ...extraEnv,
-  };
+  });
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
   delete env.GITHUB_PATH;
