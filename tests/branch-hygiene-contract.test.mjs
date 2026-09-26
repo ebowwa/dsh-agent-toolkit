@@ -44,9 +44,12 @@ const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const CONTRACT_DOC = path.join(ROOT, ".agents", "README.md");
 
 // The machine-checkable form of the exit-summary shape documented in
-// .agents/README.md. Matching is trim-tolerant (the reply relay may sit
-// inside markdown), but the line itself carries nothing but the label and
-// the branch names. The placeholder rejection is explicit (unlike
+// .agents/README.md. Matching is relay-tolerant: a markdown bullet /
+// blockquote / bold decoration in front of the label is stripped before
+// the check (the reply relay may sit inside markdown), so the RELAYED
+// line is validated by the same rules instead of being skipped — but the
+// line itself carries nothing but the label and the branch names. The
+// placeholder rejection is explicit (unlike
 // filed-followups, whose `#\d+` refs reject `none` for free): branch
 // names draw from the git-ref charset, and `none`, `N/A` and `-` are all
 // valid members of it — the contract's "never write branches-left: none"
@@ -54,13 +57,23 @@ const CONTRACT_DOC = path.join(ROOT, ".agents", "README.md");
 const BRANCHES_LEFT_LINE = /^branches-left: [A-Za-z0-9._/-]+(, [A-Za-z0-9._/-]+)*$/;
 const BRANCHES_LEFT_PLACEHOLDER = /^branches-left:\s*(?:none|n\/a|-)\s*$/i;
 
+// Markdown relay tolerance (issue #141): the reply relay may decorate the
+// label with a list bullet / blockquote marker / bold pair — "- branches-left:",
+// "**branches-left:**". Strip exactly that decoration before the label
+// check so the RELAYED line is VALIDATED by the shape
+// rules below — a bullet-relayed `branches-left: none` is a violation,
+// not an invisible line (a bare `startsWith` skipped it, which made the
+// markdown-relay-safe claim vacuous).
+const stripMarkdownRelay = (line) =>
+  line.replace(/^[-*\s>]+/, "").replace(/:\*\*(?=\s|$)/, ":");
+
 /** Violations of the exit-summary shape in an agent's final summary. */
 const branchesLeftViolations = (summary) => {
   const violations = [];
   const lines = summary.split("\n");
   let seen = 0;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const line = stripMarkdownRelay(lines[i].trim());
     if (!line.startsWith("branches-left")) continue;
     seen++;
     if (BRANCHES_LEFT_PLACEHOLDER.test(line)) {
@@ -254,6 +267,34 @@ test("exit-summary shape: underscored and dotted branch names are branch names",
 
 test("exit-summary shape: trim-tolerant (markdown-relay safe), still strict on content", () => {
   assert.deepEqual(branchesLeftViolations("- branches-left: dsh/issue-127-c5844082078\n"), []);
+});
+
+test("exit-summary shape: markdown-relayed lines are VALIDATED, not skipped (issue #141)", () => {
+  // Valid relayed forms stay valid under every decoration the reply
+  // relay actually emits:
+  for (const good of [
+    "- branches-left: dsh/issue-127-c5844082078",
+    "* branches-left: dsh/a, dsh/b",
+    "> branches-left: dsh/a",
+    "**branches-left:** dsh/a",
+  ]) {
+    assert.deepEqual(branchesLeftViolations(`${good}\n`), [], `expected zero violations for: ${good}`);
+  }
+  // ...and the relayed form is VALIDATED: a placeholder or a malformed
+  // list behind a bullet is a violation, not an invisible line.
+  for (const bad of [
+    "- branches-left: none",
+    "**branches-left:** none",
+    "- branches-left: N/A",
+    "- branches-left: dsh/a (see PR #9)",
+    "- branches-left: dsh/a,dsh/b",
+  ]) {
+    assert.equal(branchesLeftViolations(`${bad}\n`).length, 1, `expected exactly one violation for: ${bad}`);
+  }
+  // The relayed form counts toward the ONE-line rule too.
+  const violations = branchesLeftViolations("branches-left: dsh/a\n- branches-left: dsh/b\n");
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /ONE/);
 });
 
 test("exit-summary shape: left nothing — the line is absent, zero violations", () => {
