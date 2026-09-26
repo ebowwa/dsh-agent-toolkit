@@ -35,6 +35,24 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 
+// Hermetic base env (issue #131): an agent job's ambient dsh-agent exports
+// (DSH_HOME, DSH_SESSION_JSONL, DSH_SESSION_ID, DSH_SHELL, DSH_RUNNER_NAME,
+// DSH_LANE_PLUGINS_MANIFEST, RUNNER_NAME, ...) leak into driver spawns and
+// drive real behavior — e.g. the lane-plugin consult (run-dsh-agent.sh
+// section 2e-pre) stamps `lane-plugin-*.patch.yml` overlays keyed on the
+// ambient runner name, turning the absence-pins ("no --patch when unset")
+// red on unmodified main whenever the suite runs from inside a dsh job.
+// Strip the whole ambient DSH_* family plus the RUNNER_NAME seam here; the
+// harness then re-pins exactly the vars each test wants (DSH_HOME,
+// DSH_RETRY_BACKOFF_S, extraEnv, ...). CI's clean env is unaffected.
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  return env;
+})();
+
 // Extract one shell function from the script by name (sed range from the
 // `name()` definition line to the closing brace at column 0).
 const extractFunction = (name) =>
@@ -69,7 +87,7 @@ test("stream_session_progress degrades gracefully when the wrapper pid is alread
       `${fn}
        stream_session_progress /nonexistent-marker ${dead}`,
     ],
-    { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } },
+    { encoding: "utf8", env: { ...HERMETIC_ENV, PATH: `${dir}:${process.env.PATH}` } },
   );
   rmSync(dir, { recursive: true, force: true });
 
@@ -116,7 +134,7 @@ test("a nonzero agent exit still relays the final answer, cleans the job-scoped 
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -216,7 +234,7 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -300,7 +318,7 @@ test("gh uninstallable (no egress): the full driver still launches the agent and
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -427,7 +445,7 @@ const runLauncher = (extraEnv = {}) => {
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -516,7 +534,7 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
   // Isolated real composition: fresh DSH_HOME (dsh scaffolds the profile),
   // so nothing touches this runner's own harness home.
   const isoHome = mkdtempSync(path.join(tmpdir(), "dsh-dump-home-"));
-  const dumpEnv = { ...process.env, DSH_HOME: isoHome, PATH: process.env.PATH };
+  const dumpEnv = { ...HERMETIC_ENV, DSH_HOME: isoHome, PATH: process.env.PATH };
   delete dumpEnv.DSH_MODEL;
   delete dumpEnv.DSH_SUBAGENT_MODEL;
   try {
@@ -636,7 +654,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-submodel-bootcwd-"));
   // Strip every plausible inference credential: the boot must die at
   // credential resolution (fast, offline), never place a live call.
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -683,7 +701,7 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
 
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-submodel-maincwd-"));
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -898,7 +916,7 @@ test("the stamped web overlay boots: the insert-listed provider tree loads (skip
   assert.ok(existsSync(overlay), "web overlay stamped by the launcher run");
 
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-web-bootcwd-"));
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
@@ -989,7 +1007,7 @@ test("doppler launch is isolated from the host doppler scope; the child still ge
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: home,
     RUNNER_TEMP: runnerTemp,
@@ -1135,7 +1153,7 @@ const runAccounting = ({ dshStub, extraEnv = {} }) => {
   writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,

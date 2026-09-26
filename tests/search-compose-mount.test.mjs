@@ -35,6 +35,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Hermetic base env (issue #131): strip the ambient dsh-agent exports
+// (DSH_*, RUNNER_NAME) so driver spawns see only what the harness pins —
+// an agent job's ambient set drives real launcher behavior (lane-plugin
+// overlay stamping) and turns the absence-pins red on unmodified main.
+// See the longer note in run-dsh-agent.test.mjs.
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  return env;
+})();
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const PLUGIN = path.join(ROOT, "plugins", "tool-search-compose");
@@ -96,7 +109,7 @@ const runLauncher = (extraEnv = {}, { script = SCRIPT, dshHome = null } = {}) =>
   for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
 
   const env = {
-    ...process.env,
+    ...HERMETIC_ENV,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: dir,
     RUNNER_TEMP: runnerTemp,
@@ -245,7 +258,7 @@ test("the stamped overlay composes into the real profile: the insert row resolve
   const dump = spawnSync(
     "dsh",
     ["--profile", "headless", "--patch", overlay, "--dump-config"],
-    { encoding: "utf8", env: { ...process.env, DSH_HOME: home }, timeout: 60_000 },
+    { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 60_000 },
   );
   assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
   assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/, "the insert row must appear in the composed config");
@@ -264,7 +277,7 @@ test("the packaged plugin's tree BOOTS against the stamped overlay (skip when ds
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-compose-bootcwd-"));
   // Strip every plausible inference credential: the boot must die at
   // credential resolution (fast, offline), never place a live call.
-  const env = { ...process.env, DSH_HOME: home };
+  const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
