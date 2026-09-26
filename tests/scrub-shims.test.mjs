@@ -1,0 +1,207 @@
+// scrub-shims.test.mjs — fail-closed contract pin for the transport shims.
+// REVIEW.md: "Scrubbing is fail-closed: if the scrubber cannot run, the
+// pipeline must abort rather than pass unscrubbed text onward. Any change
+// that makes a scrub failure non-fatal is rejected."
+//
+// Regression: both shims' scrub helpers were fail-OPEN —
+//   scrub_text() { ... node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+//   scrub_file() { ... node "$SCRUB" <"$1" >"$out" 2>/dev/null || cp "$1" "$out"; }
+// — so a scrubber outage (node missing, module gone, crash) silently handed
+// the RAW text to the real gh/git, and 2>/dev/null hid the failure. These
+// tests mint a FAILING SCRUB_SCRIPT and a recording stand-in for the real
+// binary, then assert the shim aborts non-zero and the recorder never runs:
+// the secret-bearing payload never crosses the shim line.
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const GH_SHIM = path.join(ROOT, "scripts", "gh-scrub-shim");
+const GIT_SHIM = path.join(ROOT, "scripts", "git-scrub-shim");
+const REAL_SCRUB = path.join(ROOT, "scripts", "scrub-output.mjs");
+
+// Synthetic token shape (same construction the scrubber's own suite uses —
+// never a real credential).
+const SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3";
+
+/** A temp dir (auto-cleaned) holding a scrub script with the given body and
+ * a recording stand-in for the real gh/git: it appends its argv to
+ * $SHIM_TEST_CAPTURE and exits 0. The shims exec $GH_SCRUB_REAL/$GIT_SCRUB_REAL
+ * by absolute path, so no PATH shadowing is needed — the ambient PATH only
+ * has to still resolve `node` for the scrubber itself. */
+function stage(t, scrubBody) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-test-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const scrub = path.join(dir, "scrub-under-test.mjs");
+  fs.writeFileSync(scrub, scrubBody);
+  const capture = path.join(dir, "captured-argv.txt");
+  const real = path.join(dir, "record-real");
+  fs.writeFileSync(
+    real,
+    "#!/usr/bin/env bash\n# test stand-in for the real gh/git: record argv, touch nothing\n" +
+      'printf \'%s\\n\' "$@" >> "$SHIM_TEST_CAPTURE"\nexit 0\n',
+  );
+  fs.chmodSync(real, 0o755);
+  return { dir, scrub, capture, real };
+}
+
+/** Run one shim with a staged scrubber + recorder. */
+function runShim(t, shim, scrubBody, argv) {
+  const { dir, scrub, capture, real } = stage(t, scrubBody);
+  const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
+  const res = spawnSync("bash", [shim, ...argv], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      [envKey]: real,
+      SCRUB_SCRIPT: scrub,
+      SHIM_TEST_CAPTURE: capture,
+      // pin the scrub temp file into the auto-cleaned harness dir
+      TMPDIR: dir,
+    },
+  });
+  return { res, capture };
+}
+
+/** The fail-closed assertion bundle: non-zero exit, the real binary never
+ * exec'd, and the secret nowhere on disk in the harness dir. */
+function assertAborted({ res, capture }, why) {
+  assert.notEqual(
+    res.status, 0,
+    `${why}: shim must exit non-zero on scrubber failure (stderr: ${res.stderr})`,
+  );
+  assert.ok(
+    !fs.existsSync(capture),
+    `${why}: the real binary was exec'd anyway — captured: ${fs.existsSync(capture) ? fs.readFileSync(capture, "utf8") : ""}`,
+  );
+  assert.match(res.stderr, /fail-closed/, "the abort is loud, not silent");
+  assert.ok(!res.stderr.includes(SECRET), "the abort never echoes the payload");
+}
+
+const FAIL_EXIT1 = "import 'nonexistent-scrub-module.mjs';\n";
+const CRASH_AFTER_PARTIAL = [
+  "process.stdout.write('partial');",
+  "process.stderr.write('scrubber boom');",
+  "process.exit(3);",
+  "",
+].join("\n");
+
+// --- gh shim: every text-bearing call-site shape ---------------------------
+
+test("gh shim: scrubber failure aborts --body= (real gh never exec'd)", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["pr", "comment", "12", `--body=token ${SECRET} landed`]),
+    "exit-1 scrubber on --body=",
+  );
+});
+
+test("gh shim: crashing scrubber (partial write, exit 3) aborts --body=", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, CRASH_AFTER_PARTIAL, ["pr", "comment", "12", `--body=partialsecret ${SECRET}`]),
+    "partial-write scrubber on --body=",
+  );
+});
+
+test("gh shim: scrubber failure aborts the separate-arg --body form", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["pr", "comment", "12", "--body", `token ${SECRET}`]),
+    "exit-1 scrubber on --body <value>",
+  );
+});
+
+test("gh shim: scrubber failure aborts -f body= (api fields)", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["api", "repos/o/r/issues/1/comments", "-f", `body=token ${SECRET}`]),
+    "exit-1 scrubber on -f body=",
+  );
+});
+
+test("gh shim: scrubber failure aborts --body-file (raw file never copied onward)", (t) => {
+  const { res, capture } = (() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-file-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const bodyFile = path.join(dir, "body.md");
+    fs.writeFileSync(bodyFile, `token ${SECRET} in a file\n`);
+    const scrub = path.join(dir, "scrub-under-test.mjs");
+    fs.writeFileSync(scrub, FAIL_EXIT1);
+    const capture = path.join(dir, "captured-argv.txt");
+    const real = path.join(dir, "record-real");
+    fs.writeFileSync(
+      real,
+      "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"$SHIM_TEST_CAPTURE\"\nexit 0\n",
+    );
+    fs.chmodSync(real, 0o755);
+    const r = spawnSync("bash", [GH_SHIM, "pr", "create", "--body-file", bodyFile], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GH_SCRUB_REAL: real,
+        SCRUB_SCRIPT: scrub,
+        SHIM_TEST_CAPTURE: capture,
+        TMPDIR: dir,
+      },
+    });
+    return { res: r, capture };
+  })();
+  assertAborted({ res, capture }, "exit-1 scrubber on --body-file");
+  // No half-scrubbed temp file may linger either: the failure path unlinks it.
+  const leftovers = fs.readdirSync(path.dirname(capture)).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
+// --- git shim ---------------------------------------------------------------
+
+test("git shim: scrubber failure aborts commit -m (real git never exec'd)", (t) => {
+  assertAborted(
+    runShim(t, GIT_SHIM, FAIL_EXIT1, ["commit", "-m", `landed token ${SECRET}`]),
+    "exit-1 scrubber on git commit -m",
+  );
+});
+
+test("git shim: scrubber failure aborts --message= form", (t) => {
+  assertAborted(
+    runShim(t, GIT_SHIM, CRASH_AFTER_PARTIAL, ["commit", `--message=token ${SECRET}`]),
+    "crashing scrubber on git commit --message=",
+  );
+});
+
+// --- positive control: the same harness passes scrubbed text through --------
+
+test("positive control: with the REAL scrubber the shim execs gh with redacted text", (t) => {
+  const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "pr", "comment", "12", `--body=token ${SECRET} dated 2026-09-26`,
+  ]);
+  assert.equal(
+    res.status, 0,
+    `working scrubber must pass through (stderr: ${res.stderr})`,
+  );
+  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  const seen = fs.readFileSync(capture, "utf8");
+  assert.ok(seen.includes("[redacted:token]"), "scrubbed text reached the real gh");
+  assert.ok(!seen.includes("a1B2c3D4e5F6"), "the raw token did not");
+  assert.ok(seen.includes("2026-09-26"), "dates still ride through untouched");
+});
+
+// --- source pin: the fail-open shapes can never return ----------------------
+
+test("source pin: neither shim carries a fail-open scrub fallback or stderr swallow", () => {
+  for (const [shim, name] of [[GH_SHIM, "gh-scrub-shim"], [GIT_SHIM, "git-scrub-shim"]]) {
+    const src = fs.readFileSync(shim, "utf8");
+    const lines = src.split("\n").map((l, i) => ({ l, i: i + 1 }));
+    for (const { l, i } of lines) {
+      if (!l.includes('node "$SCRUB"')) continue;
+      assert.ok(
+        !/2>\s*\/dev\/null/.test(l),
+        `${name}:${i}: the scrubber's stderr must not be swallowed (a silent scrubber outage is how fail-open ships)`,
+      );
+      assert.ok(
+        !/\|\|/.test(l.replace(/^(.*?)node "\$SCRUB"/, "")),
+        `${name}:${i}: no fallback after the scrubber invocation — failure must abort, not pass raw text (REVIEW.md fail-closed)`,
+      );
+    }
+  }
+});

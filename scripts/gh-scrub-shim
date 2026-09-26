@@ -18,6 +18,15 @@
 #   GH_SCRUB_REAL   absolute path of the real gh
 #   SCRUB_SCRIPT    absolute path of scrub-output.mjs
 #
+# Fail-closed (REVIEW.md): if the scrubber cannot run, this shim exits
+# non-zero and the real gh is NEVER exec'd — unscrubbed text does not ride a
+# scrubber outage past this line. The failure is loud (the scrubber's stderr
+# passes through + one context line); the TEXT itself is never echoed, since
+# it may be the secret. Shell seam: every call site captures
+#   out="$(scrub_or_die ...)" || exit 1
+# because a bare exit inside $( ) kills only the substitution — the status
+# must reach the parent shell for the abort to land before the exec.
+#
 # Honest limits: an agent invoking the real binary by absolute path, or
 # curl-ing api.github.com directly, bypasses the shim. Those are deliberate
 # circumvention, not accidents — the review stage and trace make both visible.
@@ -26,12 +35,23 @@ set -uo pipefail
 REAL="${GH_SCRUB_REAL:?gh shim: GH_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?gh shim: SCRUB_SCRIPT not set}"
 
-scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+die() { echo "gh-scrub-shim: $*" >&2; exit 1; }
 
-scrub_file() { # <path> -> echoes a scrubbed temp file path
+scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1"; }
+
+scrub_or_die() { # <text> -> scrubbed text on stdout; aborts the shim on failure
+  local out
+  out="$(scrub_text "$1")" || die "scrubber failed; refusing to pass unscrubbed text onward to gh (fail-closed, REVIEW.md)"
+  printf '%s' "$out"
+}
+
+scrub_file() { # <path> -> echoes a scrubbed temp file path; aborts the shim on failure
   local out
   out="$(mktemp "${TMPDIR:-/tmp}/gh-scrubbed.XXXXXX")"
-  DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <"$1" >"$out" 2>/dev/null || cp "$1" "$out"
+  if ! DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <"$1" >"$out"; then
+    rm -f "$out"
+    die "scrubber failed on $1; refusing to pass the raw file onward to gh (fail-closed, REVIEW.md)"
+  fi
   printf '%s' "$out"
 }
 
@@ -55,10 +75,12 @@ while [ $# -gt 0 ]; do
   case "$flag" in
     --body=*|--title=*|--message=*|--description=*)
       key="${flag%%=*}"; val="${flag#*=}"
-      args+=("$key=$(scrub_text "$val")");;
+      scrubbed="$(scrub_or_die "$val")" || exit 1
+      args+=("$key=$scrubbed");;
     --body-file|--title-file)
       if [ $# -gt 0 ] && [ -f "$1" ]; then
-        args+=("$flag" "$(scrub_file "$1")"); shift
+        scrubbed_file="$(scrub_file "$1")" || exit 1
+        args+=("$flag" "$scrubbed_file"); shift
       else
         args+=("$flag")
       fi;;
@@ -66,7 +88,8 @@ while [ $# -gt 0 ]; do
       if [ $# -gt 0 ]; then
         key="${1%%=*}"
         if scrubbable_field "$key" && [ "$1" != "$key" ]; then
-          args+=("$flag" "$key=$(scrub_text "${1#*=}")")
+          scrubbed="$(scrub_or_die "${1#*=}")" || exit 1
+          args+=("$flag" "$key=$scrubbed")
         else
           args+=("$flag" "$1")
         fi
@@ -78,7 +101,8 @@ while [ $# -gt 0 ]; do
       if is_value_flag "$flag" && [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
         # consume a value only when one is plausibly present (next arg is not
         # a flag) — keeps boolean uses like `gh pr merge -m` safe
-        args+=("$flag" "$(scrub_text "$1")"); shift
+        scrubbed="$(scrub_or_die "$1")" || exit 1
+        args+=("$flag" "$scrubbed"); shift
       else
         args+=("$flag")
       fi;;
