@@ -148,6 +148,51 @@ test("shipper commits dirty work, pushes a dsh/auto branch, opens a PR through g
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+test("scrubber failure aborts the ship fail-closed (issue #162): exit 3, no push, no PR, stderr surfaced", () => {
+  const f = fixture();
+  try {
+    // A stub toolkit whose scrub-output.mjs fails like a real scrubber
+    // fault: nonzero exit, typed error on stderr. DSH_AGENT_TOOLKIT_DIR is
+    // the sanctioned seam — the shipper resolves the scrubber through it.
+    const stubTk = path.join(f.dir, "stub-toolkit");
+    mkdirSync(path.join(stubTk, "scripts"), { recursive: true });
+    writeFileSync(path.join(stubTk, "scripts", "scrub-output.mjs"),
+      "#!/usr/bin/env bash\necho 'scrub-output: simulated scrubber fault (issue #162 pin)' >&2\nexit 9\n");
+    spawnSync("chmod", ["+x", path.join(stubTk, "scripts", "scrub-output.mjs")]);
+
+    writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+    writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
+    writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+    // The agent's output carries a credential: with the scrubber down
+    // NOTHING may reach GitHub. The pre-#162 `|| true` shipped a
+    // header-only PR body silently; the fix aborts BEFORE the push.
+    writeFileSync(path.join(f.cache, "dsh-agent-output.txt"),
+      "done — token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 used\n");
+    writeFileSync(path.join(f.work, "a.txt"), "base content\nagent changed it\n");
+
+    const res = spawnSync("bash", [SHIPPER], {
+      encoding: "utf8", env: f.env({ DSH_AGENT_TOOLKIT_DIR: stubTk }),
+    });
+    assert.equal(res.status, 3, `expected the fail-closed exit 3, got ${res.status}\n${res.stderr}`);
+
+    // the scrubber's typed stderr surfaces to the step log, not /dev/null
+    assert.match(res.stderr, /scrub FAILED/);
+    assert.match(res.stderr, /simulated scrubber fault/);
+
+    // abort happened BEFORE any GitHub write: no branch pushed, no PR opened
+    const refs = git(["ls-remote", f.bare]).stdout;
+    assert.ok(!refs.includes("dsh/auto-"), "a scrubber failure must abort before the push");
+    assert.ok(!existsSync(f.ghLog), "no PR may be opened when the scrubber failed");
+
+    // the ship note records the degradation visibly
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /scrub failed/);
+    assert.match(note, /NOT shipped/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 
 test("clean worktree → nothing to ship, no PR opened, no branch created", () => {
   const f = fixture();
