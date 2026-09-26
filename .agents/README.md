@@ -50,6 +50,12 @@ Receipts 2026-09-26 (this repo, scratch issues #116/#117, both closed):
 GraphQL read of #117 returned `parent.number=116`, `blockedBy=[116]`,
 `relatesTo=[116]`.
 
+Boundary (verified live on PR #120, both input positions): the
+relationships mutations resolve Issue nodes only — a PR id is rejected
+(`Could not resolve to Issue node`). A pull request carries its edge as
+its closing reference in the body (`Closes #N`); the relationship rules
+above apply to ISSUES an agent files.
+
 ### The linking rules
 
 1. **PART TICKETS** (issue #114 decomposition): file each part as a
