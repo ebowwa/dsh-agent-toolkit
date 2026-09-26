@@ -29,6 +29,9 @@
 #                           there so prose survives; issue #152), re-scrubbed
 #                           here for the PR body in KEEP_DATES mode
 #                           (default $DSH_SHIP_CACHE/dsh-agent-output.txt).
+#                           Fail-closed (issue #162): the re-scrub runs BEFORE
+#                           the push and a scrubber failure aborts the ship
+#                           (exit 3) — never a silently degraded PR body.
 #   DSH_SHIP_NOTE_FILE      where the human "shipped: ..." note goes
 #                           (default $DSH_SHIP_CACHE/dsh-ship-note.txt).
 #   DSH_PR_NUM_FILE         optional: first reviewable PR number opened is
@@ -92,6 +95,10 @@ if [ -n "${ACK_COMMENT_ID:-}" ] && command -v gh >/dev/null 2>&1; then
 fi
 
 NOTE=""
+# Fail-closed scrub flag (issue #162): set when the PR-body pre-scrub fails;
+# initialized here because `set -u` reads it on every exit path (the tail
+# turns it into exit 3), including the paths that never reach the ship block.
+SHIP_SCRUB_FAILED=""
 
 # open_pr <head-branch> <title> <gh-pr-create args...>: create the PR and
 # dispatch its review with the same degrade-or-loud treatment as the
@@ -174,37 +181,61 @@ DIFF_OK=1
 DIRTY="$(git status --porcelain -- . ':!.dsh-agent-toolkit' 2>/dev/null)" || DIFF_OK=0
 AHEAD="$(git log --oneline "$BEFORE_SHA..HEAD" 2>/dev/null | wc -l | tr -d ' ')" || DIFF_OK=0
 if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
-  BRANCH="dsh/auto-r${DSH_RUN_ID}a${DSH_RUN_ATTEMPT}"
-  git checkout -B "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
-  if [ -n "$DIRTY" ]; then
-    git add -A -- . ':!.dsh-agent-toolkit'
-    git commit -m "dsh: automated ship of agent run ${DSH_RUN_ID}" ${DSH_STAMP:+-m "$DSH_STAMP"} --allow-empty 2>/dev/null || true
+  # Fail-closed PR-body scrub BEFORE any branch/commit/push/PR (issue #162:
+  # the scrub used to run inside the body build AFTER the push under
+  # `|| true`, so a scrubber failure silently shipped a header-only PR
+  # body with the scrubber's typed error discarded by 2>/dev/null). The
+  # PR body is AUTHORED PROSE (GitHub-bound): the pre-scrub keeps dates
+  # (DSH_SCRUB_KEEP_DATES, issue #152 / ebowwa/FleetTower#301 class) so
+  # the gh shim's own KEEP_DATES pass receives them intact instead of
+  # finding a [redacted:date] placeholder it cannot restore. Credentials
+  # redact in EVERY mode; the reply/review comment surfaces stay
+  # default-mode by design (their scrub sites in post-reply.sh /
+  # review-pr.sh — timestamps correlate working hours there).
+  # A scrubber failure aborts the ship fail-closed (REVIEW.md): nothing is
+  # pushed, no PR opens, the scrubber's stderr surfaces, and the script
+  # exits 3 after the note. Aborting BEFORE the push is what makes the
+  # abort clean — no pushed-but-PR-less branch (the open_pr
+  # gh-unavailable trap's worse cousin).
+  SHIP_BODY=""
+  if [ -f "$DSH_AGENT_OUTPUT" ]; then
+    SCRUB_ERR="$(mktemp)"
+    if ! SHIP_BODY="$(DSH_SCRUB_KEEP_DATES=1 node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>"$SCRUB_ERR")"; then
+      echo "ship-changes: agent-output scrub FAILED — ship ABORTED before push (fail-closed, issue #162); scrubber stderr:" >&2
+      cat "$SCRUB_ERR" >&2
+      SHIP_SCRUB_FAILED=1
+    fi
+    rm -f "$SCRUB_ERR"
   fi
-  if git push -u origin "$BRANCH" 2>&1; then
-    {
-      echo "Automated PR from **dsh agent** run ${DSH_RUN_ID}."
-      echo
-      if [ -n "$DSH_STAMP" ]; then echo "\`${DSH_STAMP}\`"; echo; fi
-      echo "**Task:** ${DSH_TASK_TITLE:-_(see run log)_}"
-      echo
-      echo "---"
-      echo
-      if [ -f "$DSH_AGENT_OUTPUT" ]; then
-        # The PR body is AUTHORED PROSE (GitHub-bound): the pre-scrub keeps
-        # dates (DSH_SCRUB_KEEP_DATES, issue #152 / ebowwa/FleetTower#301
-        # class) so the gh shim's own KEEP_DATES pass receives them intact
-        # instead of finding a [redacted:date] placeholder it cannot
-        # restore. Credentials redact in EVERY mode; the reply/review
-        # comment surfaces stay default-mode by design (their scrub sites
-        # in post-reply.sh / review-pr.sh — timestamps correlate working
-        # hours there).
-        DSH_SCRUB_KEEP_DATES=1 node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null || true
-      fi
-    } > "$DSH_SHIP_CACHE/dsh-pr-body.md"
-    NOTE="${NOTE:+$NOTE; }$(open_pr "$BRANCH" "dsh: ${DSH_TASK_TITLE:-agent changes}" \
-      --body-file "$DSH_SHIP_CACHE/dsh-pr-body.md")"
+  if [ -n "$SHIP_SCRUB_FAILED" ]; then
+    NOTE="${NOTE:+$NOTE; }WARNING: agent-output scrub failed — changes found but NOT shipped (fail-closed, issue #162)"
   else
-    NOTE="${NOTE:+$NOTE; }WARNING: found changes but push failed"
+    BRANCH="dsh/auto-r${DSH_RUN_ID}a${DSH_RUN_ATTEMPT}"
+    git checkout -B "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
+    if [ -n "$DIRTY" ]; then
+      git add -A -- . ':!.dsh-agent-toolkit'
+      git commit -m "dsh: automated ship of agent run ${DSH_RUN_ID}" ${DSH_STAMP:+-m "$DSH_STAMP"} --allow-empty 2>/dev/null || true
+    fi
+    if git push -u origin "$BRANCH" 2>&1; then
+      {
+        echo "Automated PR from **dsh agent** run ${DSH_RUN_ID}."
+        echo
+        if [ -n "$DSH_STAMP" ]; then echo "\`${DSH_STAMP}\`"; echo; fi
+        echo "**Task:** ${DSH_TASK_TITLE:-_(see run log)_}"
+        echo
+        echo "---"
+        echo
+        if [ -f "$DSH_AGENT_OUTPUT" ]; then
+          # scrubbed above, BEFORE the push (fail-closed, issue #162) —
+          # this block only assembles the already-scrubbed output.
+          printf '%s\n' "$SHIP_BODY"
+        fi
+      } > "$DSH_SHIP_CACHE/dsh-pr-body.md"
+      NOTE="${NOTE:+$NOTE; }$(open_pr "$BRANCH" "dsh: ${DSH_TASK_TITLE:-agent changes}" \
+        --body-file "$DSH_SHIP_CACHE/dsh-pr-body.md")"
+    else
+      NOTE="${NOTE:+$NOTE; }WARNING: found changes but push failed"
+    fi
   fi
 fi
 
@@ -222,3 +253,10 @@ else
   echo "ship note: nothing to ship (verified: no repo-state changes, no local diff)"
   echo "nothing to ship (verified: no repo-state changes, no local diff)" > "$DSH_SHIP_NOTE_FILE"
 fi
+
+# Fail-closed scrub abort (issue #162): the note above carries the WARNING
+# and the scrubber's stderr already surfaced; the nonzero exit is what makes
+# the abort FATAL for the calling job (the review-pr.sh exit-3 contract) —
+# the worker already treats a nonzero shipper as loud, and a green job that
+# silently failed to ship is the defect class this closes.
+[ -z "$SHIP_SCRUB_FAILED" ] || exit 3
