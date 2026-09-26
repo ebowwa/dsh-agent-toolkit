@@ -45,6 +45,11 @@ second.
 
 ## Related
 
+- [`skills/decompose-by-capability/`](skills/decompose-by-capability/SKILL.md)
+  — plan the claim's PARTS and route each to the machine class that can
+  run it (issue #114, the agent-side mirror of the factory#60 placement
+  law); parts this cell cannot run are filed as self-contained tickets
+  through this contract's filing mechanism.
 - [`skills/verify-before-dismissal/`](skills/verify-before-dismissal/SKILL.md)
   — search prior session history before declaring a limitation.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — the communication conduct:
