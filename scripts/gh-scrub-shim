@@ -3,10 +3,15 @@
 #
 # Installed by run-dsh-agent.sh at the FRONT of the agent's PATH: the agent's
 # `gh` resolves to this shim, which runs every text-bearing argument through
-# scrub-output.mjs (default mode: credentials + PII + identifying metadata)
-# before exec'ing the real gh. GitHub-bound text (comments, PR bodies/titles,
-# review bodies, issue bodies/titles, release notes, api -f fields) can then
-# never carry a key, SSN, SSH key, IP, home path, or date past this line.
+# scrub-output.mjs (default mode plus DSH_SCRUB_KEEP_DATES: credentials + PII
+# + IPs/hosts/paths, DATES KEPT) before exec'ing the real gh. GitHub-bound
+# text (comments, PR bodies/titles, review bodies, issue bodies/titles,
+# release notes, api -f fields) can then never carry a key, SSN, SSH key, IP,
+# or home path past this line — while dates ride through untouched: authored
+# prose legitimately carries dates, and rewriting it at POST time corrupts
+# the STORED body (ebowwa/FleetTower#301 — the shim manufactured
+# [redacted:date] placeholders into a PR body a review then asked the agent
+# to "fill", and every fill re-manufactured them).
 #
 # Env contract (set by run-dsh-agent.sh; names deliberately avoid the
 # KEY/PASSWORD/SECRET/TOKEN patterns dsh scrubs from child env):
@@ -21,12 +26,12 @@ set -uo pipefail
 REAL="${GH_SCRUB_REAL:?gh shim: GH_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?gh shim: SCRUB_SCRIPT not set}"
 
-scrub_text() { node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
 
 scrub_file() { # <path> -> echoes a scrubbed temp file path
   local out
   out="$(mktemp "${TMPDIR:-/tmp}/gh-scrubbed.XXXXXX")"
-  node "$SCRUB" <"$1" >"$out" 2>/dev/null || cp "$1" "$out"
+  DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <"$1" >"$out" 2>/dev/null || cp "$1" "$out"
   printf '%s' "$out"
 }
 
