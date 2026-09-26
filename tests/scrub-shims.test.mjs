@@ -49,7 +49,8 @@ function stage(t, scrubBody) {
   return { dir, scrub, capture, real };
 }
 
-/** Run one shim with a staged scrubber + recorder. */
+/** Run one shim with a staged scrubber + recorder. Returns the harness `dir`
+ * too, so tests can inspect it (payload files, scrub temp leftovers). */
 function runShim(t, shim, scrubBody, argv) {
   const { dir, scrub, capture, real } = stage(t, scrubBody);
   const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
@@ -64,7 +65,7 @@ function runShim(t, shim, scrubBody, argv) {
       TMPDIR: dir,
     },
   });
-  return { res, capture };
+  return { res, capture, dir };
 }
 
 /** The fail-closed assertion bundle: non-zero exit, the real binary never
@@ -153,6 +154,63 @@ test("gh shim: scrubber failure aborts --body-file (raw file never copied onward
   assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
 });
 
+// --- gh shim: release-notes call-site shapes (issue #155) -------------------
+// -n/--notes and --notes-file were absent from is_value_flag()/the file
+// branch, so `gh release create --notes "..."` exec'd the raw notes body and
+// `--notes-file <f>` handed gh the raw file — while the shim header claimed
+// release-notes coverage.
+
+test("gh shim: scrubber failure aborts --notes (release notes body)", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["release", "create", "v1.0.0", "--notes", `token ${SECRET}`]),
+    "exit-1 scrubber on --notes <value>",
+  );
+});
+
+test("gh shim: scrubber failure aborts -n (release notes shorthand)", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, CRASH_AFTER_PARTIAL, ["release", "create", "v1.0.0", "-n", `token ${SECRET}`]),
+    "crashing scrubber on -n <value>",
+  );
+});
+
+test("gh shim: scrubber failure aborts --notes= (release notes equals-form)", (t) => {
+  assertAborted(
+    runShim(t, GH_SHIM, FAIL_EXIT1, ["release", "create", "v1.0.0", `--notes=token ${SECRET}`]),
+    "exit-1 scrubber on --notes=",
+  );
+});
+
+/** A notes payload file in its own temp dir (auto-cleaned), so the argv can
+ * carry the real path before the shim runs. */
+function stageNotesFile(t, contents) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-notes-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "notes.md");
+  fs.writeFileSync(file, contents);
+  return { dir, file };
+}
+
+test("gh shim: scrubber failure aborts --notes-file (raw file never copied onward)", (t) => {
+  const { file } = stageNotesFile(t, `token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GH_SHIM, FAIL_EXIT1, [
+    "release", "create", "v1.0.0", "--notes-file", file,
+  ]);
+  assertAborted({ res, capture }, "exit-1 scrubber on --notes-file");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
+test("gh shim: scrubber failure aborts --notes-file= (equals-form file)", (t) => {
+  const { file } = stageNotesFile(t, `partial ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GH_SHIM, CRASH_AFTER_PARTIAL, [
+    "release", "create", "v1.0.0", `--notes-file=${file}`,
+  ]);
+  assertAborted({ res, capture }, "crashing scrubber on --notes-file=");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
 // --- git shim ---------------------------------------------------------------
 
 test("git shim: scrubber failure aborts commit -m (real git never exec'd)", (t) => {
@@ -184,6 +242,30 @@ test("positive control: with the REAL scrubber the shim execs gh with redacted t
   assert.ok(seen.includes("[redacted:token]"), "scrubbed text reached the real gh");
   assert.ok(!seen.includes("a1B2c3D4e5F6"), "the raw token did not");
   assert.ok(seen.includes("2026-09-26"), "dates still ride through untouched");
+});
+
+test("positive control: --notes-file reaches gh as a scrubbed temp file", (t) => {
+  const { file } = stageNotesFile(t, `token ${SECRET} dated 2026-09-26\n`);
+  const { res, capture, dir } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "release", "create", "v1.0.0", "--notes-file", file,
+  ]);
+  assert.equal(
+    res.status, 0,
+    `working scrubber must pass through (stderr: ${res.stderr})`,
+  );
+  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  // gh is handed the scrubbed TEMP path, never the raw payload path...
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const fileArgs = seen.filter((a) => a.endsWith("notes.md"));
+  assert.equal(fileArgs.length, 0, `the raw notes file path must not reach gh — captured: ${seen.join(" | ")}`);
+  // ...and exactly one scrubbed temp file, whose CONTENT is redacted
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
+  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  assert.ok(text.includes("[redacted:token]"), "scrubbed notes content");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "gh's argv points at the scrubbed temp");
 });
 
 // --- source pin: the fail-open shapes can never return ----------------------
