@@ -802,7 +802,14 @@ test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no 
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
   assert.doesNotMatch(proc.stderr, /web-search-browser: mounted/);
   assert.ok(!existsSync(path.join(home, "web-search-browser.patch.yml")), "no web overlay stamped");
-  assert.ok(!existsSync(path.join(home, "profiles", "node_modules", "@local")), "no plugin copy performed");
+  // Scoped to the web-owned package: @local is a SHARED scope by design — the
+  // lane-plugin plugin seam (section 2e-pre) copies its own packages (e.g.
+  // @local/dsh-reflex) into the same tree on engine nodes, so only the
+  // feature's package proves the web copy did not run (issue #123).
+  assert.ok(
+    !existsSync(path.join(home, "profiles", "node_modules", "@local", "dsh-web-search-browser")),
+    "no web plugin copy performed",
+  );
   // lane-plugin mounts (section 2e-pre) are legitimate default behavior on this
   // node; the OFF invariant covers the overlays this feature owns (issue #123).
   const stray = nonLanePatchFiles(args);
