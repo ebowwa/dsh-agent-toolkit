@@ -48,8 +48,10 @@ exit 0
 test("with ACK_COMMENT_ID the reply PATCHes the ack comment in place", () => {
   const f = fixture();
   try {
+    // planted date: the reply comment is an OUTPUT surface (issue #152) —
+    // the date must come out [redacted:date], never verbatim
     writeFileSync(path.join(f.cache, "dsh-agent-output.txt"),
-      `finished. token ${TOKEN} is real\n`);
+      `finished on 2026-09-26. token ${TOKEN} is real\n`);
     const res = spawnSync("bash", [POST_REPLY], {
       encoding: "utf8", env: f.env({ ACK_COMMENT_ID: "123" }),
     });
@@ -62,6 +64,9 @@ test("with ACK_COMMENT_ID the reply PATCHes the ack comment in place", () => {
     assert.match(reply, /run: run123 /);
     assert.match(reply, /finished/);
     assert.match(reply, /\[redacted:token\]/);
+    assert.match(reply, /\[redacted:date\]/,
+      "reply comments are output surfaces: dates redact by design (issue #152)");
+    assert.ok(!reply.includes("2026-09-26"), "the raw date must never reach the posted reply");
     assert.ok(!reply.includes(TOKEN), "credential must never reach the composed reply");
     assert.match(reply, /Shipped.*pull\/999/s);
   } finally {

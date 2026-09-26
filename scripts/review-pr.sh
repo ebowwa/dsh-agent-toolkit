@@ -171,6 +171,10 @@ DSH_RUN_DSH_VERSION=""
   echo "**dsh review (worker)** — run: ${DSH_RUN_ID:-_} — model: ${DSH_REVIEW_MODEL} — harness: dsh-${DSH_RUN_DSH_VERSION:-?}"
   echo
 } > "$POST_BODY"
+# OUTPUT surface (review comment): default mode redacts date shapes —
+# timestamps correlate working hours (scrub-output.mjs taxonomy,
+# issue #152); unlike the shipper's PR body this is not authored prose.
+# Fail-closed: a scrub failure withholds the comment entirely (exit 3).
 if ! node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_REVIEW_OUT" >> "$POST_BODY" 2>/dev/null; then
   echo "review-pr: scrubber failed — review NOT posted (fail-closed, exit 3)" >&2
   rm -f "$POST_BODY" "$RULES_TMP"

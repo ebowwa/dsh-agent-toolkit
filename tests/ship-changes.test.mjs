@@ -108,8 +108,11 @@ test("shipper commits dirty work, pushes a dsh/auto branch, opens a PR through g
     writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
     writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
     // the agent's output, with a planted credential the PR body must scrub
+    // and a planted date it must KEEP (the PR body is authored prose —
+    // issue #152: a default-mode pre-scrub minted [redacted:date] into the
+    // STORED GitHub text, the ebowwa/FleetTower#301 class)
     writeFileSync(path.join(f.cache, "dsh-agent-output.txt"),
-      "done — summary: fixed the bug. token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 used\n");
+      "done — summary: fixed the bug. landed 2026-09-26 in one pass. token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 used\n");
     // the agent left DIRTY work behind
     writeFileSync(path.join(f.work, "a.txt"), "base content\nagent changed it\n");
 
@@ -129,11 +132,18 @@ test("shipper commits dirty work, pushes a dsh/auto branch, opens a PR through g
     const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
     assert.match(note, /shipped/);
 
-    // the PR body carries the SCRUBBED output: [redacted], never the token
+    // the PR body carries the SCRUBBED output: [redacted], never the token —
+    // and the prose date VERBATIM (keep-dates at the worker hop; the shim's
+    // own keep-dates pass is pinned by scrub-shims.test.mjs, so the two
+    // hops compose into the posted body)
     const body = readFileSync(f.prBodyOut, "utf8");
     assert.match(body, /fixed the bug/);
     assert.match(body, /\[redacted:token\]/);
     assert.ok(!body.includes("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"));
+    assert.match(body, /landed 2026-09-26 in one pass/,
+      "the PR body is authored prose: the date survives verbatim (issue #152)");
+    assert.ok(!body.includes("[redacted:date]"),
+      "no date placeholder minted into stored PR text (ebowwa/FleetTower#301 class)");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
