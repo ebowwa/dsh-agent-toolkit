@@ -8,6 +8,10 @@
 //                    credentials redacted; paths/IPs/hosts are KEPT, since a
 //                    task may legitimately reference them but a pasted key
 //                    never is. This mode guards what is sent to the provider.
+//   DSH_SCRUB_KEEP_DATES=1 — GitHub-bound surfaces (PR bodies, comments,
+//                    commit messages via the transport shims): the date rules
+//                    are dropped — authored prose legitimately carries dates,
+//                    and rewriting it at POST time corrupts the stored text.
 //
 // Reads stdin, writes scrubbed stdout. Deliberately over-broad: a false
 // [redacted] costs nothing; a leaked key costs everything.
@@ -64,11 +68,22 @@ rules.push(
   // Dates — meta tier: redacted on output surfaces (timestamps can correlate
   // runs to a person's working hours); KEPT in model input (tasks legitimately
   // reference dates constantly, and ISO dates alone rarely identify anyone).
+  // Also KEPT in GitHub-bound text (DSH_SCRUB_KEEP_DATES=1, selected by the
+  // transport shims): a PR body / issue comment / commit message that carries
+  // a date is authored prose, not a log line — rewriting it at POST time
+  // corrupts the STORED text (measured on ebowwa/FleetTower#301: a review can
+  // ask the agent to "fill the placeholder" and gh then re-manufactures it
+  // forever). Dates are not credentials; the secret tier is unaffected.
   [/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?\b/g, "[redacted:date]", "meta"],
   [/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g, "[redacted:date]", "meta"],
 );
 
-const active = process.env.SECRETS_ONLY === "1" ? rules.filter(r => r[2] === "secret") : rules;
+// DSH_SCRUB_KEEP_DATES=1 — GitHub-bound mode (gh-scrub-shim / git-scrub-shim):
+// drop the date rules, keep everything else (credentials, PII, IPs/hosts/paths).
+const dateSelected = process.env.DSH_SCRUB_KEEP_DATES === "1"
+  ? rules.filter(r => r[1] !== "[redacted:date]")
+  : rules;
+const active = process.env.SECRETS_ONLY === "1" ? dateSelected.filter(r => r[2] === "secret") : dateSelected;
 
 import readline from "node:readline";
 const rl = readline.createInterface({ input: process.stdin });

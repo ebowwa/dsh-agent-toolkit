@@ -12,12 +12,15 @@
 # KEY/PASSWORD/SECRET/TOKEN patterns dsh scrubs from child env):
 #   GIT_SCRUB_REAL   absolute path of the real git
 #   SCRUB_SCRIPT     absolute path of scrub-output.mjs
-
+#
+# Dates are KEPT (DSH_SCRUB_KEEP_DATES=1): a commit message that carries a
+# date is authored prose and lands permanently in history — rewriting it at
+# commit time corrupts the stored message (ebowwa/FleetTower#301).
 set -uo pipefail
 REAL="${GIT_SCRUB_REAL:?git shim: GIT_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?git shim: SCRUB_SCRIPT not set}"
 
-scrub_text() { node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1" 2>/dev/null || printf '%s' "$1"; }
 
 args=()
 while [ $# -gt 0 ]; do
