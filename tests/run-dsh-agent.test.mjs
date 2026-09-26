@@ -255,6 +255,128 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2d. the job-scoped home MINT: two concurrent runs get DISTINCT homes -
+//
+// dbdb720 (2026-08-24) published the job-scoped home via GITHUB_ENV and, in
+// the same line, dropped the PID suffix: `dsh-home.$$` became `dsh-home.$`
+// — a lone `$` before the closing quote is literal, so EVERY job minted the
+// same constant path. Two runner lanes sharing a RUNNER_TEMP (the exact
+// scenario the mint block's own comment documents) then shared
+// settings/transcripts, and one job's exit cleanup `rm -rf "$DSH_HOME"`
+// deleted the sibling's home mid-flight; the published DSH_HOME_JOB handle
+// let the flight recorder grab another job's home too. The cleanup
+// assertions in tests 2/2c (`homes === []` AFTER the run) pass either way —
+// they cannot see a constant mint. This test runs TWO drivers CONCURRENTLY
+// against ONE shared RUNNER_TEMP and pins the mint contract itself: each
+// run is handed its own `dsh-home.*` (never a literal `$`), the two differ,
+// the published DSH_HOME_JOB equals the home that run was handed, and the
+// shared root is clean once both runs exit. (issue #128)
+
+test("the job-scoped home mint is per-run: two concurrent drivers on one shared RUNNER_TEMP get distinct homes and each GITHUB_ENV carries its own (issue #128, dbdb720 regression)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-mint-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner"); // SHARED by both runs — the hazard scenario
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+
+  // Same hermetic harness as tests 2/2c: doppler exec stub, fast-fail dsh
+  // stub (here also recording the DSH_HOME it was handed), zstd/gh stubs,
+  // no cell probing, no network.
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      // The driver exports DSH_HOME before exec'ing dsh, so the stub sees
+      // exactly the home this run uses — mint-time evidence, not post-hoc.
+      '[ -n "${DSH_HOME_RECORD:-}" ] && printf "%s" "$DSH_HOME" > "$DSH_HOME_RECORD"',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const runOnce = (tag) =>
+    new Promise((resolve) => {
+      const home = path.join(dir, `home-${tag}`);
+      const record = path.join(dir, `recorded-home-${tag}`);
+      const githubEnv = path.join(dir, `github-env-${tag}`);
+      mkdirSync(home);
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: home,
+        RUNNER_TEMP: runnerTemp,
+        DOPPLER_SERVICE_TOKEN: "stub-token",
+        DSH_KEEP_SESSIONS: "",
+        // The PR-#85 retry wraps the spawn in the production backoff
+        // (180s+600s): pin 0 or an unpinned failing stub wedges the
+        // suite (tests-lint pin, gates 34748403843 et al).
+        DSH_RETRY_BACKOFF_S: "0",
+        GH_BIN: path.join(bin, "gh"),
+        DOPPLER_BIN: path.join(bin, "doppler"),
+        CELL_PROBE_DIRS: "",
+        DSH_HOME_RECORD: record,
+        GITHUB_ENV: githubEnv,
+      };
+      // Same hermeticity as tests 2/2c: a lane-exported DSH_HOME (or
+      // persistent-home opt) must not shadow the job-scoped mint under
+      // test — force the mint branch.
+      delete env.DSH_HOME;
+      delete env.DSH_PERSISTENT_HOME;
+      delete env.DSH_SESSION_PATH_FILE;
+      const proc = spawn(
+        "bash",
+        [SCRIPT, `integration test task ${tag}`],
+        { env, timeout: 60_000 },
+      );
+      proc.on("exit", (code) => resolve({ tag, code, record, githubEnv }));
+    });
+
+  // CONCURRENT: both drivers live at once — distinct PIDs, one shared
+  // RUNNER_TEMP. The constant mint handed both runs the SAME path.
+  const [a, b] = await Promise.all([runOnce("a"), runOnce("b")]);
+
+  assert.equal(a.code, 1, "run A: the stub failure must surface, not hang");
+  assert.equal(b.code, 1, "run B: the stub failure must surface, not hang");
+  const readHome = (r) => readFileSync(r, "utf8").trim();
+  const homeA = readHome(a.record);
+  const homeB = readHome(b.record);
+  assert.ok(path.basename(homeA).startsWith("dsh-home."), `run A must be handed a dsh-home.* path, got ${homeA}`);
+  assert.ok(path.basename(homeB).startsWith("dsh-home."), `run B must be handed a dsh-home.* path, got ${homeB}`);
+  assert.notEqual(homeA, homeB, "two concurrent runs on one RUNNER_TEMP must mint DISTINCT homes (dbdb720 minted one constant path for both)");
+  assert.doesNotMatch(homeA, /\$/, "run A's home must not carry a literal $ (the dbdb720 regression signature)");
+  assert.doesNotMatch(homeB, /\$/, "run B's home must not carry a literal $ (the dbdb720 regression signature)");
+
+  // The flight-recorder handle (GITHUB_ENV, dbdb720's own feature) must
+  // carry the run's OWN home — not a sibling's, not the constant.
+  const published = (r) =>
+    readFileSync(r, "utf8").split("\n").find((l) => l.startsWith("DSH_HOME_JOB="));
+  for (const run of [a, b]) {
+    const line = published(run.githubEnv);
+    assert.ok(line, `run ${run.tag}: DSH_HOME_JOB must be published to GITHUB_ENV`);
+    assert.equal(
+      line.slice("DSH_HOME_JOB=".length),
+      readHome(run.record),
+      `run ${run.tag}: the published DSH_HOME_JOB must equal the home this run was handed`,
+    );
+  }
+  assert.notEqual(
+    published(a.githubEnv),
+    published(b.githubEnv),
+    "the two runs must publish distinct DSH_HOME_JOB values",
+  );
+
+  // Both homes cleaned — nothing left on the shared root.
+  const leftovers = readdirSync(runnerTemp).filter((f) => f.startsWith("dsh-home."));
+  assert.deepEqual(leftovers, [], "both runs must clean their own home off the shared root");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2b. soft gh end-to-end: the WHOLE driver must survive a failed gh
 // bootstrap and still launch the agent (review r2 finding 2's
 // integration half). The extracted-function pins in cell-tools.test.mjs
