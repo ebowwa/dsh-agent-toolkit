@@ -83,65 +83,20 @@ jobs:
         # step the suite silently depended on a stale workspace
         # node_modules, pruned by a disk-clean pass on 2026-09-18 — every
         # gates run since (main included) failed ERR_MODULE_NOT_FOUND.
-        # Approach: install the union of deps+peers of tested plugins at
-        # the repo root (ESM resolution walks up from each plugin lib),
-        # and symlink @local/* names the same way the profile does.
-        run: |
-          set -euo pipefail
-          specs="$(node -e '
-            const fs = require("fs");
-            const out = new Set();
-            for (const dir of fs.readdirSync("plugins")) {
-              const pj = "plugins/" + dir + "/package.json";
-              if (!fs.existsSync(pj) || !fs.existsSync("plugins/" + dir + "/test")) continue;
-              const p = JSON.parse(fs.readFileSync(pj, "utf8"));
-              for (const k of ["dependencies", "peerDependencies"])
-                for (const n of Object.keys(p[k] || {})) out.add(n + "@" + p[k][n]);
-            }
-            console.log([...out].join(" "));
-          ')"
-          mkdir -p node_modules/@local
-          for d in plugins/*; do
-            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
-            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
-            case "$n" in
-              @local/*) ln -sfn "../../$d" "node_modules/$n" && echo "link $n -> $d" ;;
-            esac
-          done
-          if [ -n "$specs" ]; then
-            echo "install: $specs"
-            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $specs
-          fi
-          # The @deepseek-ai family peer-depends on each other (flat profile
-          # tree in production — nothing declares hard deps). npm's root
-          # install reconciles to the spec list it is given, so install the
-          # ACCUMULATED union each round or each round prunes the last.
-          all_specs="$specs"
-          for _ in 1 2 3 4 5; do
-            extra="$(node -e '
-              const fs = require("fs");
-              const root = "node_modules/@deepseek-ai";
-              if (!fs.existsSync(root)) process.exit(0);
-              const need = new Set();
-              for (const pkg of fs.readdirSync(root)) {
-                const pj = JSON.parse(fs.readFileSync(root + "/" + pkg + "/package.json", "utf8"));
-                for (const [n, r] of Object.entries(pj.peerDependencies || {})) {
-                  if (!fs.existsSync("node_modules/" + n)) need.add(n + "@" + r);
-                }
-              }
-              console.log([...need].join(" "));
-            ')"
-            [ -n "$extra" ] || break
-            all_specs="$all_specs $extra"
-            echo "install (union): $extra"
-            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $all_specs
-          done
-          # npm may prune the @local symlinks while reconciling — re-link last
-          for d in plugins/*; do
-            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
-            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
-            case "$n" in @local/*) ln -sfn "../../$d" "node_modules/$n" ;; esac
-          done
+        # The old inline loop could not converge (issue #161): npm
+        # reconciles node_modules to the spec list it is given, so the
+        # per-round re-resolve read a tree its own previous round had
+        # rewritten, oscillated on bare checkouts, and fell through the
+        # round cap WITHOUT failing — node --test red before any test
+        # substantively ran. The script resolves the FULL transitive peer
+        # closure to a deterministic fixpoint (monotone name union,
+        # plugin-declared ranges authoritative), installs the resolved
+        # union, re-links @local/* after every npm pass, and HARD-FAILS
+        # the step on non-convergence or an unverified tree (missing
+        # package / unmet peer / pruned @local link) BEFORE `node --test`
+        # — hermetic on bare containers: registry + checkout are the only
+        # inputs, --no-save --no-package-lock keep the checkout clean.
+        run: node scripts/install-plugin-smoke-deps.mjs
       - name: Unit tests
         # bare --test auto-discovers *.test.mjs (a directory argument is not
         # portable across the node versions on the runner lanes)
