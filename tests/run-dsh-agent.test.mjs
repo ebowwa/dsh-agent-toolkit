@@ -48,11 +48,22 @@ const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins
 // Strip the whole ambient DSH_* family plus the RUNNER_NAME seam here; the
 // harness then re-pins exactly the vars each test wants (DSH_HOME,
 // DSH_RETRY_BACKOFF_S, extraEnv, ...). CI's clean env is unaffected.
+//
+// Stripping the name seams is NOT enough (review finding 1 on this PR): the
+// driver re-derives node identity from the BOX when the env is quiet —
+// run-dsh-agent.sh's `${DSH_RUNNER_NAME:-${DSH_NODE_ID:-$(hostname)}}` — and
+// consults the repo's config/lane-plugins.json, whose macos entries glob
+// `nodes: ["*"]`. Wherever a probe gate passes (dsh-reflex answers on the
+// Gauge hosts), the consult stamps overlays the absence-pins never asked
+// for. So the BASE pins the no-mount fixture: every spawn path is
+// deterministic on every box; a test that wants a live consult re-pins the
+// manifest via extraEnv (applied last, below).
 const HERMETIC_ENV = (() => {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
   }
+  env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
   return env;
 })();
 
@@ -327,7 +338,10 @@ test("the job-scoped home mint is per-run: two concurrent drivers on one shared 
       const githubEnv = path.join(dir, `github-env-${tag}`);
       mkdirSync(home);
       const env = {
-        ...process.env,
+        // Hermetic like tests 2/2c — the comment below promised this harness
+        // was the same and spread raw process.env instead (issue #131: the
+        // ambient DSH_* family reached the driver here too).
+        ...HERMETIC_ENV,
         PATH: `${bin}:${process.env.PATH}`,
         HOME: home,
         RUNNER_TEMP: runnerTemp,

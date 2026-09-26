@@ -35,28 +35,35 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Hermetic base env (issue #131): strip the ambient dsh-agent exports
-// (DSH_*, RUNNER_NAME) so driver spawns see only what the harness pins —
-// an agent job's ambient set drives real launcher behavior (lane-plugin
-// overlay stamping) and turns the absence-pins red on unmodified main.
-// See the longer note in run-dsh-agent.test.mjs.
-const HERMETIC_ENV = (() => {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
-  }
-  return env;
-})();
-
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const PLUGIN = path.join(ROOT, "plugins", "tool-search-compose");
 const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+
 // Hermetic lane-plugin consult (issue #129): empty-entry manifest — the
 // default manifest's dsh-reflex row is require_probe on 49173, so on hosts
 // where the Reflex engine answers (Gauge hosts) the consult materializes an
 // extra --patch and the byte-identical-launch assertions go red.
 const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
+
+// Hermetic base env (issue #131): strip the ambient dsh-agent exports
+// (DSH_*, RUNNER_NAME) so driver spawns see only what the harness pins —
+// an agent job's ambient set drives real launcher behavior (lane-plugin
+// overlay stamping) and turns the absence-pins red on unmodified main.
+// See the longer note in run-dsh-agent.test.mjs. Stripping is not enough
+// (review finding 1 on PR #136): with the env quiet the driver re-derives
+// node identity from the box (`$(hostname)`) and consults the repo's own
+// manifest, whose macos entries glob `nodes: ["*"]` — so the BASE also pins
+// the no-mount fixture; every spawn path is deterministic on every box, and
+// a test wanting a live consult re-pins via extraEnv (applied last).
+const HERMETIC_ENV = (() => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+  }
+  env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
+  return env;
+})();
 
 // A launcher script + its two runtime script deps, rooted at `base`, with an
 // optional plugins/tool-search-compose layout. Running a COPY (not the repo)
