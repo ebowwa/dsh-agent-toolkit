@@ -26,7 +26,7 @@ broadcast.
 3. **IMPLEMENTING** — one line: the approach you're taking
 4. **TESTING** — one line: what you're verifying and how
 5. **BLOCKED** — when stuck longer than ~10 minutes: what is blocking you and what you already tried (a blocked agent that speaks can be helped; a silent one just burns the clock)
-6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works; when the discovery protocol below fired, the summary carries the `filed-followups:` line
+6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works; when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene)
 
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
 you). A thread that goes silent for 30+ minutes is a thread where
