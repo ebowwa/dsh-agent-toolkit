@@ -1,0 +1,5 @@
+{
+  "_doc": "Hermetic lane-plugin manifest for driver-launch tests (issue #129). The real config/lane-plugins.json carries require_probe rows (dsh-reflex, probe_port 49173) that mount on any host where the Reflex engine answers — a Gauge host — so launch-line byte-identity assertions go red there while staying green on plain cells. Tests that pin the driver's default launch line point DSH_LANE_PLUGINS_MANIFEST at THIS file: no entries, no gates, nothing answers, nothing mounts — the consult still runs, it just always yields SKIP, so the assertion holds regardless of what listens on the box.",
+  "macos": [],
+  "linux": []
+}
