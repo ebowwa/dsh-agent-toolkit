@@ -68,3 +68,51 @@ test("both transport shims select KEEP_DATES (the mode is wired, not just availa
     assert.ok(!/scrub_text\(\) \{ node "\$SCRUB"/.test(src), `${shim} has no bare-mode scrub_text left`);
   }
 });
+
+test("worker-authored GitHub-bound surfaces select their scrub mode by taxonomy (issue #152)", () => {
+  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "scripts");
+  const keepSel = /DSH_SCRUB_KEEP_DATES=1 node "\$DSH_AGENT_TOOLKIT_DIR\/scripts\/scrub-output\.mjs"/g;
+
+  // PROSE surface — the auto-created PR body (ebowwa/FleetTower#301 class:
+  // a default-mode pre-scrub minted [redacted:date] one hop before the
+  // KEEP_DATES shim, which could never restore it):
+  //  - ship-changes.sh scrubs the PR body in KEEP_DATES mode, exactly once;
+  //  - BOTH decoupled tee hops (dsh-worker.sh) keep dates on the record
+  //    file that feeds that body — otherwise the fix at the shipper is a
+  //    no-op: the date was already minted before it ever got there.
+  const ship = fs.readFileSync(path.join(root, "ship-changes.sh"), "utf8");
+  assert.equal(
+    (ship.match(keepSel) || []).length, 1,
+    "ship-changes.sh scrubs the PR body (authored prose) in KEEP_DATES mode exactly once",
+  );
+  const worker = fs.readFileSync(path.join(root, "dsh-worker.sh"), "utf8");
+  assert.equal(
+    (worker.match(keepSel) || []).length, 2,
+    "both decoupled worker tee hops keep dates — the record feeds the prose PR body",
+  );
+
+  // OUTPUT surfaces — reply/review comment bodies stay default-mode: the
+  // [redacted:date] there is BY DESIGN (timestamps correlate working
+  // hours, scrub-output.mjs's own surface list). Their post-time scrub is
+  // load-bearing now that the tee keeps dates.
+  for (const surface of ["post-reply.sh", "review-pr.sh"]) {
+    const src = fs.readFileSync(path.join(root, surface), "utf8");
+    assert.ok(
+      !src.includes("DSH_SCRUB_KEEP_DATES"),
+      `${surface} stays default-mode: the comment's [redacted:date] is by design`,
+    );
+  }
+
+  // The legacy YAML tees stay default too — their stdout IS the Actions
+  // log (an output surface), so their tee'd record keeps minting the
+  // placeholder into legacy PR bodies: a documented residual, legacy
+  // removal is the planned next major.
+  const wfDir = path.join(root, "..", ".github", "workflows");
+  for (const wf of ["agent-comment.yml", "agent-dispatch.yml", "agent-review.yml"]) {
+    const src = fs.readFileSync(path.join(wfDir, wf), "utf8");
+    assert.ok(
+      !src.includes("DSH_SCRUB_KEEP_DATES"),
+      `${wf} tee stays default-mode (the Actions log is an output surface)`,
+    );
+  }
+});

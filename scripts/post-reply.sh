@@ -77,6 +77,12 @@ fi
   echo "**dsh agent** — run: ${DSH_RUN_ID:-_} — lane: ${DSH_RUNNER_NAME:-unknown} — ${DSH_STAMP}"
   echo
   if [ -f "$DSH_AGENT_OUTPUT" ]; then
+    # OUTPUT surface (reply comment): default mode redacts date shapes —
+    # timestamps correlate working hours (scrub-output.mjs taxonomy,
+    # issue #152). This pass is LOAD-BEARING for dates: the decoupled
+    # worker's tee now keeps dates on the record (the PR body is prose),
+    # so without this default-mode scrub the raw date would leak into the
+    # posted comment. Credentials redact in every mode either way.
     node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null \
       || echo "_(agent output withheld: scrubber unavailable)_"
   else

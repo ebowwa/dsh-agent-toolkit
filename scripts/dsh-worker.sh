@@ -588,9 +588,16 @@ task_item() {
   # || context, which suppresses set -e inside the function — a failing
   # pipeline must be captured, never flow into the reply step.
   rc=0
+  # KEEP_DATES on the tee'd record: this file is the SOURCE of the
+  # shipper's authored-prose PR body (issue #152) — a default-mode scrub
+  # here would mint [redacted:date] one hop before the shipper and the
+  # shim could never restore it. Output surfaces still redact dates at
+  # their own post-time scrub (post-reply.sh); credentials redact in
+  # EVERY mode; stdout here is /dev/null, so the Actions log never
+  # receives this stream.
   ( cd "$work" && export DSH_MODEL="$ITEM_MODEL" DSH_SUBAGENT_MODEL="${t_sub:-}" REPLY_TARGET="" DSH_AGENT_TOOLKIT_DIR="$DSH_AGENT_TOOLKIT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
       && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$task" ) \
-    | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
+    | DSH_SCRUB_KEEP_DATES=1 node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
   echo "worker: task agent exited $rc"
 
   # reply on the task issue and close it (the answer is the record)
@@ -695,9 +702,12 @@ process_item() {
   # backslash continuation into the command — that made the driver an
   # argument of export), and the pipeline's rc is captured with || rc=$?
   # (the || call context suppresses set -e inside this function).
+  # KEEP_DATES here too — same reason as task_item above: the tee'd record
+  # feeds the shipper's authored-prose PR body (issue #152); the reply
+  # surface re-redacts dates at its own post-time scrub.
   ( cd "$work" && export THREAD_CONTEXT REPLY_TARGET="$kind #$num" DSH_MODEL="$ITEM_MODEL" DSH_AGENT_TOOLKIT_DIR="$DSH_AGENT_TOOLKIT_DIR" DSH_RUNNER_NAME="$WORKER_NAME" \
       && "${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"}" bash "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" "$TASK" ) \
-    | node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
+    | DSH_SCRUB_KEEP_DATES=1 node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" | tee "$rundir/agent-output.txt" >/dev/null || rc=$?
   echo "worker: agent exited $rc (non-zero is the agent/task failing, not the worker)"
 
   # --- ship (deterministic; shared script) ---------------------------------

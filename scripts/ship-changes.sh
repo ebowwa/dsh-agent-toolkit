@@ -24,8 +24,10 @@
 #                           diffs against; the caller (workflow step or
 #                           worker) must have written them. Default
 #                           ${RUNNER_TEMP:-/tmp}.
-#   DSH_AGENT_OUTPUT        path of the tee'd (unscrubbed-on-disk) agent
-#                           output, re-scrubbed here for PR bodies
+#   DSH_AGENT_OUTPUT        path of the tee'd agent output (already
+#                           scrubbed on disk by the caller's tee — keep-dates
+#                           there so prose survives; issue #152), re-scrubbed
+#                           here for the PR body in KEEP_DATES mode
 #                           (default $DSH_SHIP_CACHE/dsh-agent-output.txt).
 #   DSH_SHIP_NOTE_FILE      where the human "shipped: ..." note goes
 #                           (default $DSH_SHIP_CACHE/dsh-ship-note.txt).
@@ -188,7 +190,15 @@ if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
       echo "---"
       echo
       if [ -f "$DSH_AGENT_OUTPUT" ]; then
-        node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null || true
+        # The PR body is AUTHORED PROSE (GitHub-bound): the pre-scrub keeps
+        # dates (DSH_SCRUB_KEEP_DATES, issue #152 / ebowwa/FleetTower#301
+        # class) so the gh shim's own KEEP_DATES pass receives them intact
+        # instead of finding a [redacted:date] placeholder it cannot
+        # restore. Credentials redact in EVERY mode; the reply/review
+        # comment surfaces stay default-mode by design (their scrub sites
+        # in post-reply.sh / review-pr.sh — timestamps correlate working
+        # hours there).
+        DSH_SCRUB_KEEP_DATES=1 node "$DSH_AGENT_TOOLKIT_DIR/scripts/scrub-output.mjs" < "$DSH_AGENT_OUTPUT" 2>/dev/null || true
       fi
     } > "$DSH_SHIP_CACHE/dsh-pr-body.md"
     NOTE="${NOTE:+$NOTE; }$(open_pr "$BRANCH" "dsh: ${DSH_TASK_TITLE:-agent changes}" \
