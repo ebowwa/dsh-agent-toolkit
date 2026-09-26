@@ -180,6 +180,24 @@ SECURITY: never print API keys, tokens, internal IPs, or absolute home paths
 in your output — assume anything you write may become public."
 fi
 
+# --- standing agent contract: issue relationships (issue #115) --------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): no
+# agent-filed ticket ships orphaned. Static repo-controlled prose, so it is
+# appended AFTER the input scrub pass (that pass exists for thread-supplied
+# text) and BEFORE the launch line below. Long-form reference + receipts:
+# .agents/README.md; fixtures: tests/relationships-contract.test.mjs.
+# Mutation shapes verified live 2026-09-26 (introspection + end-to-end smoke
+# with GraphQL read-back of all three edges). REST endpoints 404 — GraphQL
+# only; mutations take issue NODE IDs, not numbers.
+TASK="${TASK}
+
+AGENT CONTRACT — issue relationships (issue #115): no agent-filed ticket ships orphaned; every one carries sub-issue, blockedBy, or relatesTo as appropriate. GraphQL only (REST endpoints 404); mutations take issue NODE IDs, not numbers.
+Resolve an id first: gh api graphql -f query='query(\$o:String!,\$r:String!,\$n:Int!){repository(owner:\$o,name:\$r){issue(number:\$n){id}}}' -f o=OWNER -f r=REPO -F n=NUMBER --jq .data.repository.issue.id
+1. PART TICKETS — file each part as a SUB-ISSUE of the parent claim issue: addSubIssue(input:{issueId:<parent id>, subIssueUrl:<part issue URL>}). When sequencing matters, chain: addBlockedBy(input:{issueId:<later id>, blockingIssueId:<earlier id>}) — B blocked by A.
+2. DISCOVERIES — a 'found:' ticket (an out-of-scope bug/gap you file instead of scope-creeping) links its source: addRelatesTo(input:{issueId:<found id>, relatedIssueId:<id of the issue/claim where you observed it>}).
+3. REDOS / follow-ons — a redo or continuation ticket links its predecessor: addRelatesTo(input:{issueId:<redo id>, relatedIssueId:<predecessor id>}).
+4. EXIT SUMMARY — the parts table gains a relationship column: every filed ticket lists its parent/edges (sub-issue of #N, blocked by #M, relatesTo #K). Verifiable: a GraphQL read of the ticket returns exactly those edges (Issue fields: parent/subIssues, blockedBy, relatesTo)."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).

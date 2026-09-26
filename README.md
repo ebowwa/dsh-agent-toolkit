@@ -53,6 +53,7 @@ Two execution modes:
 | `config/settings.zai.yaml` | DSH settings template (zai provider, glm-5.3) |
 | `config/dsh-worker.env.example` | worker env template (GH_TOKEN, DSH_WORKER_REPOS; chmod 600) |
 | `config/models.yaml` | model catalog for consumers — the provider/model ids the Z.AI coding endpoint serves (what `DSH_MODEL` / `DSH_WORKER_MODEL` accept) |
+| `.agents/` | agent-contract docs for dispatched agents — communication conduct, verify-before-dismissal skill, and the issue-relationships protocol (issue #115: part tickets as blockedBy-chained sub-issues, `found:` tickets relatesTo their source, redos relatesTo predecessors, exit-summary relationship receipts); the prompt assembly appends the block, `tests/relationships-contract.test.mjs` pins it |
 | `docs/decoupled-worker.md` | full decoupled-mode guide: queue semantics, trust model, security posture, factory-box install |
 
 ## Testing
