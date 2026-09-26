@@ -3,10 +3,18 @@
 # signed into history (and therefore into pushed refs and PR titles).
 #
 # Installed by run-dsh-agent.sh at the FRONT of the agent's PATH. Covers
-# `git commit -m/--message=`, `git tag -m/--message=`. File CONTENTS are not
-# rewritten here — code that must ship is guarded upstream (input-side secret
-# scrubbing keeps credentials out of the model's authoring context) and
-# downstream (the review stage reads every diff).
+# `git commit/tag/notes -m/--message=`, and the message-FILE forms
+# `-F <file>` / `--file=<file>` / `--file <file>` including the `-` stdin
+# spelling (issue #169): a message read from a file or stdin is still a
+# GitHub-bound commit message — it lands in pushed refs and PR titles — so
+# the shim scrubs it through the same scrubber (a scrubbed TEMP file is
+# handed onward, or stdin is redirected from a scrubbed temp) before the
+# real git runs. Only under the message-file subcommands: `-F`/`--file` mean
+# something else elsewhere (`git config --file` is a config path; `git
+# log`/`git grep -F` is boolean --fixed-strings) and ride untouched.
+# Code CONTENTS are not rewritten here — code that must ship is guarded
+# upstream (input-side secret scrubbing keeps credentials out of the model's
+# authoring context) and downstream (the review stage reads every diff).
 #
 # Env contract (set by run-dsh-agent.sh; names avoid the
 # KEY/PASSWORD/SECRET/TOKEN patterns dsh scrubs from child env):
@@ -39,6 +47,62 @@ scrub_or_die() { # <text> -> scrubbed text on stdout; aborts the shim on failure
   printf '%s' "$out"
 }
 
+scrub_file() { # <path> -> echoes a scrubbed temp file path; aborts the shim on failure
+  local out
+  out="$(mktemp "${TMPDIR:-/tmp}/git-scrubbed.XXXXXX")"
+  if ! DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <"$1" >"$out"; then
+    rm -f "$out"
+    die "scrubber failed on $1; refusing to sign an unscrubbed file message into history (fail-closed, REVIEW.md)"
+  fi
+  printf '%s' "$out"
+}
+
+scrub_stdin() { # consumes the shim's own stdin -> scrubbed temp file path on stdout
+  local out
+  out="$(mktemp "${TMPDIR:-/tmp}/git-scrubbed.XXXXXX")"
+  if ! DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" >"$out"; then
+    rm -f "$out"
+    die "scrubber failed on stdin; refusing to sign an unscrubbed stdin message into history (fail-closed, REVIEW.md)"
+  fi
+  printf '%s' "$out"
+}
+
+# `-F`/`--file` carry a MESSAGE only under some subcommands (commit, tag,
+# notes). Elsewhere they mean something else — `git config --file` is a
+# config path, `git log`/`git grep -F` is boolean --fixed-strings — and a
+# blanket guard would consume-and-rewrite argv those commands never meant as
+# a message. Guard only when a message-file subcommand is present; a git
+# alias that expands to one of these rides raw (honest limit, see header).
+is_msg_cmd() {
+  local a
+  for a in "$@"; do
+    case "$a" in
+      commit|tag|notes) return 0;;
+    esac
+  done
+  return 1
+}
+MSG_CMD=0
+is_msg_cmd "$@" && MSG_CMD=1
+
+STDIN_SCRUBBED=""
+
+file_msg_value() { # <flag> <value> — route one message-file value: temp-scrub a
+                   # real file, stdin-scrub `-`, else ride through (git errors on it)
+  local flag="$1" val="$2"
+  if [ "$val" = "-" ]; then
+    # git's stdin form: scrub the message once, keep `-` in git's argv, and
+    # exec git with stdin redirected from the scrubbed temp (see the exec tail).
+    STDIN_SCRUBBED="$(scrub_stdin)" || exit 1
+    args+=("$flag" "$val")
+  elif [ -f "$val" ]; then
+    scrubbed_file="$(scrub_file "$val")" || exit 1
+    args+=("$flag" "$scrubbed_file")
+  else
+    args+=("$flag" "$val")
+  fi
+}
+
 args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift
@@ -54,9 +118,33 @@ while [ $# -gt 0 ]; do
       key="${flag%%=*}"; val="${flag#*=}"
       msg="$(scrub_or_die "$val")" || exit 1
       args+=("$key=$msg");;
+    -F|--file)
+      # message-FILE flag (issue #169): a short -F consumes its next argv
+      # element as the value even when it starts with `-` (git's parse-options
+      # behavior for value-taking short flags), so consume unconditionally —
+      # `-` then means stdin, not a flag. Under no message-file subcommand, or
+      # with a trailing bare flag, ride through (git errors on it).
+      if [ "$MSG_CMD" = 1 ] && [ $# -gt 0 ]; then
+        file_msg_value "$flag" "$1"; shift
+      else
+        args+=("$flag")
+      fi;;
+    --file=*)
+      # equals-form spelling (git's parse-options accepts both) — same
+      # routing as the separate-arg form (issue #169)
+      if [ "$MSG_CMD" = 1 ]; then
+        file_msg_value "${flag%%=*}" "${flag#*=}"
+      else
+        args+=("$flag")
+      fi;;
     *)
       args+=("$flag");;
   esac
 done
 
+# A `-` message-file value was stdin-scrubbed: git still receives `-` in argv,
+# but reads the scrubbed temp instead of the raw payload.
+if [ -n "$STDIN_SCRUBBED" ]; then
+  exec "$REAL" "${args[@]}" <"$STDIN_SCRUBBED"
+fi
 exec "$REAL" "${args[@]}"
