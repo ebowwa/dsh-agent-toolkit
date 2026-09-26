@@ -34,6 +34,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
+// Hermetic lane-plugin consult (issue #129): empty-entry manifest — nothing
+// mounts regardless of what answers on the box.
+const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
 
 // Hermetic base env (issue #131): an agent job's ambient dsh-agent exports
 // (DSH_HOME, DSH_SESSION_JSONL, DSH_SESSION_ID, DSH_SHELL, DSH_RUNNER_NAME,
@@ -273,6 +276,128 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2d. the job-scoped home MINT: two concurrent runs get DISTINCT homes -
+//
+// dbdb720 (2026-08-24) published the job-scoped home via GITHUB_ENV and, in
+// the same line, dropped the PID suffix: `dsh-home.$$` became `dsh-home.$`
+// — a lone `$` before the closing quote is literal, so EVERY job minted the
+// same constant path. Two runner lanes sharing a RUNNER_TEMP (the exact
+// scenario the mint block's own comment documents) then shared
+// settings/transcripts, and one job's exit cleanup `rm -rf "$DSH_HOME"`
+// deleted the sibling's home mid-flight; the published DSH_HOME_JOB handle
+// let the flight recorder grab another job's home too. The cleanup
+// assertions in tests 2/2c (`homes === []` AFTER the run) pass either way —
+// they cannot see a constant mint. This test runs TWO drivers CONCURRENTLY
+// against ONE shared RUNNER_TEMP and pins the mint contract itself: each
+// run is handed its own `dsh-home.*` (never a literal `$`), the two differ,
+// the published DSH_HOME_JOB equals the home that run was handed, and the
+// shared root is clean once both runs exit. (issue #128)
+
+test("the job-scoped home mint is per-run: two concurrent drivers on one shared RUNNER_TEMP get distinct homes and each GITHUB_ENV carries its own (issue #128, dbdb720 regression)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-mint-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner"); // SHARED by both runs — the hazard scenario
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+
+  // Same hermetic harness as tests 2/2c: doppler exec stub, fast-fail dsh
+  // stub (here also recording the DSH_HOME it was handed), zstd/gh stubs,
+  // no cell probing, no network.
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      // The driver exports DSH_HOME before exec'ing dsh, so the stub sees
+      // exactly the home this run uses — mint-time evidence, not post-hoc.
+      '[ -n "${DSH_HOME_RECORD:-}" ] && printf "%s" "$DSH_HOME" > "$DSH_HOME_RECORD"',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const runOnce = (tag) =>
+    new Promise((resolve) => {
+      const home = path.join(dir, `home-${tag}`);
+      const record = path.join(dir, `recorded-home-${tag}`);
+      const githubEnv = path.join(dir, `github-env-${tag}`);
+      mkdirSync(home);
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: home,
+        RUNNER_TEMP: runnerTemp,
+        DOPPLER_SERVICE_TOKEN: "stub-token",
+        DSH_KEEP_SESSIONS: "",
+        // The PR-#85 retry wraps the spawn in the production backoff
+        // (180s+600s): pin 0 or an unpinned failing stub wedges the
+        // suite (tests-lint pin, gates 34748403843 et al).
+        DSH_RETRY_BACKOFF_S: "0",
+        GH_BIN: path.join(bin, "gh"),
+        DOPPLER_BIN: path.join(bin, "doppler"),
+        CELL_PROBE_DIRS: "",
+        DSH_HOME_RECORD: record,
+        GITHUB_ENV: githubEnv,
+      };
+      // Same hermeticity as tests 2/2c: a lane-exported DSH_HOME (or
+      // persistent-home opt) must not shadow the job-scoped mint under
+      // test — force the mint branch.
+      delete env.DSH_HOME;
+      delete env.DSH_PERSISTENT_HOME;
+      delete env.DSH_SESSION_PATH_FILE;
+      const proc = spawn(
+        "bash",
+        [SCRIPT, `integration test task ${tag}`],
+        { env, timeout: 60_000 },
+      );
+      proc.on("exit", (code) => resolve({ tag, code, record, githubEnv }));
+    });
+
+  // CONCURRENT: both drivers live at once — distinct PIDs, one shared
+  // RUNNER_TEMP. The constant mint handed both runs the SAME path.
+  const [a, b] = await Promise.all([runOnce("a"), runOnce("b")]);
+
+  assert.equal(a.code, 1, "run A: the stub failure must surface, not hang");
+  assert.equal(b.code, 1, "run B: the stub failure must surface, not hang");
+  const readHome = (r) => readFileSync(r, "utf8").trim();
+  const homeA = readHome(a.record);
+  const homeB = readHome(b.record);
+  assert.ok(path.basename(homeA).startsWith("dsh-home."), `run A must be handed a dsh-home.* path, got ${homeA}`);
+  assert.ok(path.basename(homeB).startsWith("dsh-home."), `run B must be handed a dsh-home.* path, got ${homeB}`);
+  assert.notEqual(homeA, homeB, "two concurrent runs on one RUNNER_TEMP must mint DISTINCT homes (dbdb720 minted one constant path for both)");
+  assert.doesNotMatch(homeA, /\$/, "run A's home must not carry a literal $ (the dbdb720 regression signature)");
+  assert.doesNotMatch(homeB, /\$/, "run B's home must not carry a literal $ (the dbdb720 regression signature)");
+
+  // The flight-recorder handle (GITHUB_ENV, dbdb720's own feature) must
+  // carry the run's OWN home — not a sibling's, not the constant.
+  const published = (r) =>
+    readFileSync(r, "utf8").split("\n").find((l) => l.startsWith("DSH_HOME_JOB="));
+  for (const run of [a, b]) {
+    const line = published(run.githubEnv);
+    assert.ok(line, `run ${run.tag}: DSH_HOME_JOB must be published to GITHUB_ENV`);
+    assert.equal(
+      line.slice("DSH_HOME_JOB=".length),
+      readHome(run.record),
+      `run ${run.tag}: the published DSH_HOME_JOB must equal the home this run was handed`,
+    );
+  }
+  assert.notEqual(
+    published(a.githubEnv),
+    published(b.githubEnv),
+    "the two runs must publish distinct DSH_HOME_JOB values",
+  );
+
+  // Both homes cleaned — nothing left on the shared root.
+  const leftovers = readdirSync(runnerTemp).filter((f) => f.startsWith("dsh-home."));
+  assert.deepEqual(leftovers, [], "both runs must clean their own home off the shared root");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2b. soft gh end-to-end: the WHOLE driver must survive a failed gh
 // bootstrap and still launch the agent (review r2 finding 2's
 // integration half). The extracted-function pins in cell-tools.test.mjs
@@ -461,6 +586,12 @@ const runLauncher = (extraEnv = {}) => {
     // instant attempts, never a wedge (tests-lint rule 2; gates runs
     // 34748403843/34788769043/34795917609/34803136058).
     DSH_RETRY_BACKOFF_S: "0",
+    // Hermeticity (issue #129): the default manifest's dsh-reflex row is
+    // require_probe on 49173 — on any host where the Reflex engine answers
+    // (Gauge hosts) the consult materializes a reflex --patch and every
+    // byte-identical-launch assertion goes red. Pin the consult to an
+    // empty-entry manifest: nothing mounts, here or anywhere.
+    DSH_LANE_PLUGINS_MANIFEST: HERMETIC_LANE_PLUGINS,
   };
   delete env.GH_TOKEN;
   delete env.GITHUB_ENV;
@@ -477,6 +608,24 @@ const runLauncher = (extraEnv = {}) => {
   });
   const args = existsSync(argsFile) ? readFileSync(argsFile, "utf8") : "";
   return { proc, dir, home, args };
+};
+
+// The launcher's --patch argv carries two families of overlay: the feature-owned
+// ones these tests pin (subagent-model / web-search-browser / search-compose) and
+// the lane-plugin mounts from config/lane-plugins.json (section 2e-pre: one
+// --patch per gated entry, node-dependent by design). Assertions about a feature
+// being OFF must ignore the lane-plugin family — on engine boxes the consult
+// mounts them even with every feature env unset (issue #123).
+const FEATURE_OWNED_PATCH_RE = /(^|\/)(subagent-model|web-search-browser|search-compose)\.patch\.yml$/;
+const nonLanePatchFiles = (args) => {
+  // argv lines only: the dsh stub also embeds each overlay's CONTENT after a
+  // `--- patch file: ...` marker — skip those blocks.
+  const lines = args.split("\n").filter((l) => l !== "" && !l.startsWith("---") && !l.startsWith("#"));
+  const files = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === "--patch" && i + 1 < lines.length) files.push(lines[i + 1]);
+  }
+  return files.filter((f) => FEATURE_OWNED_PATCH_RE.test(f));
 };
 
 test("DSH_SUBAGENT_MODEL stamps the overlay and passes --patch to dsh", () => {
@@ -509,10 +658,16 @@ test("DSH_SUBAGENT_MODEL stamps the overlay and passes --patch to dsh", () => {
   }
 });
 
-test("DSH_SUBAGENT_MODEL unset launches dsh with NO --patch and no overlay (inherit = today's behavior)", () => {
+test("DSH_SUBAGENT_MODEL unset launches dsh with NO feature-owned --patch and no overlay (inherit = today's behavior)", () => {
   const { proc, home, args } = runLauncher({});
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
-  assert.ok(!args.includes("--patch"), `no --patch flag when unset, got argv: ${args}`);
+  // Lane-plugin delegation (section 2e-pre, config/lane-plugins.json) legitimately
+  // mounts one --patch per gated entry on this node — those are default behavior,
+  // not the subagent feature. Scope the no-patch invariant to the overlays THIS
+  // feature owns (issue #123): only subagent-model/web-search-browser/search-compose
+  // patch files are forbidden when the feature is unset.
+  const stray = nonLanePatchFiles(args);
+  assert.deepEqual(stray, [], `no feature-owned --patch when unset, got: ${stray.join(", ")}\nfull argv: ${args}`);
   assert.ok(
     !existsSync(path.join(home, "subagent-model.patch.yml")),
     "no overlay file must be stamped when unset",
@@ -791,13 +946,23 @@ test("DSH_WEB_SEARCH_CELLS mounts the provider on a listed runner: plugin copied
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no copy, byte-identical default", () => {
+test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no copy, no feature-owned --patch", () => {
   const { proc, home, args } = runLauncher({ DSH_WEB_SEARCH_CELLS: "some-other-cell", RUNNER_NAME: "mini-dsh-2" });
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
   assert.doesNotMatch(proc.stderr, /web-search-browser: mounted/);
   assert.ok(!existsSync(path.join(home, "web-search-browser.patch.yml")), "no web overlay stamped");
-  assert.ok(!existsSync(path.join(home, "profiles", "node_modules", "@local")), "no plugin copy performed");
-  assert.ok(!args.includes("--patch"), "launch line stays byte-identical");
+  // Scoped to the web-owned package: @local is a SHARED scope by design — the
+  // lane-plugin plugin seam (section 2e-pre) copies its own packages (e.g.
+  // @local/dsh-reflex) into the same tree on engine nodes, so only the
+  // feature's package proves the web copy did not run (issue #123).
+  assert.ok(
+    !existsSync(path.join(home, "profiles", "node_modules", "@local", "dsh-web-search-browser")),
+    "no web plugin copy performed",
+  );
+  // lane-plugin mounts (section 2e-pre) are legitimate default behavior on this
+  // node; the OFF invariant covers the overlays this feature owns (issue #123).
+  const stray = nonLanePatchFiles(args);
+  assert.deepEqual(stray, [], `launch line carries no feature-owned --patch, got: ${stray.join(", ")}\nfull argv: ${args}`);
   // glob matching is anchored at an entry level: an entry that merely CONTAINS
   // the runner name must not enable it
   const prefix = runLauncher({ DSH_WEB_SEARCH_CELLS: "mini-dsh-2.backup", RUNNER_NAME: "mini-dsh-2" });

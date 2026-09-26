@@ -325,6 +325,24 @@ Resolve an id first: gh api graphql -f query='query(\$o:String!,\$r:String!,\$n:
 3. REDOS / follow-ons — a redo or continuation ticket links its predecessor: addRelatesTo(input:{issueId:<redo id>, relatedIssueId:<predecessor id>}).
 4. EXIT SUMMARY — the parts table gains a relationship column: every filed ticket lists its parent/edges (sub-issue of #N, blocked by #M, relatesTo #K). Verifiable: a GraphQL read of the ticket returns exactly those edges (Issue fields: parent/subIssues, blockedBy, relatesTo)."
 
+# --- standing agent contract: branch hygiene (issue #127) -------------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): zero
+# orphan branches. The consumer repos run auto-delete-on-merge (verified
+# live on this repo: delete_branch_on_merge=true), so a MERGED branch cleans
+# itself up — the leak paths are a pushed branch with no PR and a PR closed
+# without merging. Static repo-controlled prose, appended after the input
+# scrub pass and before the launch line below. Long-form reference:
+# .agents/README.md; fixtures: tests/branch-hygiene-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branch whose work outlives the session without a PR is a lost thread. The repos run auto-delete-on-merge, so a merged branch cleans itself up; the leak paths are below.
+1. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it. If your lane ships for you (the deterministic shipper opens the PRs), confirm the PR exists before you exit; if you push yourself, you create the PR. A pushed branch with no PR is an orphan.
+2. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging (superseded, wrong approach, duplicate), delete its branch in the same breath: gh pr close NUMBER --delete-branch (fallback: git push origin --delete BRANCH). Merged branches are auto-deleted by the repo setting — never restore one.
+3. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind (open PRs waiting on review) on ONE branches-left: line — exact shape:
+     branches-left: dsh/issue-127-c5844082078, dsh/issue-128-nextticket
+   comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
+Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).
@@ -335,10 +353,10 @@ Resolve an id first: gh api graphql -f query='query(\$o:String!,\$r:String!,\$n:
 if [ -n "${DSH_HOME:-}" ] || [ -n "${DSH_PERSISTENT_HOME:-}" ]; then
   export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 else
-  export DSH_HOME="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dsh-home.$"
+  export DSH_HOME="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dsh-home.$$"
   # Publish the job-scoped home to the workflow (flight recorder): the
-  # upload step cannot see this shell process exports, and $ is the
-  # script PID — unknowable outside. GITHUB_ENV carries it as DSH_HOME_JOB.
+  # upload step cannot see this shell process exports, and $$ (the
+  # script PID) is unknowable outside. GITHUB_ENV carries it as DSH_HOME_JOB.
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "DSH_HOME_JOB=${DSH_HOME}" >> "$GITHUB_ENV"
   fi
