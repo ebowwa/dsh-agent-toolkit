@@ -28,10 +28,22 @@ const agentsReadme = readFileSync(path.join(ROOT, ".agents", "README.md"), "utf8
 const contributing = readFileSync(path.join(ROOT, "CONTRIBUTING.md"), "utf8");
 
 // The machine-checkable form of the exit-summary shape documented in
-// .agents/README.md. Matching is trim-tolerant (the reply relay may sit
-// inside markdown), but the line itself carries nothing but the label and
-// the refs.
+// .agents/README.md. Matching is relay-tolerant: a markdown bullet /
+// blockquote / bold decoration in front of the label is stripped before
+// the check (the reply relay may sit inside markdown), so the RELAYED
+// line is validated by the same rules instead of being skipped — but the
+// line itself carries nothing but the label and the refs.
 const FILED_FOLLOWUPS_LINE = /^filed-followups: #\d+(, #\d+)*$/;
+
+// Markdown relay tolerance (issue #141): the reply relay may decorate the
+// label with a list bullet / blockquote marker / bold pair — "- filed-followups:",
+// "**filed-followups:**". Strip exactly that
+// decoration before the label check so the RELAYED line is VALIDATED by
+// the shape rules below — a bullet-relayed `filed-followups: none` is a
+// violation, not an invisible line (a bare `startsWith` skipped it, which
+// made the markdown-relay-safe claim vacuous).
+const stripMarkdownRelay = (line) =>
+  line.replace(/^[-*\s>]+/, "").replace(/:\*\*(?=\s|$)/, ":");
 
 /** Violations of the exit-summary shape in an agent's final summary. */
 const followupsViolations = (summary) => {
@@ -39,7 +51,7 @@ const followupsViolations = (summary) => {
   const lines = summary.split("\n");
   let seen = 0;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const line = stripMarkdownRelay(lines[i].trim());
     if (!line.startsWith("filed-followups")) continue;
     seen++;
     if (!FILED_FOLLOWUPS_LINE.test(line)) {
@@ -114,6 +126,34 @@ test("exit-summary shape: multiple filed issues, comma-space separated", () => {
 
 test("exit-summary shape: trim-tolerant (markdown-relay safe), still strict on content", () => {
   assert.deepEqual(followupsViolations("- filed-followups: #114\n"), []);
+});
+
+test("exit-summary shape: markdown-relayed lines are VALIDATED, not skipped (issue #141)", () => {
+  // Valid relayed forms stay valid under every decoration the reply
+  // relay actually emits:
+  for (const good of [
+    "- filed-followups: #114",
+    "* filed-followups: #114, #115",
+    "> filed-followups: #114",
+    "**filed-followups:** #114",
+  ]) {
+    assert.deepEqual(followupsViolations(`${good}\n`), [], `expected zero violations for: ${good}`);
+  }
+  // ...and the relayed form is VALIDATED: a placeholder or a malformed
+  // list behind a bullet is a violation, not an invisible line.
+  for (const bad of [
+    "- filed-followups: none",
+    "**filed-followups:** none",
+    "- filed-followups: 114",
+    "- filed-followups: #114 (found during review)",
+    "- filed-followups: #114,#115",
+  ]) {
+    assert.equal(followupsViolations(`${bad}\n`).length, 1, `expected exactly one violation for: ${bad}`);
+  }
+  // The relayed form counts toward the ONE-line rule too.
+  const violations = followupsViolations("filed-followups: #114\n- filed-followups: #115\n");
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /ONE/);
 });
 
 test("exit-summary shape: filed nothing — the line is absent, zero violations", () => {
