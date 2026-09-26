@@ -190,6 +190,104 @@ TASK="${TASK}
 
 ${STANDING_CONTRACT}"
 
+# Fleet decomposition protocol (issue #114, agent-side mirror of the
+# factory#60 placement law): every dispatched agent plans PARTS before
+# executing, against a STANDING fleet-context block, files the parts its
+# cell cannot run as self-contained tickets (the #113 filing mechanism),
+# and exits with the parts table. Injected here — after the input scrub
+# AND after the standing contract above, still OUTSIDE the REPLY_TARGET
+# guard — so the block is driver-authored text every lane node inherits,
+# and so no caller (workflow, worker, manual) can forget it. The two
+# protocols share the exit-summary vocabulary: a parts row "filed as #N"
+# must re-appear on the #113 filed-followups: line.
+#
+# Fleet context sources, both read here:
+#   DSH_FLEET_MANIFEST env — the caller's LIVE snapshot (free seats, disk/
+#   ram budget; runtime data never baked into a shipped file). The worker/
+#   workflow set it when they can see the pool; unset = the standing file
+#   only.
+#   config/fleet-manifest.md — the standing node registry + the placement
+#   law, shipped beside this driver ($SCRIPT_DIR/../config, the same seam
+#   as settings.zai.yaml). Both empty → the context section is skipped,
+#   never a wedged launch; the protocol section below still teaches the
+#   agent to read that file itself.
+FLEET_STANDING="$(cat "$SCRIPT_DIR/../config/fleet-manifest.md" 2>/dev/null || true)"
+FLEET_BLOCK=""
+if [ -n "$FLEET_STANDING" ] || [ -n "${DSH_FLEET_MANIFEST:-}" ]; then
+  FLEET_BLOCK="## Standing fleet context (node registry + placement law — factory#60)"
+  if [ -n "${DSH_FLEET_MANIFEST:-}" ]; then
+    FLEET_BLOCK="$FLEET_BLOCK
+
+### Live snapshot (caller-injected)
+
+$DSH_FLEET_MANIFEST"
+  fi
+  if [ -n "$FLEET_STANDING" ]; then
+    FLEET_BLOCK="$FLEET_BLOCK
+
+### Standing registry
+
+$FLEET_STANDING"
+  fi
+fi
+
+TASK="${TASK}
+
+## Work plan FIRST — decompose by fleet capability (issue #114)
+
+Before executing, decompose this claim into PARTS and classify each part's
+capability requirement. A claim is not planned until every part names the
+machine class that can run it — an agent that cannot name which machines
+can run a part is not done planning.
+
+Capability classes (the placement law, factory#60):
+- mac-native (swift / ios / macos-native) — macOS nodes ONLY (mac lane)
+- linux-native (systemd, deploys, shell, kernel) — Linux nodes ONLY (linux lane)
+- language-default (tsx / ts / python) — linux lane BY DEFAULT; a
+  macRepos-trait repo keeps mac — trait beats language
+- neutral (docs, config, reviews, triage) — any OS (open lane)
+- heavy-compute (big builds, long benches) — big lane only
+Multiple nodes can serve a part → prefer by live resources (free seats,
+disk/ram); a node reporting ghost seats is ineligible. NEVER run a part on
+a node whose OS class cannot run it — one monolith on a wrong-OS node is
+the standing mistake class this protocol ends.
+Full contract: .agents/skills/decompose-by-capability/SKILL.md in the
+toolkit checkout.
+${FLEET_BLOCK:+
+$FLEET_BLOCK
+}
+## Modularize — run what you can, FILE what you cannot
+
+Parts this cell CAN legally and efficiently run: run them here.
+Parts it cannot (wrong OS class, wrong hardware trait, heavy-compute on a
+small node): file EACH as a separate self-contained ticket in the repo
+where the work belongs:
+- gh issue create; title prefix \"part: \" + the part name; label the
+  repo's todo label (agent-todo where it exists).
+- The body is SELF-CONTAINED: a fresh agent holding only that ticket
+  completes it with ZERO sibling context — its own goal (never \"see the
+  other task\", never \"as described above\"), its own receipts (file:line,
+  command output, the exact gap that makes the part unrunnable here), its
+  own acceptance criteria, and the target class + node class in the body
+  (\"class: mac-native — target: mac lane, macOS nodes\").
+- Filing is routing, not outsourcing: do not half-run an unrunnable part
+  here, and do not fix out-of-scope defects in this claim.
+- Filed sub-tickets ride the pile gate (~1 day) — webhooks are dead and
+  manual enqueue is the only live mint — so never assume instant
+  sub-dispatch and never block on a filed ticket; if one sits on this
+  claim's critical path, say so loudly in the exit summary.
+
+## Exit summary — the parts table (mandatory)
+
+Your final summary carries the decomposition, one row per part:
+
+| Part | Class | Disposition | Target node class | Why |
+|---|---|---|---|---|
+
+Disposition is \"executed here\" or \"filed as #N\". End with a
+filed-followups: line listing every issue number you filed. A summary
+without the parts table is an incomplete exit."
+
 # Comment-agent-toolkit mode: the workflow posts the reply itself (as github-actions[bot]
 # via GITHUB_TOKEN), so the agent must NOT comment. It may still push commits
 # and open PRs; author commits as the bot so attribution is not the runner user.
