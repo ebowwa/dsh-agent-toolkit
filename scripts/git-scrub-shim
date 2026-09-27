@@ -3,9 +3,12 @@
 # signed into history (and therefore into pushed refs and PR titles).
 #
 # Installed by run-dsh-agent.sh at the FRONT of the agent's PATH. Covers
-# `git commit/tag/notes -m/--message=`, and the message-FILE forms
+# `git commit/tag/notes -m/--message=` in both the separate-arg and the
+# ATTACHED short spelling (`-m"<msg>"` / `-m<msg>` — the value rides in the
+# same argv element as the flag, issue #172), and the message-FILE forms
 # `-F <file>` / `--file=<file>` / `--file <file>` including the `-` stdin
-# spelling (issue #169): a message read from a file or stdin is still a
+# spelling (issue #169) again attached (`-F<file>`, issue #172): a message
+# read from a file or stdin is still a
 # GitHub-bound commit message — it lands in pushed refs and PR titles — so
 # the shim scrubs it through the same scrubber (a scrubbed TEMP file is
 # handed onward, or stdin is redirected from a scrubbed temp) before the
@@ -114,6 +117,21 @@ while [ $# -gt 0 ]; do
       else
         args+=("$flag")
       fi;;
+    -m?*)
+      # attached short form (issue #172): git's parse-options takes everything
+      # after the flag letter IN THE SAME argv element as the value, so
+      # `-m"<msg>"` and `-m<msg>` are one element and used to ride the
+      # catch-all raw. Scrub and emit attached again — one argv element, so
+      # scrubbed whitespace cannot split into git positionals. A scrubbed
+      # value that comes back EMPTY falls back to the separate form: a bare
+      # `-m` would otherwise make git consume the NEXT argument as the
+      # message.
+      msg="$(scrub_or_die "${flag#-m}")" || exit 1
+      if [ -n "$msg" ]; then
+        args+=("-m$msg")
+      else
+        args+=("-m" "")
+      fi;;
     --message=*)
       key="${flag%%=*}"; val="${flag#*=}"
       msg="$(scrub_or_die "$val")" || exit 1
@@ -134,6 +152,18 @@ while [ $# -gt 0 ]; do
       # routing as the separate-arg form (issue #169)
       if [ "$MSG_CMD" = 1 ]; then
         file_msg_value "${flag%%=*}" "${flag#*=}"
+      else
+        args+=("$flag")
+      fi;;
+    -F?*)
+      # attached spelling of the message-FILE flag (issue #172): `-F<file>`
+      # carries its value the way `-F <file>` does, so route it through the
+      # same file_msg_value guard (scrubbed temp path / `-` stdin scrub) and
+      # under the same subcommand gate — elsewhere `-F` is not a message
+      # (`git log`/`git grep -F` is boolean --fixed-strings) and must ride
+      # byte-identical.
+      if [ "$MSG_CMD" = 1 ]; then
+        file_msg_value "-F" "${flag#-F}"
       else
         args+=("$flag")
       fi;;
