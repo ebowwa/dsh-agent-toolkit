@@ -448,17 +448,23 @@ test("git shim: commit -F <file> reaches git as a scrubbed temp file", (t) => {
     "commit", "-F", file,
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  assert.ok(fs.existsSync(capture), "the real git was exec'd");
+  assert.ok(fs.existsSync(capture), "the real git was run");
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   const rawArgs = seen.filter((a) => a.endsWith("notes.md"));
   assert.equal(rawArgs.length, 0, `the raw payload path must not reach git — captured: ${seen.join(" | ")}`);
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "git's argv points at the scrubbed temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  // git's argv pointed at a scrubbed temp in TMPDIR, whose content
+  // (snapshotted by the recorder DURING the run) is redacted with dates kept
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "scrubbed message content");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  // ...and once git is done the temp is GONE — no git-scrubbed.* residue in
+  // TMPDIR after a successful run (issue #180: the old exec tail leaked one
+  // copy of the post-scrub commit message per message-file call, forever).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
 test("git shim: scrubber failure aborts tag -F <file>", (t) => {
@@ -476,12 +482,13 @@ test("git shim: notes -F <file> reaches git as a scrubbed temp file", (t) => {
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "git's argv points at the scrubbed temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "the notes message file was scrubbed");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not reach git");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
 test("git shim: scrubber failure aborts commit --file= (equals-form file)", (t) => {
@@ -499,12 +506,13 @@ test("git shim: equals-form --file= reaches git as a scrubbed temp file", (t) =>
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "git's argv points at the scrubbed temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "scrubbed message content");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
 test("git shim: scrubber failure aborts commit -F - (stdin form, real git never exec'd)", (t) => {
@@ -518,24 +526,54 @@ test("git shim: scrubber failure aborts commit -F - (stdin form, real git never 
   assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
 });
 
-test("git shim: commit -F - stdin payload is scrubbed before exec (git reads the scrubbed temp)", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-git-stdin-"));
+test("git shim: commit -F - stdin payload is scrubbed before git reads it", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit", "-F", "-"],
+    `stdin msg token ${SECRET} dated 2026-09-26\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real git was run");
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(seen.includes("-"), "`-` reaches git verbatim as its stdin marker");
+  // git reads the scrubbed temp on stdin (snapshotted by the recorder DURING
+  // the run): redacted, dates kept.
+  const gotStdin = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.ok(gotStdin.includes("[redacted:token]"), "the real git read the scrubbed payload on stdin");
+  assert.ok(!gotStdin.includes("a1B2c3D4e5F6"), "the raw stdin payload did not survive");
+  assert.ok(gotStdin.includes("2026-09-26"), "dates still ride through untouched");
+  // No git-scrubbed.* residue in TMPDIR after the successful run (issue #180).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub stdin temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
+});
+
+// --- git shim: scrubbed-temp cleanup on EVERY path (issue #180) --------------
+// The old tail `exec`-ed the real git, replacing the shim shell — so a scrub
+// temp outlived the call even when git FAILED: `git commit -F <file>` with a
+// non-zero git exit (hook rejection, bad author, ...) still left the
+// post-scrub message in TMPDIR forever. The shim now runs git as a child,
+// forwards its exit status unchanged, and unlinks every registered temp via
+// an EXIT trap — success, abort, or git failure. These pins exercise the
+// FAILURE path specifically (the success path is pinned above).
+
+// a stand-in git that fails the way git can (exit 128) AFTER reading the
+// scrubbed temp it was handed
+const FAILING_REAL = "#!/usr/bin/env bash\n" +
+  'for a in "$@"; do case "$a" in */git-scrubbed.*) cat "$a" >> "$SHIM_TEST_CAPTURE.content";; esac; done\n' +
+  'cat >> "$SHIM_TEST_CAPTURE.stdin"\nprintf \'%s\\n\' "$@" >> "$SHIM_TEST_CAPTURE"\nexit 128\n';
+
+function runGitShimFailingReal(t, argv, { stdin } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-git-fail-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const scrub = path.join(dir, "scrub-under-test.mjs");
   fs.writeFileSync(scrub, fs.readFileSync(REAL_SCRUB, "utf8"));
   const capture = path.join(dir, "captured-argv.txt");
   const real = path.join(dir, "record-real");
-  // The stand-in also records its OWN stdin — this is the pin for the
-  // exec-time `<"$STDIN_SCRUBBED"` redirect: git must read the scrubbed
-  // temp, never the raw payload.
-  fs.writeFileSync(
-    real,
-    "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"$SHIM_TEST_CAPTURE\"\ncat >> \"$SHIM_TEST_CAPTURE.stdin\"\nexit 0\n",
-  );
+  fs.writeFileSync(real, FAILING_REAL);
   fs.chmodSync(real, 0o755);
-  const res = spawnSync("bash", [GIT_SHIM, "commit", "-F", "-"], {
+  const res = spawnSync("bash", [GIT_SHIM, ...argv], {
     encoding: "utf8",
-    input: `stdin msg token ${SECRET} dated 2026-09-26\n`,
+    input: stdin,
     env: {
       ...process.env,
       GIT_SCRUB_REAL: real,
@@ -544,15 +582,44 @@ test("git shim: commit -F - stdin payload is scrubbed before exec (git reads the
       TMPDIR: dir,
     },
   });
-  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
-  assert.ok(seen.includes("-"), "`-` reaches git verbatim as its stdin marker");
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed stdin temp (got: ${scrubbed.join(", ")})`);
+  return { res, capture, dir };
+}
+
+test("git shim: git's non-zero exit propagates — and the scrub temp still unlinks (file form, issue #180)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} dated 2026-09-26\n`);
+  const { res, capture, dir } = runGitShimFailingReal(t, ["commit", "-F", file]);
+  assert.equal(
+    res.status, 128,
+    `git's non-zero status must reach the shim's caller unchanged (got ${res.status}; stderr: ${res.stderr})`,
+  );
+  // git DID read the scrubbed temp before failing...
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "git read the scrubbed content before failing");
+  // ...and the EXIT trap still unlinked it: no residue on the failure path.
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the scrub temp survived a non-zero git exit (got: ${leftovers.join(", ")})`);
+});
+
+test("git shim: git's non-zero exit propagates — and the scrub temp still unlinks (stdin form, issue #180)", (t) => {
+  const { res, capture, dir } = runGitShimFailingReal(
+    t, ["commit", "-F", "-"], { stdin: `stdin msg token ${SECRET}\n` },
+  );
+  assert.equal(
+    res.status, 128,
+    `git's non-zero status must reach the shim's caller unchanged (got ${res.status}; stderr: ${res.stderr})`,
+  );
   const gotStdin = fs.readFileSync(`${capture}.stdin`, "utf8");
-  assert.ok(gotStdin.includes("[redacted:token]"), "the real git read the scrubbed payload on stdin");
-  assert.ok(!gotStdin.includes("a1B2c3D4e5F6"), "the raw stdin payload did not survive");
-  assert.ok(gotStdin.includes("2026-09-26"), "dates still ride through untouched");
+  assert.ok(gotStdin.includes("[redacted:token]"), "git read the scrubbed stdin payload before failing");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the scrubbed stdin temp survived a non-zero git exit (got: ${leftovers.join(", ")})`);
+});
+
+test("git shim: scrubber failure still aborts with no residue (EXIT trap coexists with the fail-closed path)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, CRASH_AFTER_PARTIAL, ["commit", "-F", file]);
+  assertAborted({ res, capture }, "crashing scrubber on git commit -F <file>");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
 });
 
 test("git shim: -F/--file ride byte-identical outside the message-file subcommands", (t) => {
@@ -640,17 +707,18 @@ test("git shim: attached -F<file> reaches git as a scrubbed temp file", (t) => {
     "commit", `-F${file}`,
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  assert.ok(fs.existsSync(capture), "the real git was exec'd");
+  assert.ok(fs.existsSync(capture), "the real git was run");
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   const rawArgs = seen.filter((a) => a.endsWith("notes.md"));
   assert.equal(rawArgs.length, 0, `the raw payload path must not reach git — captured: ${seen.join(" | ")}`);
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "git's argv points at the scrubbed temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
-  assert.ok(text.includes("[redacted:token]"), "the attached -F payload was scrubbed before exec");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the attached -F payload was scrubbed before git read it");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
 test("git shim: attached -F<missing-file> rides through (git's own error path)", (t) => {

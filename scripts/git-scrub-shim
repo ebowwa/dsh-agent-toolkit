@@ -12,7 +12,9 @@
 # GitHub-bound commit message — it lands in pushed refs and PR titles — so
 # the shim scrubs it through the same scrubber (a scrubbed TEMP file is
 # handed onward, or stdin is redirected from a scrubbed temp) before the
-# real git runs. Only under the message-file subcommands: `-F`/`--file` mean
+# real git runs, and the temp is unlinked the moment git is done (issue
+# #180 — the old `exec` tail left every scrub temp in TMPDIR forever). Only
+# under the message-file subcommands: `-F`/`--file` mean
 # something else elsewhere (`git config --file` is a config path; `git
 # log`/`git grep -F` is boolean --fixed-strings) and ride untouched.
 # Code CONTENTS are not rewritten here — code that must ship is guarded
@@ -35,12 +37,37 @@
 # is never echoed, since it may be the secret. Shell seam: every call site
 # captures `msg="$(scrub_or_die ...)" || exit 1` because a bare exit inside
 # $( ) kills only the substitution — the status must reach the parent shell
-# for the abort to land before the exec.
+# for the abort to land before git runs.
 set -uo pipefail
 REAL="${GIT_SCRUB_REAL:?git shim: GIT_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?git shim: SCRUB_SCRIPT not set}"
 
 die() { echo "git-scrub-shim: $*" >&2; exit 1; }
+
+# Scrubbed-temp cleanup (issue #180, mirroring the gh shim's #154 fix):
+# scrub_file/scrub_stdin mint "${TMPDIR:-/tmp}/git-scrubbed.XXXXXX" temps
+# that git reads at run time. The old tail `exec`-ed the real git —
+# replacing this shell — so nothing could unlink a temp AFTER git read it:
+# every `-F <file>`/`--file=`/`-F -` call left a copy of the post-scrub
+# commit message in TMPDIR for the life of the box — on EVERY path, since
+# the exec also outlived a non-zero git exit. The shim now stays alive as
+# the wrapper (see the run tail): git runs as a child, its exit status is
+# forwarded unchanged, and this EXIT trap unlinks every registered temp on
+# the way out — success, scrubber abort, or git failure. Registration
+# happens in the PARENT shell (file_msg_value), never inside the scrub
+# helpers: their callers capture them via $( ), and an array append inside a
+# command substitution dies with the subshell.
+GIT_SCRUB_TEMPS=()
+cleanup_git_scrub_temps() {
+  if [ "${#GIT_SCRUB_TEMPS[@]}" -gt 0 ]; then
+    rm -f "${GIT_SCRUB_TEMPS[@]}"
+  fi
+}
+trap cleanup_git_scrub_temps EXIT
+# An untrapped INT/TERM kills the shell without running the EXIT trap; route
+# both through exit so the cleanup lands on Ctrl-C too.
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 scrub_text() { DSH_SCRUB_KEEP_DATES=1 node "$SCRUB" <<<"$1"; }
 
@@ -95,11 +122,13 @@ file_msg_value() { # <flag> <value> — route one message-file value: temp-scrub
   local flag="$1" val="$2"
   if [ "$val" = "-" ]; then
     # git's stdin form: scrub the message once, keep `-` in git's argv, and
-    # exec git with stdin redirected from the scrubbed temp (see the exec tail).
+    # run git with stdin redirected from the scrubbed temp (see the run tail).
     STDIN_SCRUBBED="$(scrub_stdin)" || exit 1
+    GIT_SCRUB_TEMPS+=("$STDIN_SCRUBBED")
     args+=("$flag" "$val")
   elif [ -f "$val" ]; then
     scrubbed_file="$(scrub_file "$val")" || exit 1
+    GIT_SCRUB_TEMPS+=("$scrubbed_file")
     args+=("$flag" "$scrubbed_file")
   else
     args+=("$flag" "$val")
@@ -174,7 +203,16 @@ done
 
 # A `-` message-file value was stdin-scrubbed: git still receives `-` in argv,
 # but reads the scrubbed temp instead of the raw payload.
+#
+# Run git as a CHILD, not via `exec`: this shell must survive git to unlink
+# the scrubbed temps (issue #180) — `exec` replaced it and every temp
+# outlived the call, including when git exited non-zero. git's exit status
+# is forwarded unchanged, and the EXIT trap above does the unlinking once
+# git is done.
+git_rc=0
 if [ -n "$STDIN_SCRUBBED" ]; then
-  exec "$REAL" "${args[@]}" <"$STDIN_SCRUBBED"
+  "$REAL" "${args[@]}" <"$STDIN_SCRUBBED" || git_rc=$?
+else
+  "$REAL" "${args[@]}" || git_rc=$?
 fi
-exec "$REAL" "${args[@]}"
+exit "$git_rc"
