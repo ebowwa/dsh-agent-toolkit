@@ -707,17 +707,18 @@ test("git shim: attached -F<file> reaches git as a scrubbed temp file", (t) => {
     "commit", `-F${file}`,
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  assert.ok(fs.existsSync(capture), "the real git was exec'd");
+  assert.ok(fs.existsSync(capture), "the real git was run");
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   const rawArgs = seen.filter((a) => a.endsWith("notes.md"));
   assert.equal(rawArgs.length, 0, `the raw payload path must not reach git — captured: ${seen.join(" | ")}`);
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "git's argv points at the scrubbed temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
-  assert.ok(text.includes("[redacted:token]"), "the attached -F payload was scrubbed before exec");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the attached -F payload was scrubbed before git read it");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
 test("git shim: attached -F<missing-file> rides through (git's own error path)", (t) => {
