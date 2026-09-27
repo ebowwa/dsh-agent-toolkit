@@ -42,8 +42,17 @@ function stage(t, scrubBody) {
   const real = path.join(dir, "record-real");
   fs.writeFileSync(
     real,
-    "#!/usr/bin/env bash\n# test stand-in for the real gh/git: record argv, touch nothing\n" +
-      'printf \'%s\\n\' "$@" >> "$SHIM_TEST_CAPTURE"\nexit 0\n',
+    "#!/usr/bin/env bash\n# test stand-in for the real gh/git: record argv, every handed scrub temp's content, and stdin — touch nothing else\n" +
+      'printf \'%s\\n\' "$@" >> "$SHIM_TEST_CAPTURE"\n' +
+      // The shim hands gh/git scrubbed TEMP paths (or redirects stdin from
+      // one); snapshot their CONTENT during the run — after the run the shim
+      // unlinks them (issue #154), so a post-run read can no longer verify
+      // what the real binary was handed.
+      'for a in "$@"; do\n' +
+      '  case "$a" in */gh-scrubbed.*|*/git-scrubbed.*) cat "$a" >> "$SHIM_TEST_CAPTURE.content";; esac\n' +
+      'done\n' +
+      'cat >> "$SHIM_TEST_CAPTURE.stdin"\n' +
+      "exit 0\n",
   );
   fs.chmodSync(real, 0o755);
   return { dir, scrub, capture, real };
@@ -159,7 +168,7 @@ test("gh shim: scrubber failure aborts --body-file (raw file never copied onward
 // `[ -f "$1" ]` file branch to the catch-all, and a `-` value rode raw as gh's
 // stdin form — both shipped secret-bearing payloads unscrubbed. The shim now
 // routes every *-file value through one guard (scrub_file for a real path,
-// a stdin scrub + exec-time stdin redirect for `-`).
+// a stdin scrub + run-time stdin redirect for `-`).
 
 test("gh shim: scrubber failure aborts --body-file= (equals-form file)", (t) => {
   const { file } = stageNotesFile(t, `token ${SECRET} in a file\n`);
@@ -185,16 +194,24 @@ test("gh shim: equals-form --body-file= reaches gh as a scrubbed temp file", (t)
     "pr", "create", `--body-file=${file}`,
   ]);
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  assert.ok(fs.existsSync(capture), "the real gh was run");
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   const fileArgs = seen.filter((a) => a.endsWith("notes.md"));
   assert.equal(fileArgs.length, 0, `the raw payload path must not reach gh — captured: ${seen.join(" | ")}`);
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  // gh's argv pointed at a scrubbed temp in TMPDIR...
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "gh-scrubbed.")));
+  assert.ok(tempArg, `gh's argv must point at a gh-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  // ...whose content (snapshotted by the recorder DURING the run) is
+  // redacted with dates kept...
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "scrubbed body content");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  // ...and once gh is done the temp is GONE — no gh-scrubbed.* residue in
+  // TMPDIR after a successful run (issue #154: the old exec tail leaked one
+  // copy of the post-scrub body per *-file call, for the life of the box).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `no scrub temp survives a successful run (got: ${leftovers.join(", ")})`);
 });
 
 test("gh shim: scrubber failure aborts --body-file - (stdin form, real gh never exec'd)", (t) => {
@@ -217,28 +234,29 @@ test("gh shim: scrubber failure aborts --title-file= - (equals-form stdin)", (t)
   assertAborted({ res, capture }, "crashing scrubber on --title-file=-");
 });
 
-test("gh shim: --body-file - stdin payload is scrubbed before exec", (t) => {
+test("gh shim: --body-file - stdin payload is scrubbed before gh reads it", (t) => {
   const { res, capture, dir } = runShimWithStdin(
     t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
     ["pr", "create", "--body-file", "-"],
     `stdin token ${SECRET} dated 2026-09-26\n`,
   );
   assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
-  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  assert.ok(fs.existsSync(capture), "the real gh was run");
   // gh still sees the `-` argv it asked for...
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   assert.ok(seen.includes("-"), "`-` reaches gh verbatim as its stdin marker");
-  // ...but reads the scrubbed temp, not the raw payload: exactly one scrubbed
-  // temp exists in TMPDIR and it is redacted with dates kept.
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed stdin temp (got: ${scrubbed.join(", ")})`);
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  // ...but reads the scrubbed temp on stdin (snapshotted by the recorder
+  // DURING the run): redacted, dates kept.
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "the stdin payload was scrubbed");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  // No gh-scrubbed.* residue in TMPDIR after the successful run (issue #154).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `no scrub temp survives a successful run (got: ${leftovers.join(", ")})`);
 });
 
-test("gh shim: equals-form --notes-file=- stdin payload is scrubbed before exec", (t) => {
+test("gh shim: equals-form --notes-file=- stdin payload is scrubbed before gh reads it", (t) => {
   const { res, capture, dir } = runShimWithStdin(
     t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
     ["release", "create", "v1.0.0", "--notes-file=-"],
@@ -248,11 +266,12 @@ test("gh shim: equals-form --notes-file=- stdin payload is scrubbed before exec"
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   assert.ok(seen.includes("--notes-file"), "the equals-form flag rides through for gh's parser");
   assert.ok(seen.includes("-"), "the `-` stdin marker reaches gh verbatim");
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
-  assert.equal(scrubbed.length, 1, "exactly one scrubbed stdin temp");
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "the stdin payload was scrubbed");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  // No gh-scrubbed.* residue in TMPDIR after the successful run (issue #154).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `no scrub temp survives a successful run (got: ${leftovers.join(", ")})`);
 });
 
 // --- gh shim: release-notes call-site shapes (issue #155) -------------------
@@ -698,19 +717,95 @@ test("positive control: --notes-file reaches gh as a scrubbed temp file", (t) =>
     res.status, 0,
     `working scrubber must pass through (stderr: ${res.stderr})`,
   );
-  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  assert.ok(fs.existsSync(capture), "the real gh was run");
   // gh is handed the scrubbed TEMP path, never the raw payload path...
   const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
   const fileArgs = seen.filter((a) => a.endsWith("notes.md"));
   assert.equal(fileArgs.length, 0, `the raw notes file path must not reach gh — captured: ${seen.join(" | ")}`);
-  // ...and exactly one scrubbed temp file, whose CONTENT is redacted
-  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
-  assert.equal(scrubbed.length, 1, `exactly one scrubbed temp handed onward (got: ${scrubbed.join(", ")})`);
-  const text = fs.readFileSync(path.join(dir, scrubbed[0]), "utf8");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "gh-scrubbed.")));
+  assert.ok(tempArg, `gh's argv points at the scrubbed temp — captured: ${seen.join(" | ")}`);
+  // ...its content (snapshotted by the recorder DURING the run) is redacted...
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
   assert.ok(text.includes("[redacted:token]"), "scrubbed notes content");
   assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
   assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
-  assert.ok(seen.includes(path.join(dir, scrubbed[0])), "gh's argv points at the scrubbed temp");
+  // ...and no gh-scrubbed.* residue stays in TMPDIR after the run (issue #154).
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `no scrub temp survives a successful run (got: ${leftovers.join(", ")})`);
+});
+
+// --- gh shim: success-path scrubbed-temp cleanup (issue #154) ----------------
+// scrub_file/scrub_stdin mint "$TMPDIR/gh-scrubbed.XXXXXX" and hand the path
+// to the real gh; the old tail `exec`-ed gh, REPLACING the shim shell, so
+// nothing could unlink the temp after gh read it — every *-file call left a
+// copy of the post-scrub body in TMPDIR for the life of the box (shared lanes
+// accumulated a transcript of fleet posts). The shim now runs gh as a child
+// (exit status forwarded unchanged) and unlinks every registered temp on the
+// way out. These pins ride the runShim harness — TMPDIR IS the auto-cleaned
+// harness dir, so readdir-ing it for gh-scrubbed.* after the run is exactly
+// the residue check.
+
+test("gh shim: NO gh-scrubbed.* residue after a successful separate-arg --body-file run (issue #154)", (t) => {
+  const { file } = stageNotesFile(t, `body token ${SECRET} dated 2026-09-26\n`);
+  const { res, capture, dir } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "pr", "create", "--body-file", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real gh was run");
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "gh read scrubbed content");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `the post-scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
+});
+
+test("gh shim: multi-file flags hand over distinct temps and leave NO residue (issue #154)", (t) => {
+  const title = stageNotesFile(t, `title token ${SECRET}\n`);
+  const body = stageNotesFile(t, `body token ${SECRET} dated 2026-09-26\n`);
+  const { res, capture, dir } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "pr", "create", `--title-file=${title.file}`, `--body-file=${body.file}`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const tempArgs = seen.filter((x) => x.startsWith(path.join(dir, "gh-scrubbed.")));
+  assert.equal(tempArgs.length, 2, `both file flags get their own scrubbed temp — captured: ${seen.join(" | ")}`);
+  assert.notEqual(tempArgs[0], tempArgs[1], "the two temps are distinct files");
+  assert.ok(
+    fs.readFileSync(`${capture}.content`, "utf8").includes("[redacted:token]"),
+    "both temps carried scrubbed content",
+  );
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, `EVERY registered temp must be unlinked after the run (got: ${leftovers.join(", ")})`);
+});
+
+test("gh shim: the real gh's exit status propagates through the run-as-child tail — and its temp still unlinks", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-ghrc-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const scrub = path.join(dir, "scrub-under-test.mjs");
+  fs.writeFileSync(scrub, fs.readFileSync(REAL_SCRUB, "utf8"));
+  const capture = path.join(dir, "captured-argv.txt");
+  const real = path.join(dir, "record-real");
+  // the stand-in gh fails the way gh can (exit 7) AFTER being handed a temp
+  fs.writeFileSync(real, "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"$SHIM_TEST_CAPTURE\"\nexit 7\n");
+  fs.chmodSync(real, 0o755);
+  const bodyFile = path.join(dir, "body.md");
+  fs.writeFileSync(bodyFile, `token ${SECRET}\n`);
+  const res = spawnSync("bash", [GH_SHIM, "pr", "create", "--body-file", bodyFile], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GH_SCRUB_REAL: real,
+      SCRUB_SCRIPT: scrub,
+      SHIM_TEST_CAPTURE: capture,
+      TMPDIR: dir,
+    },
+  });
+  assert.equal(
+    res.status, 7,
+    `gh's non-zero status must reach the shim's caller unchanged (got ${res.status}; stderr: ${res.stderr})`,
+  );
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("gh-scrubbed."));
+  assert.equal(leftovers.length, 0, "the scrubbed temp is unlinked even when gh itself fails");
 });
 
 // --- source pin: the fail-open shapes can never return ----------------------
