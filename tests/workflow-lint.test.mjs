@@ -454,6 +454,20 @@ test("gates.yml runs the structural lint over .yml and .yaml (revert guard)", ()
     "workflow files must reach the linter null-delimited (whitespace-safe)");
 });
 
+test("gates.yml colon-space check can fail the gate (revert guard, issue #139 shape)", () => {
+  const gates = readFileSync(path.join(WF_DIR, "gates.yml"), "utf8");
+  // The colon-space loop's `node ... || fail=1` swallows the violation's exit
+  // status, so the step is only honest if it initializes fail=0 AND ends with
+  // exit "$fail" — mirroring the syntax-check step. Without both halves a
+  // detected violation logs red and the gate stays green (issue #139).
+  const step = gates.match(/- name: Workflow YAML parses\n([\s\S]*?)(?=\n      - name: )/)?.[1];
+  assert.ok(step, "expected a 'Workflow YAML parses' step in gates.yml");
+  assert.match(step, /^\s+fail=0$/m,
+    "the colon-space loop's fail counter must be initialized in this step");
+  assert.match(step, /^\s+exit "\$fail"$/m,
+    "the step must exit with the fail counter or a colon-space violation gates green");
+});
+
 test("the pre-fix gate (tab-only check) was blind to this defect (regression proof)", () => {
   // Documents WHY the tab check alone was replaced: it passed the exact
   // content that 422'd every agent dispatch.
