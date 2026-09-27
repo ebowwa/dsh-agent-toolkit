@@ -454,6 +454,58 @@ test("gates.yml runs the structural lint over .yml and .yaml (revert guard)", ()
     "workflow files must reach the linter null-delimited (whitespace-safe)");
 });
 
+test("gates.yml colon-space sub-check can actually fail the step (issue #139)", () => {
+  // Regression: the 'Workflow YAML parses' step accumulated failures via
+  // `... || fail=1` but never initialized `fail` nor exited with it, so
+  // the step's status was the loop's last status (always 0) and a
+  // DETECTED colon-space violation still gated green.
+  const gates = readFileSync(path.join(WF_DIR, "gates.yml"), "utf8");
+  // split on step boundaries at line start (the sub-check's own script
+  // text contains "- name:" inline, so a plain split would cut early)
+  const step = gates.split(/^ *- name: Workflow YAML parses$/m)[1]
+    .split(/^ {6}- name: /m)[0];
+  assert.match(step, /^ {2,}fail=0$/m,
+    "the step must initialize fail=0 before the loops");
+  assert.match(step, /exit "\$fail"/,
+    "the step must exit with the accumulated fail status");
+
+  // End-to-end repro: run the step's colon-space sub-check against a
+  // workflow file with the exact 422-class defect (plain scalar with
+  // colon-space in a step name) — the gate script must exit nonzero.
+  const broken = `name: x
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy: worker
+        run: echo hi
+`;
+  withFile(broken, (f) => {
+    const probe = spawnSync("bash", ["-c", `
+      fail=0
+      for f in "$1"; do
+        node -e '
+          const fs = require("fs");
+          const s = fs.readFileSync(process.argv[1], "utf8");
+          const m = s.match(/^([ \\t]*- name:[ \\t]+)([^'"'"'"{][^\\n]*)$/gm) || [];
+          for (const line of m) {
+            const val = line.replace(/^[ \\t]*- name:[ \\t]+/, "");
+            if (/:[ \\t]| #[^\\n]*$/.test(val) && !/\\$\\{\\{.*\\}\\}/.test(val)) {
+              console.error("plain scalar with colon-space in step name (" + process.argv[1] + "): " + val.trim());
+              process.exitCode = 1;
+            }
+          }
+        ' "$f" || fail=1
+      done
+      exit "$fail"
+    `, "probe", f], { encoding: "utf8" });
+    assert.equal(probe.status, 1,
+      "the colon-space sub-check must be able to fail the step (issue #139)");
+    assert.match(probe.stderr, /colon-space in step name/);
+  });
+});
+
 test("the pre-fix gate (tab-only check) was blind to this defect (regression proof)", () => {
   // Documents WHY the tab check alone was replaced: it passed the exact
   // content that 422'd every agent dispatch.

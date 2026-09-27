@@ -47,6 +47,7 @@ jobs:
         # "parses" only rejected tabs. The lint makes the gate honest.
         run: |
           set -euo pipefail
+          fail=0
           # null-delimited (whitespace-safe), evaluated once; both extensions
           wfs=()
           while IFS= read -r -d '' f; do wfs+=("$f"); done < <(find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) -print0)
@@ -75,6 +76,11 @@ jobs:
               }
             ' "$f" || fail=1
           done
+          # the sub-check must be able to FAIL the step: without the init +
+          # exit, the step's status was the loop's last status (always 0)
+          # and a detected colon-space violation still gated green (the
+          # 422-class regression passed).
+          exit "$fail"
       - name: Install plugin smoke-test deps
         # Offline smokes import their lib, and the libs import the
         # @deepseek-ai/* packages the dsh runtime provides in production
