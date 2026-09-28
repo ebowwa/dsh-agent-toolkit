@@ -98,8 +98,9 @@ scrub_stdin() { # consumes the shim's own stdin -> scrubbed temp file path on st
 }
 
 # `-F`/`--file` carry a MESSAGE only under some subcommands (commit, tag,
-# notes). Elsewhere they mean something else — `git config --file` is a
-# config path, `git log`/`git grep -F` is boolean --fixed-strings — and a
+# notes, merge, commit-tree, pull). Elsewhere they mean something else —
+# `git config --file` is a config path, `git log`/`git grep -F` is boolean
+# --fixed-strings — and a
 # blanket guard would consume-and-rewrite argv those commands never meant as
 # a message. Guard only when a message-file subcommand is present IN GIT'S
 # ACTUAL SUBCOMMAND POSITION — the first argv element that is not a global
@@ -131,7 +132,7 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
 }
 MSG_CMD=0
 case "$(subcommand_of "$@")" in
-  commit|tag|notes) MSG_CMD=1;;
+  commit|tag|notes|merge|commit-tree|pull) MSG_CMD=1;;
 esac
 
 STDIN_SCRUBBED=""

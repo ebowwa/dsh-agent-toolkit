@@ -628,6 +628,7 @@ test("git shim: -F/--file ride byte-identical outside the message-file subcomman
     ["log", "-F", "--grep=needle"],
     ["grep", "-F", "needle"],
     ["config", "--file", "other.cfg", "user.name", "bob"],
+    ["checkout", "--", "-F"],
   ]) {
     const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
     assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
@@ -637,6 +638,59 @@ test("git shim: -F/--file ride byte-identical outside the message-file subcomman
     assert.equal(scrubbed.length, 0, `${argv.join(" ")}: no scrub temp may be created`);
   }
 });
+
+// --- git shim: message-FILE forms under merge / commit-tree / pull ----------
+// `git merge -F <file>`, `git commit-tree -F <file>`, and `git pull -m` also
+// sign prose into history, but the subcommand gate only armed commit/tag/notes
+// — a secret-bearing message file reached the real git unscrubbed (the shim
+// header's contract: an unscrubbed message is not signed into history). Those
+// subcommands arm the same gate; non-message subcommands still ride raw.
+
+test("git shim: merge/commit-tree/pull -F <file> reach git as a scrubbed temp file", (t) => {
+  for (const sub of ["merge", "commit-tree", "pull"]) {
+    const { file } = stageNotesFile(t, `msg token ${SECRET} dated 2026-09-26\n`);
+    const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+      sub, "-F", file,
+    ]);
+    assert.equal(res.status, 0, `${sub} -F: shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+    assert.ok(
+      !seen.includes(file),
+      `${sub} -F: the raw payload path must not reach git — captured: ${seen.join(" | ")}`,
+    );
+    const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+    assert.ok(tempArg, `${sub} -F: git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+    const text = fs.readFileSync(`${capture}.content`, "utf8");
+    assert.ok(text.includes("[redacted:token]"), `${sub} -F: scrubbed message content`);
+    assert.ok(!text.includes("a1B2c3D4e5F6"), `${sub} -F: the raw token did not survive`);
+    assert.ok(text.includes("2026-09-26"), `${sub} -F: dates still ride through untouched`);
+    const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+    assert.equal(leftovers.length, 0, `${sub} -F: no scrub temp survives the run`);
+  }
+});
+
+test("git shim: scrubber failure aborts merge -F <file> (fail-closed, no residue)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, FAIL_EXIT1, ["merge", "-F", file]);
+  assertAborted({ res, capture }, "exit-1 scrubber on git merge -F <file>");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
+test("git shim: merge/commit-tree/pull -m and --message= scrub like commit's", (t) => {
+  for (const argv of [
+    ["merge", "-m", `merge msg ${SECRET}`],
+    ["commit-tree", `--message=tree msg ${SECRET}`],
+    ["pull", "-m", `pull msg ${SECRET}`],
+  ]) {
+    const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+    assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8");
+    assert.ok(seen.includes("[redacted:token]"), `${argv.join(" ")}: scrubbed value reached git`);
+    assert.ok(!seen.includes("a1B2c3D4e5F6"), `${argv.join(" ")}: the raw token did not survive`);
+  }
+});
+
 
 test("git shim: commit -F <missing-file> rides through (git's own error path)", (t) => {
   const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
