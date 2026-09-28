@@ -684,6 +684,66 @@ test("git shim: commit-tree --message= scrubs like commit's (merge -m: the #196 
   }
 });
 
+// --- git shim: the BARE stdin message form of commit-tree (issue #213) -------
+// `git commit-tree <tree>` with NO -m/-F flag is documented to read the commit
+// log message from standard input. The flag scan arms nothing there, so a
+// secret-bearing stdin payload used to reach the real git byte-identical and
+// was signed into history unscrubbed — the same under-scrub class #206/#208
+// closed for `-m`/`-F`. The shim now scrubs non-tty stdin on a flagless
+// commit-tree and redirects git's stdin from the scrubbed temp (fail-closed,
+// temp unlinked after git exits).
+
+test("git shim: bare commit-tree <tree> stdin message is scrubbed before git reads it", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}"],
+    `stdin msg token ${SECRET} dated 2026-09-26\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepStrictEqual(seen, ["commit-tree", "HEAD^{tree}"],
+    "argv reaches git untouched — only stdin is rerouted");
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the stdin payload was scrubbed");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp survives the run");
+});
+
+test("git shim: bare commit-tree stdin scrub failure aborts (real git never exec'd)", (t) => {
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, FAIL_EXIT1, ["commit-tree", "HEAD^{tree}"], `msg token ${SECRET}\n`,
+  );
+  assertAborted({ res, capture }, "bare commit-tree stdin form");
+});
+
+test("git shim: flagless non-commit-tree message subcommand stdin rides byte-identical", (t) => {
+  // commit/tag/notes/merge do not read a log message from bare stdin — the
+  // shim must not consume their stdin (only commit-tree arms the bare-stdin
+  // scrub), and their payload passes through verbatim.
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit"], `not-a-message token ${SECRET}\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.equal(text, `not-a-message token ${SECRET}\n`, "stdin crossed untouched");
+});
+
+test("git shim: commit-tree WITH a message flag does not consume stdin", (t) => {
+  // -m carries the message; git's stdin is not the message channel, so the
+  // bare-stdin scrub must not fire and the payload crosses untouched.
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}", "-m", `msg token ${SECRET}`],
+    `not-the-message\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.equal(text, "not-the-message\n", "stdin crossed untouched when -m carries the message");
+});
+
 test("git shim: `pull -F <file>` rides byte-identical — pull is not armed (PR #203 review)", (t) => {
   const { file } = stageNotesFile(t, `msg token ${SECRET} pull\n`);
   const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
