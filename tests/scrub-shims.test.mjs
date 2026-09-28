@@ -694,6 +694,7 @@ test("git shim: -F/--file ride byte-identical outside the message-file subcomman
     ["log", "-F", "--grep=needle"],
     ["grep", "-F", "needle"],
     ["config", "--file", "other.cfg", "user.name", "bob"],
+    ["checkout", "--", "-F"],
   ]) {
     const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
     assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
@@ -702,6 +703,63 @@ test("git shim: -F/--file ride byte-identical outside the message-file subcomman
     const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
     assert.equal(scrubbed.length, 0, `${argv.join(" ")}: no scrub temp may be created`);
   }
+});
+
+// --- git shim: message-FILE forms under commit-tree --------------------------
+// `git commit-tree -F <file>` also signs prose into history, but the
+// subcommand gate only armed commit/tag/notes/merge — a secret-bearing
+// message file reached the real git unscrubbed (the shim header's contract:
+// an unscrubbed message is not signed into history). commit-tree arms the
+// same gate; merge's `-F`/`-m` pins live in the issue-#200 block below.
+// NOTE: `pull` is deliberately NOT armed — git-pull(1) has no -m/--message= or
+// -F on any git version (PR #203 review finding): arming it would gate flags
+// git rejects anyway, so `pull -F` must ride byte-identical.
+
+test("git shim: commit-tree -F <file> reaches git as a scrubbed temp file", (t) => {
+  {
+    const sub = "commit-tree";
+    const { file } = stageNotesFile(t, `msg token ${SECRET} dated 2026-09-26\n`);
+    const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+      sub, "-F", file,
+    ]);
+    assert.equal(res.status, 0, `${sub} -F: shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+    assert.ok(
+      !seen.includes(file),
+      `${sub} -F: the raw payload path must not reach git — captured: ${seen.join(" | ")}`,
+    );
+    const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+    assert.ok(tempArg, `${sub} -F: git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+    const text = fs.readFileSync(`${capture}.content`, "utf8");
+    assert.ok(text.includes("[redacted:token]"), `${sub} -F: scrubbed message content`);
+    assert.ok(!text.includes("a1B2c3D4e5F6"), `${sub} -F: the raw token did not survive`);
+    assert.ok(text.includes("2026-09-26"), `${sub} -F: dates still ride through untouched`);
+    const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+    assert.equal(leftovers.length, 0, `${sub} -F: no scrub temp survives the run`);
+  }
+});
+
+test("git shim: commit-tree --message= scrubs like commit's (merge -m: the #196 pin)", (t) => {
+  {
+    const argv = ["commit-tree", `--message=tree msg ${SECRET}`];
+    const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+    assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8");
+    assert.ok(seen.includes("[redacted:token]"), `${argv.join(" ")}: scrubbed value reached git`);
+    assert.ok(!seen.includes("a1B2c3D4e5F6"), `${argv.join(" ")}: the raw token did not survive`);
+  }
+});
+
+test("git shim: `pull -F <file>` rides byte-identical — pull is not armed (PR #203 review)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} pull\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "pull", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(seen.includes(file), "the raw path reaches git verbatim — pull arms no message gate");
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp for an unarmed subcommand");
 });
 
 test("git shim: commit -F <missing-file> rides through (git's own error path)", (t) => {
