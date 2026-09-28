@@ -135,7 +135,7 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
 }
 MSG_CMD=0
 case "$(subcommand_of "$@")" in
-  commit|tag|notes) MSG_CMD=1;;
+  commit|tag|notes|merge) MSG_CMD=1;;
 esac
 
 STDIN_SCRUBBED=""

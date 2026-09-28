@@ -1021,3 +1021,26 @@ test("source pin: neither shim carries a fail-open scrub fallback or stderr swal
     }
   }
 });
+
+// --- git shim: merge is a MESSAGE subcommand for -m (follow-up to #198) -----
+// The #196 gate left MSG_CMD at commit|tag|notes — but the pre-gate shim
+// scrubbed `git merge -m <msg>` unconditionally, so gating alone REGRESSED
+// it: `merge -m "secret msg"` reached real git raw (the fail-open direction
+// on a real message form). `merge` joins the set; pinned both directions.
+
+test("git shim: `merge -m <msg>` is still scrubbed (join-the-set pin, issue #196)", (t) => {
+  const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "merge", "-m", `token ${SECRET} merge`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const captured = fs.readFileSync(capture, "utf8");
+  assert.ok(captured.includes("[redacted:token]"), "merge -m msg must be scrubbed");
+  assert.ok(!captured.includes(SECRET), "the raw token did not survive");
+});
+
+test("git shim: scrubber failure still aborts `merge -m` (fail-closed pin, issue #196)", (t) => {
+  assertAborted(
+    runShim(t, GIT_SHIM, FAIL_EXIT1, ["merge", "-m", `token ${SECRET}`]),
+    "exit-1 scrubber on git merge -m",
+  );
+});
