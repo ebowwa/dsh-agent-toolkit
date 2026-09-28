@@ -731,6 +731,20 @@ test("git shim: flagless non-commit-tree message subcommand stdin rides byte-ide
   assert.equal(text, `not-a-message token ${SECRET}\n`, "stdin crossed untouched");
 });
 
+test("git shim: commit-tree -m <msg> scrubs the value (issue #225: -m scrubs, stdin untouched)", (t) => {
+  // The landed #203 behavior for the short flag form: the -m VALUE is
+  // scrubbed before git sees it, while git's stdin stays untouched (pinned
+  // by the sibling test below). Without this pin the sibling alone would
+  // pass even if the -m value crossed byte-identical.
+  const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "commit-tree", "HEAD^{tree}", "-m", `flag msg token ${SECRET}`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8");
+  assert.ok(seen.includes("[redacted:token]"), "commit-tree -m: scrubbed value reached git");
+  assert.ok(!seen.includes("a1B2c3D4e5F6"), "commit-tree -m: the raw token did not survive");
+});
+
 test("git shim: commit-tree WITH a message flag does not consume stdin", (t) => {
   // -m carries the message; git's stdin is not the message channel, so the
   // bare-stdin scrub must not fire and the payload crosses untouched.
