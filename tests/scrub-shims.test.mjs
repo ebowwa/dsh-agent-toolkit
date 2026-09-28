@@ -791,6 +791,87 @@ test("git shim: commit-tree -F - stdin scrub failure aborts (real git never exec
   assertAborted({ res, capture }, "commit-tree -F - stdin form");
 });
 
+// --- the OTHER spellings of the same stdin-value channel (issue #232) --------
+// `--file=-` (equals form) and `-F-` (attached form) route through the SAME
+// file_msg_value `-` branch as the separate-arg `-F -` spelling pinned above:
+// git's parse-options accepts all three, so a refactor that breaks the
+// equals/attached argv parse must not silently drop the stdin scrub (the
+// #157/#172 spelling-specific under-scrub class).
+
+test("git shim: commit-tree --file=- (equals-form stdin value) message is scrubbed before git reads it", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}", "--file=-"],
+    `stdin msg token ${SECRET} dated 2026-09-26\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepStrictEqual(seen, ["commit-tree", "HEAD^{tree}", "--file", "-"],
+    "equals form is split so git sees --file - verbatim — only stdin is rerouted");
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the stdin message payload was scrubbed");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp survives the run");
+});
+
+test("git shim: commit-tree --file=- stdin scrub failure aborts (real git never exec'd)", (t) => {
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, FAIL_EXIT1, ["commit-tree", "HEAD^{tree}", "--file=-"], `msg token ${SECRET}\n`,
+  );
+  assertAborted({ res, capture }, "commit-tree --file=- stdin form");
+});
+
+test("git shim: commit-tree -F- (attached stdin value) message is scrubbed before git reads it", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}", "-F-"],
+    `stdin msg token ${SECRET} dated 2026-09-26\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepStrictEqual(seen, ["commit-tree", "HEAD^{tree}", "-F", "-"],
+    "attached form is split so git sees -F - verbatim — only stdin is rerouted");
+  const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the stdin message payload was scrubbed");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp survives the run");
+});
+
+test("git shim: commit-tree -F- stdin scrub failure aborts (real git never exec'd)", (t) => {
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, FAIL_EXIT1, ["commit-tree", "HEAD^{tree}", "-F-"], `msg token ${SECRET}\n`,
+  );
+  assertAborted({ res, capture }, "commit-tree -F- stdin form");
+});
+
+// the same two spellings under `commit` — the armed branch is shared, but the
+// subcommand gate is per-invocation, so pin the channel where it is used most.
+test("git shim: commit --file=- and -F- (stdin value) messages are scrubbed before git reads them", (t) => {
+  for (const argv of [["commit", "--file=-"], ["commit", "-F-"]]) {
+    const { res, capture } = runShimWithStdin(
+      t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+      argv, `stdin msg token ${SECRET} dated 2026-09-26\n`,
+    );
+    assert.equal(res.status, 0, `${argv.join(" ")}: shim must pass through (stderr: ${res.stderr})`);
+    const text = fs.readFileSync(`${capture}.stdin`, "utf8");
+    assert.ok(text.includes("[redacted:token]"), `${argv.join(" ")}: the stdin message payload was scrubbed`);
+    assert.ok(!text.includes("a1B2c3D4e5F6"), `${argv.join(" ")}: the raw token did not survive`);
+  }
+});
+
+test("git shim: commit --file=- and -F- stdin scrub failure aborts (real git never exec'd)", (t) => {
+  for (const argv of [["commit", "--file=-"], ["commit", "-F-"]]) {
+    const { res, capture } = runShimWithStdin(
+      t, GIT_SHIM, FAIL_EXIT1, argv, `msg token ${SECRET}\n`,
+    );
+    assertAborted({ res, capture }, `commit ${argv[1]} stdin form`);
+  }
+});
+
 test("git shim: `pull -F <file>` rides byte-identical — pull is not armed (PR #203 review)", (t) => {
   const { file } = stageNotesFile(t, `msg token ${SECRET} pull\n`);
   const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
