@@ -101,19 +101,38 @@ scrub_stdin() { # consumes the shim's own stdin -> scrubbed temp file path on st
 # notes). Elsewhere they mean something else — `git config --file` is a
 # config path, `git log`/`git grep -F` is boolean --fixed-strings — and a
 # blanket guard would consume-and-rewrite argv those commands never meant as
-# a message. Guard only when a message-file subcommand is present; a git
-# alias that expands to one of these rides raw (honest limit, see header).
-is_msg_cmd() {
+# a message. Guard only when a message-file subcommand is present IN GIT'S
+# ACTUAL SUBCOMMAND POSITION — the first argv element that is not a global
+# option or its value. The earlier scan matched the bare WORDS
+# commit/tag/notes anywhere in argv (issue #175): a pattern, pathspec, or
+# option value equal to one of those words armed the gate and a `-F` in the
+# same invocation was consumed-and-rewritten (`git grep -F tag` with a file
+# named `tag` lost its PATTERN to a scrub-temp path). A git alias that
+# expands to one of these rides raw (honest limit, see header).
+subcommand_of() { # echo git's subcommand (first non-global-option element); fail if none
   local a
-  for a in "$@"; do
+  while [ $# -gt 0 ]; do
+    a="$1"; shift
     case "$a" in
-      commit|tag|notes) return 0;;
+      # value-taking global options: their value is the NEXT element
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)
+        [ $# -gt 0 ] && shift;;
+      # attached-value global options: value rides in the same element
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*|--config-env=*)
+        ;;
+      # boolean global flags and any other dash-form: not the subcommand
+      -*)
+        ;;
+      *)
+        printf '%s' "$a"; return 0;;
     esac
   done
   return 1
 }
 MSG_CMD=0
-is_msg_cmd "$@" && MSG_CMD=1
+case "$(subcommand_of "$@")" in
+  commit|tag|notes) MSG_CMD=1;;
+esac
 
 STDIN_SCRUBBED=""
 
