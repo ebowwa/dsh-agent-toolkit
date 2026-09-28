@@ -813,6 +813,77 @@ test("git shim: an emptied attached -m value falls back to the separate form (a 
     "the emptied value stays the message; --allow-empty stays a flag",
   );
 });
+// --- git shim: the -m/--message gate reads the SAME subcommand position -----
+// (issue #196) — `-m` is not a message flag everywhere: `git checkout -m
+// <branch>` / `git switch -m <branch>` (merge-strategy) and `git cherry-pick
+// -m <mainline-number> <sha>` carry non-prose values. The old handlers ran
+// unconditionally: a rewriting scrubber rewrote the VALUE (silent argv
+// drift), and a scrubber outage abort-failed a command that never carried a
+// message. Under commit/tag/notes the scrubbing must keep working.
+
+test("git shim: `checkout -m mybranch` rides byte-identical — the branch is not prose (issue #196)", (t) => {
+  const argv = ["checkout", "-m", "mybranch"];
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, argv, `the branch name must reach git verbatim — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp may be created — no message is present");
+});
+
+test("git shim: `cherry-pick -m 1 abc123` survives a scrubber OUTAGE (nothing message-like to protect, issue #196)", (t) => {
+  const argv = ["cherry-pick", "-m", "1", "abc123"];
+  const FAILING = "process.exit(3);\n";
+  const { res, capture } = runShim(t, GIT_SHIM, FAILING, argv);
+  assert.equal(res.status, 0, `a non-message subcommand must not fail closed — status ${res.status}, stderr: ${res.stderr}`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, argv, "the mainline number and sha must reach git verbatim");
+});
+
+test("git shim: attached -m<value> outside a message subcommand rides byte-identical (issue #196)", (t) => {
+  const argv = ["checkout", "-mmybranch"];
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, argv, `argv must be untouched — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp may be created");
+});
+
+test("git shim: --message=<value> outside a message subcommand rides byte-identical (issue #196)", (t) => {
+  const argv = ["checkout", "--message=mybranch"];
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, argv, `argv must be untouched — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp may be created");
+});
+
+test("git shim: `tag -m <msg>` is still scrubbed — the gate keeps the real message forms (issue #196)", (t) => {
+  const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "tag", "-m", `release token ${SECRET} prose`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const msgArg = seen[seen.indexOf("-m") + 1];
+  assert.ok(msgArg.includes("[redacted:token]"), `the tag message must be scrubbed — captured: ${seen.join(" | ")}`);
+  assert.ok(!msgArg.includes("a1B2c3D4e5F6"), "the raw token must NOT reach git");
+});
+
+test("git shim: `notes -m <msg>` and `commit --message=<msg>` are still scrubbed (issue #196)", (t) => {
+  const { res: r1, capture: c1 } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), ["notes", "-m", `token ${SECRET}`]);
+  assert.equal(r1.status, 0, `notes: shim must pass through (stderr: ${r1.stderr})`);
+  const seen1 = fs.readFileSync(c1, "utf8").trim().split("\n");
+  assert.ok(seen1[seen1.indexOf("-m") + 1].includes("[redacted:token]"), "notes message was scrubbed");
+  const { res: r2, capture: c2 } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), ["commit", `--message=token ${SECRET}`]);
+  assert.equal(r2.status, 0, `commit: shim must pass through (stderr: ${r2.stderr})`);
+  const seen2 = fs.readFileSync(c2, "utf8").trim().split("\n");
+  const eq = seen2.find((a) => a.startsWith("--message="));
+  assert.ok(eq && eq.includes("[redacted:token]"), "commit --message= was scrubbed");
+  assert.ok(!eq.includes("a1B2c3D4e5F6"), "the raw token did not reach git");
+});
+
 
 // --- positive control: the same harness passes scrubbed text through --------
 
