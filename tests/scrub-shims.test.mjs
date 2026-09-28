@@ -1098,3 +1098,123 @@ test("git shim: scrubber failure still aborts `merge -m` (fail-closed pin, issue
     "exit-1 scrubber on git merge -m",
   );
 });
+
+// --- git shim: `merge -F <file>` rides the MSG_CMD gate too (issue #200) -----
+// `merge` arming MSG_CMD covers the -F/--file forms as well: git merge takes
+// `-F, --file <file>` ("read message from file") just like commit. Left
+// unpinned, a future "narrow the set" change would scrub merge -m but let
+// merge -F <file> ride the raw file — the asymmetric half-open gate #169
+// closed for commit/tag/notes. The negatives are pinned too: git grep/log -F
+// (boolean --fixed-strings) must still ride byte-identical.
+
+test("git shim: `merge -F <file>` reaches git as a scrubbed temp file (issue #200)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} dated 2026-09-26\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "merge", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(
+    !seen.includes(file),
+    `the raw payload path must not reach git — captured: ${seen.join(" | ")}`,
+  );
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `git's argv must point at a git-scrubbed.* temp — captured: ${seen.join(" | ")}`);
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "scrubbed merge message content");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not survive");
+  assert.ok(text.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp residue after a successful merge -F");
+});
+
+test("git shim: scrubber failure aborts `merge -F <file>` (fail-closed pin, issue #200)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, FAIL_EXIT1, ["merge", "-F", file]);
+  assertAborted({ res, capture }, "exit-1 scrubber on git merge -F <file>");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
+test("git shim: `merge --file=<file>` and attached `-F<file>` are scrubbed too (issue #200)", (t) => {
+  for (const argv of [["merge", "--file=PLACEHOLDER"], ["merge", "-FPLACEHOLDER"]]) {
+    const staged = stageNotesFile(t, `msg token ${SECRET}\n`);
+    const filled = argv.map((a) => (a.endsWith("PLACEHOLDER") ? a.replace("PLACEHOLDER", staged.file) : a));
+    const { res, capture, dir } = runShim(
+      t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), filled,
+    );
+    assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+    assert.ok(
+      !seen.includes(staged.file),
+      `${filled.join(" ")}: raw payload path must not reach git — captured: ${seen.join(" | ")}`,
+    );
+    assert.ok(
+      seen.some((a) => a.startsWith(path.join(dir, "git-scrubbed."))),
+      `${filled.join(" ")}: git must be handed a scrubbed temp`,
+    );
+    assert.ok(
+      !fs.readFileSync(`${capture}.content`, "utf8").includes("a1B2c3D4e5F6"),
+      `${filled.join(" ")}: the raw token did not survive`,
+    );
+    const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+    assert.equal(leftovers.length, 0, `${filled.join(" ")}: no scrub temp residue`);
+  }
+});
+
+test("git shim: `git grep -F` / `git log -F` still ride byte-identical with merge in the set (issue #200)", (t) => {
+  for (const argv of [
+    ["grep", "-F", "needle"],
+    ["log", "-F", "--grep=needle"],
+    ["cherry-pick", "-m", "1", "abc123"],
+  ]) {
+    const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);
+    assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+    const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+    assert.deepEqual(seen, argv, `${argv.join(" ")}: argv must be untouched`);
+    const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+    assert.equal(scrubbed.length, 0, `${argv.join(" ")}: no scrub temp may be created`);
+  }
+});
+
+// issue #214: the message-flag scan must stop at the first `--`. After the
+// end-of-options separator git guarantees every element is a PATHSPEC, never
+// a flag — a file literally named `-F` (legal on disk) after `--` used to be
+// consumed as a message flag: the `-F` pathspec vanished and the NEXT
+// pathspec was scrubbed-and-replaced by a temp path that no longer exists
+// once the trap unlinks it.
+
+test("git shim: `commit -- -F msgfile` rides byte-identical — pathspecs after `--` are never flags (issue #214)", (t) => {
+  // the on-disk world the receipt staged: files literally named `-F` and
+  // `msgfile`, both pathspecs, neither a message flag
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-214-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "-F"), "pathspec\n");
+  fs.writeFileSync(path.join(dir, "msgfile"), "pathspec\n");
+  const argv = ["commit", "--", "-F", "msgfile", "other"];
+  const { res, capture, dir: harness } = runShim(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv, { cwd: dir },
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, argv, `everything after \`--\` must reach git byte-identical — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(harness).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, `no pathspec may be scrubbed into a temp (got: ${scrubbed.join(", ")})`);
+});
+
+test("git shim: `commit -F msgfile -- other` still scrubs — a flag BEFORE `--` keeps the guard (issue #214)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} dated 2026-09-28\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "commit", "-F", file, "--", "other",
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `the message file before \`--\` must still be scrubbed — captured: ${seen.join(" | ")}`);
+  assert.ok(seen.includes("--") && seen.includes("other"), "the `--` and trailing pathspec ride verbatim");
+  const text = fs.readFileSync(`${capture}.content`, "utf8");
+  assert.ok(text.includes("[redacted:token]"), "the message file was scrubbed");
+  assert.ok(!text.includes("a1B2c3D4e5F6"), "the raw token did not reach git");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `no scrub temp residue (got: ${leftovers.join(", ")})`);
+});
