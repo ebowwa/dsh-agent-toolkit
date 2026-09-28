@@ -905,6 +905,43 @@ test("git shim: global options before the subcommand do not hide the gate (issue
   assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
 });
 
+// --- git shim: hidden value-taking globals in SEPARATE form (issue #199) -----
+// `git --shallow-file <path>` is a real (hidden) value-taking global. Left out
+// of `subcommand_of`'s value-consumer list, its VALUE fell into the boolean
+// `-*` catch-all and was returned as git's subcommand, so a genuine
+// `commit -F` after it never armed MSG_CMD and the message file rode raw.
+
+test("git shim: --shallow-file <value> before `commit -F` does not hide the gate (issue #199)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "--shallow-file", "/tmp/alt-alternates", "commit", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real git was run");
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(
+    seen.includes("/tmp/alt-alternates"),
+    `the --shallow-file value must reach git verbatim — captured: ${seen.join(" | ")}`,
+  );
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `the message file must still be scrubbed — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
+});
+
+test("git shim: attached --shallow-file=<value> before `commit -F` does not hide the gate (issue #199)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "--shallow-file=/tmp/alt-alternates", "commit", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `the message file must still be scrubbed — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
+});
+
 test("git shim: attached -F<value> outside a message subcommand rides byte-identical", (t) => {
   const argv = ["grep", "-Fneedle"];
   const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), argv);

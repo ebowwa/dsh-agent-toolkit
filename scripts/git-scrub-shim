@@ -123,11 +123,14 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
   while [ $# -gt 0 ]; do
     a="$1"; shift
     case "$a" in
-      # value-taking global options: their value is the NEXT element
-      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)
+      # value-taking global options: their value is the NEXT element.
+      # `--shallow-file` is a hidden value-taking global (issue #199): left
+      # out, its separate-form VALUE fell into the boolean `-*` catch-all and
+      # was returned as the subcommand, disarming the gate.
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env|--shallow-file)
         [ $# -gt 0 ] && shift;;
       # attached-value global options: value rides in the same element
-      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*|--config-env=*)
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*|--config-env=*|--shallow-file=*)
         ;;
       # boolean global flags and any other dash-form: not the subcommand
       -*)
