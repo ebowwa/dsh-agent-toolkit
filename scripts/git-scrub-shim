@@ -13,7 +13,11 @@
 # the shim scrubs it through the same scrubber (a scrubbed TEMP file is
 # handed onward, or stdin is redirected from a scrubbed temp) before the
 # real git runs, and the temp is unlinked the moment git is done (issue
-# #180 — the old `exec` tail left every scrub temp in TMPDIR forever). Only
+# #180 — the old `exec` tail left every scrub temp in TMPDIR forever). The
+# `-m`/`--message` forms are gated the same way (issue #196): `-m` is not a
+# message flag everywhere — `git checkout -m`/`git switch -m` is
+# merge-strategy, `git cherry-pick -m <n>` takes a mainline number — and
+# outside commit/tag/notes those values ride byte-identical. Only
 # under the message-file subcommands: `-F`/`--file` mean
 # something else elsewhere (`git config --file` is a config path; `git
 # log`/`git grep -F` is boolean --fixed-strings) and ride untouched.
@@ -131,7 +135,7 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
 }
 MSG_CMD=0
 case "$(subcommand_of "$@")" in
-  commit|tag|notes) MSG_CMD=1;;
+  commit|tag|notes|merge) MSG_CMD=1;;
 esac
 
 STDIN_SCRUBBED=""
@@ -158,12 +162,22 @@ args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift
   case "$flag" in
+    # -m/--message are gated on the same MSG_CMD as -F/--file (issue #196):
+    # they carry a MESSAGE only under commit/tag/notes. Elsewhere -m means
+    # something else — `git checkout -m`/`git switch -m` is merge-strategy,
+    # `git cherry-pick -m <n>` takes a MAINLINE NUMBER — and the value is not
+    # prose: scrubbing it rewrote the branch name / mainline number, and a
+    # scrubber outage aborted a command that never carried a message at all
+    # (fail-closed applied where there was nothing to protect).
     -m|--message)
-      if [ $# -gt 0 ]; then
+      if [ "$MSG_CMD" = 1 ] && [ $# -gt 0 ]; then
         msg="$(scrub_or_die "$1")" || exit 1
         args+=("$flag" "$msg"); shift
       else
+        # ride through; still consume the value element (git's parse-options
+        # binds it to the flag) so it is never re-parsed as a flag
         args+=("$flag")
+        [ $# -gt 0 ] && { args+=("$1"); shift; }
       fi;;
     -m?*)
       # attached short form (issue #172): git's parse-options takes everything
@@ -173,17 +187,26 @@ while [ $# -gt 0 ]; do
       # scrubbed whitespace cannot split into git positionals. A scrubbed
       # value that comes back EMPTY falls back to the separate form: a bare
       # `-m` would otherwise make git consume the NEXT argument as the
-      # message.
-      msg="$(scrub_or_die "${flag#-m}")" || exit 1
-      if [ -n "$msg" ]; then
-        args+=("-m$msg")
+      # message. Outside a message subcommand the element rides untouched
+      # (issue #196) — it is not a message value there.
+      if [ "$MSG_CMD" = 1 ]; then
+        msg="$(scrub_or_die "${flag#-m}")" || exit 1
+        if [ -n "$msg" ]; then
+          args+=("-m$msg")
+        else
+          args+=("-m" "")
+        fi
       else
-        args+=("-m" "")
+        args+=("$flag")
       fi;;
     --message=*)
       key="${flag%%=*}"; val="${flag#*=}"
-      msg="$(scrub_or_die "$val")" || exit 1
-      args+=("$key=$msg");;
+      if [ "$MSG_CMD" = 1 ]; then
+        msg="$(scrub_or_die "$val")" || exit 1
+        args+=("$key=$msg")
+      else
+        args+=("$flag")
+      fi;;
     -F|--file)
       # message-FILE flag (issue #169): a short -F consumes its next argv
       # element as the value even when it starts with `-` (git's parse-options
