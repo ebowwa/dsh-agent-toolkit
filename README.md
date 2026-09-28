@@ -92,6 +92,24 @@ drift-check advances `v1` to each new release it tags. There is no bare
 reach consumers only through a drift-check bump PR merged by each repo's
 own gates + review — the audit gate. Nothing propagates silently.
 
+### Tag re-pointing (the convention, issue #231)
+
+A published `vX.Y.Z` release tag is only ever moved by one mechanism, and
+never by this repo: the CONSUMER's bump workflow (ebowwa/factory
+`dsh-agent-toolkit-bump.yml`, `tagsync` job) re-points the tag named in its
+merged bump-PR title to this repo's then-current main head, so the tag is
+the tree the consumer's gates reviewed. Because bump PRs can merge OUT OF
+ORDER, that move can drag an older published tag forward onto a newer
+release's commit — v1.97.0 and v1.98.0 both landed on 47a4f683 this way,
+making the `v1.97.0..v1.98.0` range empty while its release notes described
+real content. Consequences consumers must expect: (1) a per-tag range
+between two adjacent releases can be EMPTY even though both release notes
+describe content — diff `vA..vB` yourself before trusting the notes;
+(2) drift-check itself never moves or re-cuts a published tag (the
+tag-collision fence refuses a pre-existing `$NEXT`) and refuses to cut a
+release at all when its scoped diff is empty (the empty-range guard, pinned
+by `tests/drift-empty-range.test.mjs`).
+
 ## Local web search + fetch (per-cell, default off)
 
 The launcher can mount [`@local/dsh-web-search-browser`](https://github.com/ebowwa/HelloMacOScreator/tree/main/web-search-browser)
