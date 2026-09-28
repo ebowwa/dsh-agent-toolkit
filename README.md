@@ -31,6 +31,7 @@ Two execution modes:
 | `.github/workflows/agent-dispatch.yml` | LEGACY manual/scheduled task entry |
 | `.github/workflows/drift-check.yml` | self-reviewing release agent: reviews its own main-branch diff, tags + releases only on an approved verdict (TAG / TAG-WITH-FINDINGS), advances the moving `@v1` pin, then notifies `DSH_BOT_CONSUMERS` (repo variable: comma/space-separated `owner/repo` list) via `repository_dispatch` — each consumer opens its own bump PR |
 | `scripts/dsh-worker.sh` | the out-of-band worker: poll → claim (label) → run driver → ship → reply → review (see docs/decoupled-worker.md) |
+| `scripts/dep-cache.sh` | per-repo node_modules cache keyed on the lockfile hash, restored into the claim checkout after the worker's checkout (best-effort; issue #189) |
 | `scripts/ship-changes.sh` | deterministic shipper, shared by the legacy workflow AND the worker (never trust the model to push) |
 | `scripts/post-reply.sh` | thread reply (ack-comment edit or fresh comment), shared by both modes |
 | `scripts/review-pr.sh` | worker-side adversarial review (REVIEW.md from the PR base; verdict → labels) |
