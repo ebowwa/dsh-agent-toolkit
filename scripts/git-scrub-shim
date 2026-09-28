@@ -3,7 +3,8 @@
 # signed into history (and therefore into pushed refs and PR titles).
 #
 # Installed by run-dsh-agent.sh at the FRONT of the agent's PATH. Covers
-# `git commit/tag/notes -m/--message=` in both the separate-arg and the
+# `git commit/tag/notes/merge/commit-tree -m/--message=` in both the
+# separate-arg and the
 # ATTACHED short spelling (`-m"<msg>"` / `-m<msg>` — the value rides in the
 # same argv element as the flag, issue #172), and the message-FILE forms
 # `-F <file>` / `--file=<file>` / `--file <file>` including the `-` stdin
@@ -17,7 +18,7 @@
 # `-m`/`--message` forms are gated the same way (issue #196): `-m` is not a
 # message flag everywhere — `git checkout -m`/`git switch -m` is
 # merge-strategy, `git cherry-pick -m <n>` takes a mainline number — and
-# outside commit/tag/notes those values ride byte-identical. Only
+# outside the message subcommands those values ride byte-identical. Only
 # under the message-file subcommands: `-F`/`--file` mean
 # something else elsewhere (`git config --file` is a config path; `git
 # log`/`git grep -F` is boolean --fixed-strings) and ride untouched.
@@ -102,10 +103,10 @@ scrub_stdin() { # consumes the shim's own stdin -> scrubbed temp file path on st
 }
 
 # `-F`/`--file` carry a MESSAGE only under some subcommands (commit, tag,
-# notes, merge, commit-tree, pull). Elsewhere they mean something else —
+# notes, merge, commit-tree). Elsewhere they mean something else —
 # `git config --file` is a config path, `git log`/`git grep -F` is boolean
-# --fixed-strings — and a
-# blanket guard would consume-and-rewrite argv those commands never meant as
+# --fixed-strings — and a blanket guard would consume-and-rewrite argv those
+# commands never meant as
 # a message. Guard only when a message-file subcommand is present IN GIT'S
 # ACTUAL SUBCOMMAND POSITION — the first argv element that is not a global
 # option or its value. The earlier scan matched the bare WORDS
@@ -136,7 +137,7 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
 }
 MSG_CMD=0
 case "$(subcommand_of "$@")" in
-  commit|tag|notes|merge|commit-tree|pull) MSG_CMD=1;;
+  commit|tag|notes|merge|commit-tree) MSG_CMD=1;;
 esac
 
 STDIN_SCRUBBED=""
