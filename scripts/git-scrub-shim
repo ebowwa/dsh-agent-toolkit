@@ -8,7 +8,10 @@
 # ATTACHED short spelling (`-m"<msg>"` / `-m<msg>` — the value rides in the
 # same argv element as the flag, issue #172), and the message-FILE forms
 # `-F <file>` / `--file=<file>` / `--file <file>` including the `-` stdin
-# spelling (issue #169) again attached (`-F<file>`, issue #172): a message
+# spelling (issue #169) again attached (`-F<file>`, issue #172), plus the
+# BARE stdin form `git commit-tree <tree> < msg` (issue #213 — no -m/-F
+# flag, git reads the log message from standard input; stdin is scrubbed
+# into a temp and git's stdin is redirected from it, non-tty only): a message
 # read from a file or stdin is still a
 # GitHub-bound commit message — it lands in pushed refs and PR titles — so
 # the shim scrubs it through the same scrubber (a scrubbed TEMP file is
@@ -136,11 +139,13 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
   return 1
 }
 MSG_CMD=0
+MSG_SUB=""
 case "$(subcommand_of "$@")" in
-  commit|tag|notes|merge|commit-tree) MSG_CMD=1;;
+  commit|tag|notes|merge|commit-tree) MSG_CMD=1; MSG_SUB="$(subcommand_of "$@")";;
 esac
 
 STDIN_SCRUBBED=""
+SAW_MSG_FLAG=0
 
 file_msg_value() { # <flag> <value> — route one message-file value: temp-scrub a
                    # real file, stdin-scrub `-`, else ride through (git errors on it)
@@ -181,6 +186,7 @@ while [ $# -gt 0 ]; do
     # (fail-closed applied where there was nothing to protect).
     -m|--message)
       if [ "$MSG_CMD" = 1 ] && [ $# -gt 0 ]; then
+        SAW_MSG_FLAG=1
         msg="$(scrub_or_die "$1")" || exit 1
         args+=("$flag" "$msg"); shift
       else
@@ -200,6 +206,7 @@ while [ $# -gt 0 ]; do
       # message. Outside a message subcommand the element rides untouched
       # (issue #196) — it is not a message value there.
       if [ "$MSG_CMD" = 1 ]; then
+        SAW_MSG_FLAG=1
         msg="$(scrub_or_die "${flag#-m}")" || exit 1
         if [ -n "$msg" ]; then
           args+=("-m$msg")
@@ -212,6 +219,7 @@ while [ $# -gt 0 ]; do
     --message=*)
       key="${flag%%=*}"; val="${flag#*=}"
       if [ "$MSG_CMD" = 1 ]; then
+        SAW_MSG_FLAG=1
         msg="$(scrub_or_die "$val")" || exit 1
         args+=("$key=$msg")
       else
@@ -224,6 +232,7 @@ while [ $# -gt 0 ]; do
       # `-` then means stdin, not a flag. Under no message-file subcommand, or
       # with a trailing bare flag, ride through (git errors on it).
       if [ "$MSG_CMD" = 1 ] && [ $# -gt 0 ]; then
+        SAW_MSG_FLAG=1
         file_msg_value "$flag" "$1"; shift
       else
         args+=("$flag")
@@ -232,6 +241,7 @@ while [ $# -gt 0 ]; do
       # equals-form spelling (git's parse-options accepts both) — same
       # routing as the separate-arg form (issue #169)
       if [ "$MSG_CMD" = 1 ]; then
+        SAW_MSG_FLAG=1
         file_msg_value "${flag%%=*}" "${flag#*=}"
       else
         args+=("$flag")
@@ -244,6 +254,7 @@ while [ $# -gt 0 ]; do
       # (`git log`/`git grep -F` is boolean --fixed-strings) and must ride
       # byte-identical.
       if [ "$MSG_CMD" = 1 ]; then
+        SAW_MSG_FLAG=1
         file_msg_value "-F" "${flag#-F}"
       else
         args+=("$flag")
@@ -255,6 +266,24 @@ done
 
 # A `-` message-file value was stdin-scrubbed: git still receives `-` in argv,
 # but reads the scrubbed temp instead of the raw payload.
+#
+# The BARE stdin message form (issue #213): `git commit-tree <tree>` with NO
+# -m/-F flag is documented to read the commit log message from standard
+# input — the same GitHub-bound prose the `-F -` form carries, arriving
+# without any flag to arm the scan above. When the subcommand is
+# commit-tree, no message flag was seen, and stdin is a pipe/file (not a
+# tty — an interactive caller may be attaching a terminal), scrub stdin
+# once and redirect git's stdin from the scrubbed temp exactly as the
+# `-F -` path does: fail-closed on scrubber failure, temp unlinked after
+# git exits (#180). Other message subcommands keep their stdin semantics
+# (commit/tag/notes/merge do not read a log message from bare stdin), so
+# their stdin is never consumed here.
+if [ "$MSG_CMD" = 1 ] && [ "$MSG_SUB" = "commit-tree" ] \
+     && [ "$SAW_MSG_FLAG" = 0 ] && [ -z "$STDIN_SCRUBBED" ] \
+     && [ ! -t 0 ]; then
+  STDIN_SCRUBBED="$(scrub_stdin)" || exit 1
+  GIT_SCRUB_TEMPS+=("$STDIN_SCRUBBED")
+fi
 #
 # Run git as a CHILD, not via `exec`: this shell must survive git to unlink
 # the scrubbed temps (issue #180) — `exec` replaced it and every temp
