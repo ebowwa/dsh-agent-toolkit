@@ -147,6 +147,7 @@ jobs:
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
           # is repo-scoped); falls back gracefully for public-mode consumers.
           PAT_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN }}
+          DSH_AGENT_TOOLKIT_CONSUMERS: ${{ vars.DSH_AGENT_TOOLKIT_CONSUMERS }}
           NEXT: ${{ steps.scope.outputs.next }}
           MOVING: ${{ steps.scope.outputs.moving }}
           VERDICT: ${{ env.VERDICT }}
@@ -180,8 +181,12 @@ jobs:
           # (tests/drift-moving-tag.test.mjs) fails if this step and the
           # documented pin ever drift apart again.
           git tag -f "$MOVING" "$NEXT" && git push -q -f origin "$MOVING"
-          # notify registered consumers so each opens its own bump PR
-          CONSUMERS="$(printf '%s' "${{ vars.DSH_AGENT_TOOLKIT_CONSUMERS }}" | tr ',[:space:]' '\n')"
+          # notify registered consumers so each opens its own bump PR.
+          # The consumers list rides the env (REVIEW.md workflow discipline:
+          # task/config text reaches bash through env, never raw '{{ }}
+          # interpolation) — parsing behavior unchanged: split on commas
+          # and whitespace via tr, drop empties via the read guard.
+          CONSUMERS="$(printf '%s' "$DSH_AGENT_TOOLKIT_CONSUMERS" | tr ',[:space:]' '\n')"
           while read -r repo; do
             [ -n "$repo" ] || continue
             DISPATCH_TOKEN="${PAT_TOKEN:-$GH_TOKEN}"
