@@ -454,6 +454,34 @@ test("gates.yml runs the structural lint over .yml and .yaml (revert guard)", ()
     "workflow files must reach the linter null-delimited (whitespace-safe)");
 });
 
+test("gates.yml syntax-check step can actually fail the step (issue #183)", () => {
+  // Regression: the 'Syntax-check every script' step accumulates failures
+  // via `... || fail=1` and exits with "$fail", but no test pinned either
+  // half — a revert deleting the `fail=0` init or the `exit "$fail"` line
+  // would leave every test green while the step's status became the loop's
+  // last status (always 0), so a non-parsing script would gate green again
+  // (the same blind-spot class issue #139 closed for the YAML step).
+  const gates = readFileSync(path.join(WF_DIR, "gates.yml"), "utf8");
+  const step = gates.split(/^ *- name: Syntax-check every script$/m)[1]
+    .split(/^ {6}- name: /m)[0];
+  assert.match(step, /^ {2,}fail=0$/m,
+    "the step must initialize fail=0 before the loop");
+  assert.match(step, /\|\| fail=1/,
+    "the per-script checks must accumulate failures via `|| fail=1`");
+  assert.match(step, /exit "\$fail"/,
+    "the step must exit with the accumulated fail status");
+
+  // End-to-end probe (the stronger half of the #178 shape): bash -n, the
+  // shell half the step runs per script, must actually reject a broken
+  // script — i.e. the failure the accumulation exists to propagate is real.
+  const dir = mkdtempSync(path.join(tmpdir(), "syntax-probe-"));
+  const broken = path.join(dir, "broken.sh");
+  writeFileSync(broken, "if true; then\n  echo unbalanced\n");
+  const probe = spawnSync("bash", ["-n", broken], { encoding: "utf8" });
+  rmSync(dir, { recursive: true, force: true });
+  assert.notEqual(probe.status, 0, "bash -n must reject a broken script");
+});
+
 test("gates.yml colon-space sub-check can actually fail the step (issue #139)", () => {
   // Regression: the 'Workflow YAML parses' step accumulated failures via
   // `... || fail=1` but never initialized `fail` nor exited with it, so
