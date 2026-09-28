@@ -162,6 +162,14 @@ args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift
   case "$flag" in
+    # end-of-options separator (issue #214): git guarantees everything after
+    # `--` is a PATHSPEC, never a flag — so a pathspec literally named
+    # `-F`/`-m` (a file called `-F` is legal) must ride byte-identical. Stop
+    # the message-flag scan at the first `--` and append the remainder
+    # verbatim; only argv BEFORE `--` can carry a message flag.
+    --)
+      args+=("--" "$@")
+      break;;
     # -m/--message are gated on the same MSG_CMD as -F/--file (issue #196):
     # they carry a MESSAGE only under commit/tag/notes. Elsewhere -m means
     # something else — `git checkout -m`/`git switch -m` is merge-strategy,
