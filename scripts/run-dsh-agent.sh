@@ -185,7 +185,28 @@ this claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    nothing: omit the line entirely — never write filed-followups: none.
 4. Do NOT fix it in the current claim — that is scope-creep — unless the
    fix is trivial AND in-scope. The claim diff stays on-task; PRs are task
-   work-products, not discoveries.'
+   work-products, not discoveries.
+
+SKILL CANDIDATE — when your work surfaces a NEW reusable procedure (steps
+that worked and a peer would otherwise re-derive), end your final summary
+with a block of this exact shape. Optional: the summary MAY carry one or
+more such blocks, and every rule above is unchanged — this block is
+additive. The WHOLE block rides INSIDE the final result comment (thread
+comments are the only durable channel a runner checkout leaves):
+
+    SKILL CANDIDATE: <kebab-name>
+    WHEN TO USE: <the triggering situation>
+    THE PROCEDURE: <the exact steps that worked>
+
+The header line starts "SKILL CANDIDATE: " and the name is kebab-case
+([a-z0-9]+(-[a-z0-9]+)*); both labeled lines are REQUIRED — a partial
+block (a header without both labeled lines, or the labeled lines without
+a header) is not a candidate and the harvester rejects it. A good block
+copies the shape, not a paraphrase:
+
+    SKILL CANDIDATE: merge-adjacency-conflict-dissolve
+    WHEN TO USE: two sibling PRs touch adjacent lines and the second shows a textual conflict at landing
+    THE PROCEDURE: update-branch the second PR onto the dominant branch, resolve keeping the first PR line verbatim, push, comment the recomposition on the PR.'
 TASK="${TASK}
 
 ${STANDING_CONTRACT}"

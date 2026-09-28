@@ -214,6 +214,17 @@ const parseSkillCandidates = (summary) => {
   return blocks;
 };
 
+test("skill-candidate grammar: the driver stamps the block into every task (issue #187)", () => {
+  // the docs alone do not reach a dispatched agent — the stamped standing
+  // contract does. The driver carries the same literal grammar.
+  assert.match(driverSrc, /SKILL CANDIDATE: <kebab-name>/);
+  assert.match(driverSrc, /WHEN TO USE: <the triggering situation>/);
+  assert.match(driverSrc, /THE PROCEDURE: <the exact steps that worked>/);
+  assert.match(driverSrc, /MAY carry one or\s+more/);
+  assert.match(driverSrc, /INSIDE the final result comment/);
+  assert.match(driverSrc, /partial\n?block|partial/);
+});
+
 test("skill-candidate grammar: both contract docs carry the exact block shape (issue #187)", () => {
   for (const [name, text] of [[".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
     assert.match(text, /SKILL CANDIDATE: <kebab-name>/, `${name}: the literal header`);
