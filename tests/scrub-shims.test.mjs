@@ -1044,3 +1044,27 @@ test("git shim: scrubber failure still aborts `merge -m` (fail-closed pin, issue
     "exit-1 scrubber on git merge -m",
   );
 });
+
+// --- git shim: commit-tree is a MESSAGE subcommand for -m (issue #206) ------
+// `git commit-tree -m <msg>` is a genuine message form (the commit message of
+// the tree being minted), but `commit-tree` was absent from the MSG_CMD set,
+// so after the #196 gate its message rode raw — a secret-shaped commit
+// message reached the repo unscrubbed (under-scrub, opposite class from
+// #196's argv drift). `commit-tree` joins the set; pinned both directions.
+
+test("git shim: `commit-tree -m <msg>` is scrubbed (join-the-set pin, issue #206)", (t) => {
+  const { res, capture } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "commit-tree", "HEAD^{tree}", "-m", `token ${SECRET} commit-tree`,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const captured = fs.readFileSync(capture, "utf8");
+  assert.ok(captured.includes("[redacted:token]"), "commit-tree -m msg must be scrubbed");
+  assert.ok(!captured.includes(SECRET), "the raw token did not survive");
+});
+
+test("git shim: scrubber failure still aborts `commit-tree -m` (fail-closed pin, issue #206)", (t) => {
+  assertAborted(
+    runShim(t, GIT_SHIM, FAIL_EXIT1, ["commit-tree", "HEAD^{tree}", "-m", `token ${SECRET}`]),
+    "exit-1 scrubber on git commit-tree -m",
+  );
+});
