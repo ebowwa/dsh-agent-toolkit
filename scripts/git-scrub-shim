@@ -42,6 +42,14 @@
 # captures `msg="$(scrub_or_die ...)" || exit 1` because a bare exit inside
 # $( ) kills only the substitution — the status must reach the parent shell
 # for the abort to land before git runs.
+#
+# The BARE-STDIN message form (issue #222): `git commit-tree <tree>` with no
+# -m/-F reads the commit message from bare stdin (git's docs: "A commit
+# comment is read from stdin"). For bare-stdin message subcommands with no
+# message flag in argv, the shim scrubs its inherited stdin once and runs
+# git redirected from the scrubbed temp — the same fail-closed path as
+# `-F -`. Members whose bare stdin is NOT a message (commit/tag/notes open
+# an editor; merge reads none) ride their stdin untouched.
 set -uo pipefail
 REAL="${GIT_SCRUB_REAL:?git shim: GIT_SCRUB_REAL not set}"
 SCRUB="${SCRUB_SCRIPT:?git shim: SCRUB_SCRIPT not set}"
@@ -134,8 +142,22 @@ subcommand_of() { # echo git's subcommand (first non-global-option element); fai
   return 1
 }
 MSG_CMD=0
-case "$(subcommand_of "$@")" in
+sub="$(subcommand_of "$@")"
+case "$sub" in
   commit|tag|notes|merge) MSG_CMD=1;;
+esac
+
+# Bare-stdin message subcommands (issue #222): `git commit-tree <tree>` with
+# NO -m/-F reads the commit message from bare stdin ("A commit comment is
+# read from stdin" — git's own docs), so that entry is a GitHub-bound
+# message the shim must scrub, exactly like the `-F -` spelling above. Only
+# members whose bare stdin IS a message are listed here: commit/tag/notes
+# with no message flag open an EDITOR instead, and merge never reads a
+# message from stdin — their stdin (interactive input, plumbing) must ride
+# untouched.
+BARE_STDIN_MSG=0
+case "$sub" in
+  commit-tree) BARE_STDIN_MSG=1;;
 esac
 
 STDIN_SCRUBBED=""
@@ -158,9 +180,16 @@ file_msg_value() { # <flag> <value> — route one message-file value: temp-scrub
   fi
 }
 
+MSG_SEEN=0 # any message-flag spelling seen anywhere in argv (issue #222 gate)
 args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift
+  case "$flag" in
+    # any message-flag spelling counts as "a message was given another way"
+    # (issue #222): with -m/-F present, bare stdin is NOT the message and
+    # must ride untouched
+    -m|--message|-m?*|--message=*|-F|--file|--file=*|-F?*) MSG_SEEN=1;;
+  esac
   case "$flag" in
     # end-of-options separator (issue #214): git guarantees everything after
     # `--` is a PATHSPEC, never a flag — so a pathspec literally named
@@ -260,6 +289,15 @@ done
 # is forwarded unchanged, and the EXIT trap above does the unlinking once
 # git is done.
 git_rc=0
+# Bare-stdin message form (issue #222): a bare-stdin message subcommand with
+# NO message flag anywhere in argv and no `-F -` scrub already registered
+# reads its message from the shim's inherited stdin — scrub it once and run
+# git with stdin redirected from the scrubbed temp (fail-closed: a scrubber
+# outage aborts here, REVIEW.md, exactly like the `-F -` path above).
+if [ "$BARE_STDIN_MSG" = 1 ] && [ "$MSG_SEEN" = 0 ] && [ -z "$STDIN_SCRUBBED" ]; then
+  STDIN_SCRUBBED="$(scrub_stdin)" || exit 1
+  GIT_SCRUB_TEMPS+=("$STDIN_SCRUBBED")
+fi
 if [ -n "$STDIN_SCRUBBED" ]; then
   "$REAL" "${args[@]}" <"$STDIN_SCRUBBED" || git_rc=$?
 else

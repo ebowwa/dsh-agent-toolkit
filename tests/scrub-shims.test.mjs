@@ -548,6 +548,72 @@ test("git shim: commit -F - stdin payload is scrubbed before git reads it", (t) 
   assert.equal(leftovers.length, 0, `the post-scrub stdin temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
 });
 
+// --- git shim: BARE-STDIN message form of commit-tree (issue #222) ----------
+// `git commit-tree <tree>` with NO -m/-F reads the commit message from bare
+// stdin (git's docs: "A commit comment is read from stdin"). The shim's
+// `file_msg_value` only armed STDIN_SCRUBBED for the `-F -` spelling, so a
+// bare-stdin message rode the shim's inherited stdin RAW into history — the
+// under-scrub sibling of the -m/-F forms. The shim now scrubs the inherited
+// stdin once and runs git redirected from the scrubbed temp, gated on the
+// subcommand being a bare-stdin message member (commit-tree) and on NO
+// message flag appearing in argv.
+
+test("git shim: commit-tree bare-stdin message is scrubbed before git reads it", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}"],
+    `stdin-form token ${SECRET} dated 2026-09-26\n`,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real git was run");
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(seen.includes("commit-tree") && seen.includes("HEAD^{tree}"), "argv rides verbatim");
+  const gotStdin = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.ok(gotStdin.includes("[redacted:token]"), "the bare-stdin message was scrubbed");
+  assert.ok(!gotStdin.includes("a1B2c3D4e5F6"), "the raw stdin payload did not survive");
+  assert.ok(gotStdin.includes("2026-09-26"), "dates still ride through untouched");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, `the scrub temp leaked into TMPDIR (got: ${leftovers.join(", ")})`);
+});
+
+test("git shim: scrubber failure aborts commit-tree bare-stdin form (real git never exec'd)", (t) => {
+  const { res, capture, dir } = runShimWithStdin(
+    t, GIT_SHIM, FAIL_EXIT1,
+    ["commit-tree", "HEAD^{tree}"],
+    `stdin msg ${SECRET}\n`,
+  );
+  assertAborted({ res, capture }, "exit-1 scrubber on bare-stdin commit-tree");
+  const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(leftovers.length, 0, "no scrub temp file survives the abort");
+});
+
+test("git shim: commit-tree with -m given rides its bare stdin untouched", (t) => {
+  // with a message flag in argv, bare stdin is NOT the message — the shim
+  // must not consume-and-rewrite it (the raw payload passes through)
+  const raw = `plumbing payload ${SECRET}\n`;
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit-tree", "HEAD^{tree}", "-m", `msg token ${SECRET}`],
+    raw,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const gotStdin = fs.readFileSync(`${capture}.stdin`, "utf8");
+  assert.equal(gotStdin, raw, "stdin rode byte-identical when a message flag was given");
+});
+
+test("git shim: bare stdin of non-message subcommands rides untouched", (t) => {
+  // commit with no -m/-F opens an EDITOR (stdin is not the message); a
+  // non-MSG_CMD subcommand never reads a message from stdin at all
+  const raw = `editor plumbing ${SECRET}\n`;
+  const { res, capture } = runShimWithStdin(
+    t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["commit"],
+    raw,
+  );
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.equal(fs.readFileSync(`${capture}.stdin`, "utf8"), raw, "stdin rode byte-identical");
+});
+
 // --- git shim: scrubbed-temp cleanup on EVERY path (issue #180) --------------
 // The old tail `exec`-ed the real git, replacing the shim shell — so a scrub
 // temp outlived the call even when git FAILED: `git commit -F <file>` with a
