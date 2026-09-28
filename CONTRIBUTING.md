@@ -56,5 +56,16 @@ The driver stamps this contract into every task it assembles
 reference text lives in [.agents/README.md](.agents/README.md) and the
 exit-summary shape is pinned by `tests/agent-contract.test.mjs`.
 
+4. **SHIPPING (optional extra — skill candidates).** The exit summary MAY
+   additionally carry one or more `SKILL CANDIDATE` blocks so the tower's
+   skill-promotion pass can collect a newly discovered procedure into the
+   fleet skill catalog. Each block rides INSIDE the final result comment
+   (thread comments are the only durable channel a runner checkout
+   leaves) and has exactly three lines — a `SKILL CANDIDATE: <kebab-name>`
+   header (name matching `[a-z0-9]+(-[a-z0-9]+)*`), then `WHEN TO USE:`
+   and `THE PROCEDURE:` lines (both required; a partial block is not a
+   candidate). Full grammar and a pinned example:
+   [.agents/README.md](.agents/README.md) — "ship-exit skill candidates".
+
 Repo conventions (gates, layers, toolchain) live in this repo's own
 CLAUDE.md / README — this file owns only the communication conduct above.

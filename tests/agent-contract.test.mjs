@@ -183,3 +183,105 @@ test("exit-summary shape violations: TWO filed-followups lines (the contract all
   assert.equal(violations.length, 1);
   assert.match(violations[0], /ONE/);
 });
+
+// --- 4. the skill-candidate block grammar (issue #187) --------------------
+
+// The literal-prefix grammar the tower's skill-promotion pass parses
+// (factory-side: parseSkillCandidates). The header is `SKILL CANDIDATE: `
+// + a kebab-case name; the two labeled lines are REQUIRED — a partial
+// block is a mention, not a candidate.
+const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/** Parse SKILL CANDIDATE blocks out of an exit summary (doc-pinned shape). */
+const parseSkillCandidates = (summary) => {
+  const blocks = [];
+  const lines = summary.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^SKILL CANDIDATE: (\S+)$/);
+    if (!m) continue;
+    const when = lines[i + 1] ?? "";
+    const procedure = lines[i + 2] ?? "";
+    if (!KEBAB.test(m[1])) {
+      blocks.push({ name: m[1], error: "name is not kebab-case" });
+      continue;
+    }
+    if (!when.startsWith("WHEN TO USE:") || !procedure.startsWith("THE PROCEDURE:")) {
+      blocks.push({ name: m[1], error: "a labeled line is missing" });
+      continue;
+    }
+    blocks.push({ name: m[1], when, procedure });
+  }
+  return blocks;
+};
+
+test("skill-candidate grammar: both contract docs carry the exact block shape (issue #187)", () => {
+  for (const [name, text] of [[".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, /SKILL CANDIDATE: <kebab-name>/, `${name}: the literal header`);
+    assert.match(text, /WHEN TO USE:/, `${name}: the WHEN TO USE: line`);
+    assert.match(text, /THE PROCEDURE:/, `${name}: the THE PROCEDURE: line`);
+    assert.match(text, /\[a-z0-9\]\+\(-\[a-z0-9\]\+\)\*/, `${name}: the kebab-case rule`);
+    assert.match(text, /MAY/, `${name}: the block is optional (additive)`);
+    assert.match(
+      text,
+      /INSIDE the final result comment/,
+      `${name}: the block rides the final result comment (the durable channel)`,
+    );
+  }
+});
+
+test("skill-candidate grammar: the reference doc carries a pinned example that parses", () => {
+  const blocks = parseSkillCandidates(agentsReadme);
+  assert.ok(blocks.length >= 1, "at least one example block in .agents/README.md");
+  for (const b of blocks) {
+    if (b.name === "<kebab-name>") continue; // the grammar template, not an example
+    assert.equal(b.error, undefined, `the pinned example parses: ${JSON.stringify(b)}`);
+    assert.match(b.name, KEBAB);
+  }
+  assert.ok(
+    blocks.some((b) => b.name === "merge-adjacency-conflict-dissolve"),
+    "the live-corpus example name is pinned verbatim",
+  );
+});
+
+test("skill-candidate grammar: kebab names accepted, non-kebab rejected", () => {
+  const good = "SKILL CANDIDATE: fix-round-stale-branch-sync\nWHEN TO USE: x\nTHE PROCEDURE: y\n";
+  assert.equal(parseSkillCandidates(good)[0].error, undefined);
+  assert.equal(parseSkillCandidates(good)[0].name, "fix-round-stale-branch-sync");
+  assert.match(parseSkillCandidates("SKILL CANDIDATE: merge-adjacency-conflict-dissolve\nWHEN TO USE: x\nTHE PROCEDURE: y\n")[0].name, KEBAB);
+  for (const bad of ["Merge-Adjacency", "merge_adjacency", "merge adjacency", "merge--dissolve", "merge-"]) {
+    const blocks = parseSkillCandidates(`SKILL CANDIDATE: ${bad}\nWHEN TO USE: x\nTHE PROCEDURE: y\n`);
+    if (bad.includes(" ")) {
+      // the header regex is a literal-prefix match on ONE token — a spaced
+      // "name" is not a candidate header at all
+      assert.equal(blocks.length, 0, `spaced name is not a header: ${bad}`);
+      continue;
+    }
+    assert.match(blocks[0].error, /kebab/, `expected a kebab rejection for: ${bad}`);
+  }
+});
+
+test("skill-candidate grammar: a partial block is NOT a candidate (parser rejects it)", () => {
+  for (const partial of [
+    "SKILL CANDIDATE: merge-adjacency-conflict-dissolve\n", // header only
+    "SKILL CANDIDATE: merge-adjacency-conflict-dissolve\nWHEN TO USE: x\n", // missing THE PROCEDURE:
+    "SKILL CANDIDATE: merge-adjacency-conflict-dissolve\nTHE PROCEDURE: y\n", // out of order / missing WHEN
+  ]) {
+    assert.match(parseSkillCandidates(partial)[0].error, /missing|labeled/, `partial block rejected: ${JSON.stringify(partial)}`);
+  }
+});
+
+test("skill-candidate grammar: multiple blocks in one summary each parse", () => {
+  const summary = [
+    "prose\n",
+    "SKILL CANDIDATE: merge-adjacency-conflict-dissolve\nWHEN TO USE: a\nTHE PROCEDURE: b\n",
+    "more prose\n",
+    "SKILL CANDIDATE: open-sibling-pr-hunk-exclusion\nWHEN TO USE: c\nTHE PROCEDURE: d\n",
+    "filed-followups: #114\n",
+  ].join("\n");
+  const blocks = parseSkillCandidates(summary);
+  assert.deepEqual(blocks.map((b) => b.name), [
+    "merge-adjacency-conflict-dissolve",
+    "open-sibling-pr-hunk-exclusion",
+  ]);
+  for (const b of blocks) assert.equal(b.error, undefined);
+});
