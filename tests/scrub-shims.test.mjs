@@ -1447,3 +1447,41 @@ test("git shim: `commit -F msgfile -- other` still scrubs — a flag BEFORE `--`
   const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
   assert.equal(leftovers.length, 0, `no scrub temp residue (got: ${leftovers.join(", ")})`);
 });
+
+// --- git shim: hidden value-taking globals in SEPARATE form (issue #235) ----
+// `--attr-source <treeish>` is a value-taking global (git 2.32+). Left out of
+// `subcommand_of`'s value-consumer list, its VALUE fell into the boolean
+// `-*` catch-all and was returned as git's subcommand, so a genuine
+// `commit -F` after it never armed MSG_CMD and the message file rode raw
+// (same bypass class as the #199 `--shallow-file` fix).
+
+test("git shim: --attr-source <value> before `commit -F` does not hide the gate (issue #235)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "--attr-source", "HEAD", "commit", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real git was run");
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.ok(
+    seen.includes("HEAD"),
+    `the --attr-source value must reach git verbatim — captured: ${seen.join(" | ")}`,
+  );
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `the message file must still be scrubbed — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
+});
+
+test("git shim: attached --attr-source=<value> before `commit -F` does not hide the gate (issue #235)", (t) => {
+  const { file } = stageNotesFile(t, `msg token ${SECRET} in a file\n`);
+  const { res, capture, dir } = runShim(t, GIT_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+    "--attr-source=HEAD", "commit", "-F", file,
+  ]);
+  assert.equal(res.status, 0, `shim must pass through (stderr: ${res.stderr})`);
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  const tempArg = seen.find((a) => a.startsWith(path.join(dir, "git-scrubbed.")));
+  assert.ok(tempArg, `the message file must still be scrubbed — captured: ${seen.join(" | ")}`);
+  const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
+  assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
+});
