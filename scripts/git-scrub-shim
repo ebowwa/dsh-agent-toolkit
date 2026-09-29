@@ -47,10 +47,36 @@
 # $( ) kills only the substitution — the status must reach the parent shell
 # for the abort to land before git runs.
 set -uo pipefail
-REAL="${GIT_SCRUB_REAL:?git shim: GIT_SCRUB_REAL not set}"
-SCRUB="${SCRUB_SCRIPT:?git shim: SCRUB_SCRIPT not set}"
 
 die() { echo "git-scrub-shim: $*" >&2; exit 1; }
+
+# Env contract (issue #251, mirroring the gh shim): the runtime sets
+# GIT_SCRUB_REAL + SCRUB_SCRIPT in the AGENT process's env. If the shim dir
+# leaks onto a later workflow step's PATH, that step's git lands here with
+# the contract absent — degrade loudly to the real git found outside the
+# shim dirs instead of exit 1'ing the step. A scrub FAILURE with the
+# contract present stays fatal (fail-closed, REVIEW.md).
+SHIM_OWN_DIR="$(cd "${0%/*}" && pwd)"
+resolve_real() { # <binary name> -> absolute path of the real binary, or nothing
+  local candidate dir
+  while IFS= read -r candidate; do
+    dir="$(cd "${candidate%/*}" && pwd)"
+    case "$dir" in
+      "$SHIM_OWN_DIR"|*/dsh-shim.*) ;; # skip the shim itself and its copies
+      *) printf '%s\n' "$candidate"; return 0;;
+    esac
+  done < <(type -ap "$1" 2>/dev/null)
+  return 1
+}
+
+if [ -n "${GIT_SCRUB_REAL:-}" ] && [ -n "${SCRUB_SCRIPT:-}" ]; then
+  REAL="$GIT_SCRUB_REAL"
+  SCRUB="$SCRUB_SCRIPT"
+else
+  REAL="$(resolve_real git)" || die "GIT_SCRUB_REAL not set and no real git outside the shim dirs found — cannot degrade (issue #251)"
+  echo "git-scrub-shim: WARNING: env contract absent (GIT_SCRUB_REAL/SCRUB_SCRIPT unset) — degrading to real git WITHOUT scrubbing; this shim ran outside the dsh agent session (issue #251)" >&2
+  exec "$REAL" "$@"
+fi
 
 # Scrubbed-temp cleanup (issue #180, mirroring the gh shim's #154 fix):
 # scrub_file/scrub_stdin mint "${TMPDIR:-/tmp}/git-scrubbed.XXXXXX" temps

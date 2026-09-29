@@ -629,6 +629,18 @@ if [ -x "$SCRIPT_DIR/gh-scrub-shim" ] || [ -x "$SCRIPT_DIR/git-scrub-shim" ]; th
     export GIT_SCRUB_REAL="$(command -v git)"
     cp "$SCRIPT_DIR/git-scrub-shim" "$SHIM_BIN/git" && chmod +x "$SHIM_BIN/git"
   fi
+  # Persist the shims' env contract to later steps (issue #251): the shim
+  # dir can leak onto a later step's PATH (GITHUB_PATH / PATH-export races —
+  # sqeakd main runs 36580443907, 36584054876), and a later step resolving
+  # gh/git there used to hit the shim's hard `${:?}` exit 1 with
+  # GH_SCRUB_REAL unset. Carrying the contract via GITHUB_ENV keeps any such
+  # step FULLY scrubbed; the shims themselves also degrade loudly to the
+  # real binary when the contract is absent (belt + braces).
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    [ -n "${GH_SCRUB_REAL:-}" ] && printf 'GH_SCRUB_REAL=%s\n' "$GH_SCRUB_REAL" >> "$GITHUB_ENV"
+    [ -n "${GIT_SCRUB_REAL:-}" ] && printf 'GIT_SCRUB_REAL=%s\n' "$GIT_SCRUB_REAL" >> "$GITHUB_ENV"
+    printf 'SCRUB_SCRIPT=%s\n' "$SCRUB_SCRIPT" >> "$GITHUB_ENV"
+  fi
   export PATH="$SHIM_BIN:$PATH"
 fi
 

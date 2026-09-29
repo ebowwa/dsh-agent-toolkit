@@ -1485,3 +1485,96 @@ test("git shim: attached --attr-source=<value> before `commit -F` does not hide 
   const scrubbed = fs.readdirSync(dir).filter((f) => f.startsWith("git-scrubbed."));
   assert.equal(scrubbed.length, 0, "no scrub temp survives the run");
 });
+
+// --- env-contract degradation (issue #251) ----------------------------------
+// The shims used to hard-exit 1 on a missing GH_SCRUB_REAL/GIT_SCRUB_REAL
+// (`${:?}`). The shim dir can leak onto a LATER workflow step's PATH (the
+// sqeakd main runs 36580443907 / 36584054876: the fallback reply step died
+// "gh shim: GH_SCRUB_REAL not set", PR_STATE=LOOKUP_FAILED never posted).
+// The contract now degrades loudly to the real binary found on PATH outside
+// the shim dirs. A scrub FAILURE with the contract PRESENT stays fatal —
+// that is the fail-closed rule above and it is untouched by this section.
+
+/** Run one shim with the env contract ABSENT and the real binary staged on
+ * PATH at $dir/bin (never a dsh-shim.* dir). */
+function runShimNoContract(t, shim, argv) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-contract-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const capture = path.join(dir, "captured-argv.txt");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const real = path.join(bin, shim === GH_SHIM ? "gh" : "git");
+  fs.writeFileSync(
+    real,
+    "#!/usr/bin/env bash\n# test stand-in for the real gh/git\n" +
+      'printf \'%s\\n\' "$@" >> "$SHIM_TEST_CAPTURE"\nexit 0\n',
+  );
+  fs.chmodSync(real, 0o755);
+  const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
+  const res = spawnSync("bash", [shim, ...argv], {
+    encoding: "utf8",
+    env: { ...process.env, [envKey]: "", SCRUB_SCRIPT: "", SHIM_TEST_CAPTURE: capture, PATH: `${bin}:${process.env.PATH}` },
+  });
+  return { res, capture };
+}
+
+test("gh shim: env contract absent (GH_SCRUB_REAL unset) degrades to real gh on PATH, exit 0 (issue #251)", (t) => {
+  const { res, capture } = runShimNoContract(t, GH_SHIM, ["pr", "comment", "12", "--body", "fallback reply text"]);
+  assert.equal(res.status, 0, `fallback reply step must run green with the shim present and GH_SCRUB_REAL unset (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real gh was exec'd");
+  const seen = fs.readFileSync(capture, "utf8").trim().split("\n");
+  assert.deepEqual(seen, ["pr", "comment", "12", "--body", "fallback reply text"], "argv rides through raw on the degrade path");
+  assert.match(res.stderr, /WARNING.*env contract absent.*issue #251/s, "the degradation is loud, not silent");
+});
+
+test("gh shim: GH_SCRUB_REAL set but SCRUB_SCRIPT unset also degrades loudly (issue #251)", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-contract-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const capture = path.join(dir, "captured-argv.txt");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const real = path.join(bin, "gh");
+  fs.writeFileSync(real, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> "${capture}"\nexit 0\n`);
+  fs.chmodSync(real, 0o755);
+  const res = spawnSync("bash", [GH_SHIM, "pr", "view", "1"], {
+    encoding: "utf8",
+    env: { ...process.env, GH_SCRUB_REAL: real, SCRUB_SCRIPT: "", SHIM_TEST_CAPTURE: capture, PATH: `${bin}:${process.env.PATH}` },
+  });
+  assert.equal(res.status, 0, `partial contract must degrade, not exit 1 (stderr: ${res.stderr})`);
+  assert.match(res.stderr, /WARNING.*env contract absent/s, "the degradation is loud");
+});
+
+test("gh shim: contract absent AND no real gh outside the shim dirs fails loud, non-zero (issue #251)", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-contract-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Hermetic PATH of prepared dirs only (no system dir, ambient not
+  // re-included — the tests-lint PATH rule): an empty bin dir constructs a
+  // cell with genuinely no gh anywhere on PATH, so the degrade has nothing
+  // to resolve and must fail loud.
+  const emptyBin = path.join(dir, "empty-bin");
+  fs.mkdirSync(emptyBin);
+  const res = spawnSync("/bin/bash", [GH_SHIM, "pr", "view", "1"], {
+    encoding: "utf8",
+    env: { ...process.env, GH_SCRUB_REAL: "", SCRUB_SCRIPT: "", PATH: emptyBin },
+  });
+  assert.notEqual(res.status, 0, "nothing to degrade to — must not limp on");
+  assert.match(res.stderr, /cannot degrade/, "the failure names the contract");
+});
+
+test("git shim: env contract absent (GIT_SCRUB_REAL unset) degrades to real git on PATH, exit 0 (issue #251)", (t) => {
+  const { res, capture } = runShimNoContract(t, GIT_SHIM, ["commit", "-m", "msg"]);
+  assert.equal(res.status, 0, `later steps must run green with the shim present and GIT_SCRUB_REAL unset (stderr: ${res.stderr})`);
+  assert.ok(fs.existsSync(capture), "the real git was exec'd");
+  assert.match(res.stderr, /WARNING.*env contract absent.*issue #251/s, "the degradation is loud");
+});
+
+test("run-dsh-agent.sh: persists the shim env contract to GITHUB_ENV (issue #251 pin)", () => {
+  const driver = fs.readFileSync(path.join(ROOT, "scripts", "run-dsh-agent.sh"), "utf8");
+  for (const name of ["GH_SCRUB_REAL", "GIT_SCRUB_REAL", "SCRUB_SCRIPT"]) {
+    assert.match(
+      driver,
+      new RegExp(`printf '${name}=%s\\\\n' .*>> "\\$GITHUB_ENV"`),
+      `the driver must carry ${name} onto GITHUB_ENV so later steps inheriting the shim dir stay fully scrubbed (issue #251)`,
+    );
+  }
+});
