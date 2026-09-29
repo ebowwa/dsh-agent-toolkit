@@ -126,21 +126,31 @@ jobs:
         if: always() && env.DSH_HOME_JOB != ''
         env:
           GH_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
+          REPO_PATH: ${{ github.repository }} # env seam, never raw ${{ }} into bash (injection seam)
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           [ -d "${DSH_HOME_JOB}/sessions" ] || { echo "no sessions dir"; exit 0; }
+          # credential law (REVIEW.md): the token never rides argv (a
+          # credential URL is ps-visible). Git auth via env config: an
+          # extraheader carrying a base64 basic credential, set in the
+          # process environment — never written to .git/config, never on a
+          # command line — consumed by git at invocation.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0='http.https://github.com/.extraheader'
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
           WORK=$(mktemp -d)
           cd "$WORK"
           git init -q .
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git remote add origin "https://github.com/${REPO_PATH}.git"
           git fetch -q origin tower-state || true
           git checkout -q -B tower-state origin/tower-state 2>/dev/null || git checkout -q -B tower-state
           mkdir -p data/sessions
-          cp -R "${DSH_HOME_JOB}/sessions/." data/sessions/run-${{ github.run_id }}/
+          cp -R "${DSH_HOME_JOB}/sessions/." "data/sessions/run-${RUN_ID}/"
           # size discipline: keep the newest 100 transcripts
           ls -t data/sessions | tail -n +101 | xargs -r rm -rf
           git add -f data/sessions
-          git commit -qm "flight recorder: session ${{ github.run_id }} [skip ci]" || exit 0
+          git commit -qm "flight recorder: session ${RUN_ID} [skip ci]" || exit 0
           git push -q origin tower-state || echo "::warning::transcript push failed (best-effort)"
