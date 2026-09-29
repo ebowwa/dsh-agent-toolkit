@@ -63,14 +63,16 @@ jobs:
       - name: Resolve PR number
         id: pr
         env:
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_PATH: ${{ github.event_path }}
           GH_TOKEN: ${{ github.token }}
-          # Dispatch input reaches bash through env, never raw workflow
-          # interpolation into the run block (review finding 3 — same
-          # hygiene class as the task/comment-text seam).
+          # Workflow context reaches bash through env, never raw ${{ }}
+          # interpolation into the run block — dispatch input, event fields,
+          # repo vars: the whole seam (review finding 3; #239, mirrors the
+          # env-routing fix in PR #238 / issue #236).
           PR_INPUT: ${{ inputs.pr }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             N="$PR_INPUT"
           else
             N="$(node -e '
