@@ -566,6 +566,12 @@ task_item() {
       || echo "worker: base-ref '$t_base' checkout fell back to the default branch" >&2
   fi
 
+  # dep cache: pre-warm node_modules keyed on the lockfile hash (issue #189)
+  # — best-effort by contract: a failure here just means the claim pays the
+  # install itself, exactly as before.
+  bash "$DSH_AGENT_TOOLKIT_DIR/scripts/dep-cache.sh" restore "$work" \
+    || echo "worker: dep-cache restore failed on $repo — claim proceeds without it" >&2
+
   # push credential (the agent pushes itself in dispatch mode)
   ( cd "$work" && PUSH_FALLBACK_CRED="$GH_TOKEN" DOPPLER_SERVICE_TOKEN="${DOPPLER_SERVICE_TOKEN:-}" \
       bash "$DSH_AGENT_TOOLKIT_DIR/scripts/resolve-push-token.sh" ) \
