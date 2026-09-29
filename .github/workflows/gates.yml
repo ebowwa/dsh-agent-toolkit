@@ -89,96 +89,14 @@ jobs:
         # step the suite silently depended on a stale workspace
         # node_modules, pruned by a disk-clean pass on 2026-09-18 — every
         # gates run since (main included) failed ERR_MODULE_NOT_FOUND.
-        # Approach: install the union of deps+peers of tested plugins at
-        # the repo root (ESM resolution walks up from each plugin lib),
-        # and symlink @local/* names the same way the profile does.
-        run: |
-          set -euo pipefail
-          specs="$(node -e '
-            const fs = require("fs");
-            const out = new Set();
-            for (const dir of fs.readdirSync("plugins")) {
-              const pj = "plugins/" + dir + "/package.json";
-              if (!fs.existsSync(pj) || !fs.existsSync("plugins/" + dir + "/test")) continue;
-              const p = JSON.parse(fs.readFileSync(pj, "utf8"));
-              for (const k of ["dependencies", "peerDependencies"])
-                for (const n of Object.keys(p[k] || {})) out.add(n + "@" + p[k][n]);
-            }
-            console.log([...out].join(" "));
-          ')"
-          mkdir -p node_modules/@local
-          for d in plugins/*; do
-            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
-            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
-            case "$n" in
-              @local/*) ln -sfn "../../$d" "node_modules/$n" && echo "link $n -> $d" ;;
-            esac
-          done
-          if [ -n "$specs" ]; then
-            echo "install: $specs"
-            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $specs
-          fi
-          # The @deepseek-ai family peer-depends on each other (flat profile
-          # tree in production — nothing declares hard deps). npm's root
-          # install reconciles to the spec list it is given, so install the
-          # ACCUMULATED union each round or each round prunes the last.
-          all_specs="$specs"
-          rounds=0
-          # Loop until the peer set is actually satisfied — a fixed round
-          # count can settle PRUNED whenever npm's reconcile order churns
-          # longer than the cap (observed 2026-09-28: 2 plugin smokes
-          # ERR_MODULE_NOT_FOUND on @deepseek-ai/dsh-timeout after the
-          # old 5-round cap hit). The cap below only guards against a
-          # non-converging loop: hitting it fails the step LOUDLY instead
-          # of leaving a pruned tree for the smoke tests.
-          while :; do
-            extra="$(node -e '
-              const fs = require("fs");
-              const root = "node_modules/@deepseek-ai";
-              if (!fs.existsSync(root)) process.exit(0);
-              const need = new Set();
-              for (const pkg of fs.readdirSync(root)) {
-                const pj = JSON.parse(fs.readFileSync(root + "/" + pkg + "/package.json", "utf8"));
-                for (const [n, r] of Object.entries(pj.peerDependencies || {})) {
-                  if (!fs.existsSync("node_modules/" + n)) need.add(n + "@" + r);
-                }
-              }
-              console.log([...need].join(" "));
-            ')"
-            [ -n "$extra" ] || break
-            rounds=$((rounds + 1))
-            if [ "$rounds" -gt 20 ]; then
-              echo "peer-union reconciliation did not converge after 20 rounds; still missing: $extra" >&2
-              exit 1
-            fi
-            all_specs="$all_specs $extra"
-            echo "install (union, round $rounds): $extra"
-            npm install --prefix . --legacy-peer-deps --no-save --no-package-lock --no-audit --no-fund $all_specs
-          done
-          # npm may prune the @local symlinks while reconciling — re-link last
-          for d in plugins/*; do
-            [ -f "$d/package.json" ] && [ -d "$d/test" ] || continue
-            n="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$d/package.json','utf8')).name)")"
-            case "$n" in @local/*) ln -sfn "../../$d" "node_modules/$n" ;; esac
-          done
-          # Fail-closed: nothing proceeds with a pruned tree — every peer
-          # of every installed @deepseek-ai package must resolve, or the
-          # step is red here rather than flaky-red in the smokes.
-          node -e '
-            const fs = require("fs");
-            const root = "node_modules/@deepseek-ai";
-            if (!fs.existsSync(root)) process.exit(0);
-            const missing = [];
-            for (const pkg of fs.readdirSync(root)) {
-              const pj = JSON.parse(fs.readFileSync(root + "/" + pkg + "/package.json", "utf8"));
-              for (const n of Object.keys(pj.peerDependencies || {}))
-                if (!fs.existsSync("node_modules/" + n)) missing.push(pkg + " -> " + n);
-            }
-            if (missing.length) {
-              console.error("unresolved peers after install: " + missing.join(", "));
-              process.exit(1);
-            }
-          '
+        # The installer computes the peer closure IN PROCESS against
+        # registry metadata and installs the resolved union ONCE
+        # (issue #161: npm re-resolves node_modules to the per-invocation
+        # spec list, so the old per-round npm loop pruned what the
+        # previous round had installed and oscillated on bare checkouts).
+        # It then verifies the tree — packages present, peers resolved,
+        # @local links intact — and fails LOUDLY before the suite.
+        run: node scripts/install-plugin-smoke-deps.mjs
       - name: Unit tests
         # bare --test auto-discovers *.test.mjs (a directory argument is not
         # portable across the node versions on the runner lanes)

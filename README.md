@@ -31,6 +31,7 @@ Two execution modes:
 | `.github/workflows/agent-dispatch.yml` | LEGACY manual/scheduled task entry |
 | `.github/workflows/drift-check.yml` | self-reviewing release agent: reviews its own main-branch diff, tags + releases only on an approved verdict (TAG / TAG-WITH-FINDINGS), advances the moving `@v1` pin, then notifies `DSH_BOT_CONSUMERS` (repo variable: comma/space-separated `owner/repo` list) via `repository_dispatch` — each consumer opens its own bump PR |
 | `scripts/dsh-worker.sh` | the out-of-band worker: poll → claim (label) → run driver → ship → reply → review (see docs/decoupled-worker.md) |
+| `scripts/install-plugin-smoke-deps.mjs` | the plugin smoke-test dependency installer, called by gates.yml: computes the peer closure IN PROCESS against registry metadata and installs the resolved union ONCE (`--no-save --no-package-lock`), then verifies the tree — packages present, peers resolved, `@local` links intact — failing loudly before the suite; an already-converged tree skips npm entirely. Replaces the old per-round npm loop that oscillated on bare checkouts (issue #161); pinned by `tests/plugin-smoke-deps.test.mjs` + `tests/gates-plugin-deps.test.mjs` |
 | `scripts/ship-changes.sh` | deterministic shipper, shared by the legacy workflow AND the worker (never trust the model to push) |
 | `scripts/post-reply.sh` | thread reply (ack-comment edit or fresh comment), shared by both modes |
 | `scripts/review-pr.sh` | worker-side adversarial review (REVIEW.md from the PR base; verdict → labels) |

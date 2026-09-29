@@ -1,15 +1,14 @@
 // gates-plugin-deps.test.mjs — pins the gates.yml "Install plugin
-// smoke-test deps" peer-union reconciliation to CONVERGE, not to a fixed
-// round count.
+// smoke-test deps" step to the install-once installer with a hard
+// convergence check (issue #161).
 //
-// Regression anchor: PR 203 review, receipts 2026-09-28. The loop was
-// `for _ in 1 2 3 4 5`; on a clean replicate it hit the cap in a PRUNED
-// state (npm's reconcile order churns peers across rounds — the step's
-// own comment anticipated oscillation) and the unit-test step went
-// flaky-red: 2 of 352 plugin smokes failed ERR_MODULE_NOT_FOUND on
-// @deepseek-ai/dsh-timeout. These tests fail without the fix: restore
-// the fixed 5-round cap or drop the fail-closed resolvability check and
-// this suite goes red.
+// Regression anchor: the pre-#161 step ran a per-round `npm install` of
+// the accumulated union; npm reconciles node_modules to the per-invocation
+// spec list, so each round pruned what the previous round had installed —
+// the loop oscillated on bare checkouts (issue #161 receipt) and hit its
+// round cap in a PRUNED state, flaky-red in the smokes. These tests fail
+// without the fix: revert gates.yml to the per-round loop (or stop calling
+// the installer) and this suite goes red.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +17,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const gates = readFileSync(path.join(ROOT, ".github", "workflows", "gates.yml"), "utf8");
+const gates = readFileSync(
+  path.join(ROOT, ".github", "workflows", "gates.yml"),
+  "utf8",
+);
 
 const step = (() => {
   const start = gates.indexOf("Install plugin smoke-test deps");
@@ -27,26 +29,50 @@ const step = (() => {
   return gates.slice(start, next > 0 ? next : gates.length);
 })();
 
-test("the peer-union loop is convergence-driven, not a fixed round count", () => {
-  assert.ok(!/for _ in \d/.test(step), "fixed iteration cap removed — it settles pruned");
-  assert.match(step, /while :;/, "loop runs until the peer set is satisfied");
-  assert.match(step, /\[ -n "\$extra" \] \|\| break/, "loop exits only when no peer is missing");
+test("the step delegates to the install-once installer", () => {
+  assert.match(
+    step,
+    /run: node scripts\/install-plugin-smoke-deps\.mjs/,
+    "the step must call scripts/install-plugin-smoke-deps.mjs",
+  );
 });
 
-test("a non-converging loop fails the step loudly, never silently pruned", () => {
-  assert.match(step, /-gt \d+/, "a round cap still guards against an infinite loop");
-  assert.match(step, /did not converge/, "cap hit reports the missing set");
-  assert.match(step, /exit 1/, "cap hit fails the step (set -e alone does not fire here)");
+test("the per-round npm reconciliation loop must not come back", () => {
+  assert.ok(
+    !/while :;/.test(step),
+    "no per-round shell loop — npm re-resolves node_modules to each " +
+      "invocation's spec list, so per-round installs oscillate (issue #161)",
+  );
+  assert.ok(
+    !/npm install/.test(step),
+    "npm invocations live only in the installer, never in the step",
+  );
 });
 
-test("the step ends fail-closed: every peer of every installed package resolves", () => {
-  // The final assertion is a standalone node block AFTER the loop and the
-  // @local re-link, scanning peerDependencies against node_modules and
-  // exiting 1 on any gap.
-  const relink = step.lastIndexOf("re-link");
-  assert.ok(relink > 0, "the @local re-link block is present");
-  const after = step.slice(relink);
-  assert.match(after, /peerDependencies/, "final check reads peerDependencies");
-  assert.match(after, /unresolved peers after install/, "it names the gap");
-  assert.match(after, /process\.exit\(1\)/, "it is fail-closed, not advisory");
+test("the installer is the only place npm runs for the smoke deps", () => {
+  const installer = readFileSync(
+    path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs"),
+    "utf8",
+  );
+  assert.match(installer, /"install"/, "installer runs npm install exactly once");
+  assert.match(
+    installer,
+    /--no-save/,
+    "--no-save keeps the checkout clean (scripts-only repo, no lockfile)",
+  );
+  assert.match(
+    installer,
+    /--no-package-lock/,
+    "--no-package-lock keeps the checkout clean",
+  );
+  assert.match(
+    installer,
+    /dependency closure did not converge after install/,
+    "post-install verification is fail-closed — non-convergence is LOUD",
+  );
+  assert.match(
+    installer,
+    /npm skipped \(install-once\)/,
+    "an already-converged tree skips npm entirely (install-once fast path)",
+  );
 });

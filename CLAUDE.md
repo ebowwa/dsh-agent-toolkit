@@ -23,9 +23,11 @@ run straight off the tree on Node.
      `node --test tests/*.test.mjs`. Do NOT use the directory form
      (`node --test tests/`) — under Node 26 it fails `MODULE_NOT_FOUND`
      before running anything. The plugin smoke tests need the
-     `@deepseek-ai/*` / `@local/*` dep install `gates.yml` performs first;
-     on a bare clean checkout those smokes fail environmentally, not
-     substantively.
+     `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
+     checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
+     converges the peer closure, installs once, and verifies the tree;
+     reruns are no-ops); without it those smokes fail environmentally,
+     not substantively.
 - **Review findings cite rules.** `REVIEW.md` is this repo's review
   contract; the review stage reads it (and this file) as ground truth, and
   every finding must cite a rule from it. The review contract is
