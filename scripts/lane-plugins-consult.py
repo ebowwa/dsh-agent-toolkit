@@ -240,6 +240,57 @@ def main():
             print(f"MOUNTED\t{pid}\tprofile-config seam ({pkg_name} restated; no copy)")
             continue
 
+        # seam == "system-prompt": merge a managed marker block from an
+        # in-tree template into the lane home's system-prompt file (issue
+        # #254 — the mac lane's standing reflex directive). Marker-scoped:
+        # text outside the block is operator-owned and never touched; the
+        # block replaces verbatim on template change and an unchanged block
+        # is a no-op write. Gated like any engine-dependent mount
+        # (require_probe) — a directive naming tools that cannot answer
+        # here is a dead prompt.
+        if seam == "system-prompt":
+            src = os.path.join(root, entry.get("source", {}).get("path", ""))
+            begin = f"<!-- dsh:{pid} -->"
+            end = f"<!-- /dsh:{pid} -->"
+            if entry.get("require_probe") and not port_answers(entry["probe_port"]):
+                print(f"SKIP\t{pid}\t127.0.0.1:{entry['probe_port']} not answering (engine down here)")
+                continue
+            try:
+                block = open(src).read().strip()
+            except OSError as e:
+                print(f"SKIP\t{pid}\ttemplate missing/unreadable at {src}: {e}")
+                continue
+            if begin not in block or end not in block:
+                print(f"SKIP\t{pid}\ttemplate carries no {begin} marker block (refusing an unscoped prompt write)")
+                continue
+            if home is None:
+                print(f"SKIP\t{pid}\tno --home given")
+                continue
+            target = os.path.expanduser(entry.get("target_file", ""))
+            if not target:
+                print(f"SKIP\t{pid}\tno target_file declared")
+                continue
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                current = open(target).read() if os.path.isfile(target) else ""
+                if begin in current and end in current:
+                    pre = current[: current.index(begin)]
+                    post = current[current.index(end) + len(end):]
+                    merged = pre + block + post
+                    if merged == current:
+                        print(f"MOUNTED\t{pid}\tsystem-prompt seam ({target} block already current; no write)")
+                        continue
+                else:
+                    merged = (current.rstrip("\n") + "\n\n" + block + "\n") if current.strip() else (block + "\n")
+                tmp = target + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(merged)
+                os.replace(tmp, target)
+                print(f"MOUNTED\t{pid}\tsystem-prompt seam (marker block merged into {target})")
+            except OSError as e:
+                print(f"SKIP\t{pid}\tcannot write {target}: {e}")
+            continue
+
         # seam == "plugin": the compose pattern — per-job copy + overlay
         if home is None:
             print(f"SKIP\t{pid}\tno --home given")

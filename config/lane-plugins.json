@@ -40,6 +40,18 @@
       "require_probe": true
     },
     {
+      "id": "mac-reflex-prompt",
+      "seam": "system-prompt",
+      "nodes": ["*"],
+      "_doc": "Standing reflex directive in the lane home's system prompt (issue #254: 0 reflex_ invocations across 1,387 sessions proves steering alone never reaches tower-minted agents; the owner-visible symptom is dialogue pop-ups persisting on the mini display). Merges the managed marker block from config/system-prompts/macos.md into target_file — the ~/.dsh/system-prompt.md global block the dsh-system-prompt-editor reads. Marker-scoped: operator text outside the block is never touched; an unchanged block is a quiet no-op. Gated on the reflex engine port for the same reason the dsh-reflex mount is — a directive naming tools that cannot answer here is a dead prompt. TCC consent dialogs are explicitly EXCLUDED (owner-once, flag in thread).",
+      "source": {
+        "path": "config/system-prompts/macos.md"
+      },
+      "target_file": "~/.dsh/system-prompt.md",
+      "probe_port": 49173,
+      "require_probe": true
+    },
+    {
       "id": "session-persistence-jsonl",
       "seam": "profile-config",
       "nodes": ["*"],
