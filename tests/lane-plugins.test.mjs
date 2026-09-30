@@ -31,7 +31,7 @@ test("manifest: parses, required fields per seam, external refs pinned", () => {
   for (const set of [m.macos, m.linux]) {
     for (const e of set) {
       assert.ok(e.id, "entry has id");
-      assert.ok(["native-web", "plugin", "profile-config"].includes(e.seam), `${e.id}: valid seam`);
+      assert.ok(["native-web", "plugin", "profile-config", "system-prompt"].includes(e.seam), `${e.id}: valid seam`);
       if (e.source?.repo) {
         assert.match(e.source.ref, /^[0-9a-f]{40}$/, `${e.id}: external source pinned to a full sha`);
         assert.ok(e.canonical_dest, `${e.id}: external source declares canonical_dest`);
@@ -42,8 +42,19 @@ test("manifest: parses, required fields per seam, external refs pinned", () => {
         assert.ok(e.package, `${e.id}: profile-config names the profile-tree package it restates`);
         assert.ok(!e.source, `${e.id}: profile-config copies nothing`);
       }
+      if (e.seam === "system-prompt") {
+        assert.ok(e.source?.path, `${e.id}: system-prompt names an in-tree template`);
+        assert.ok(existsSync(join(ROOT, e.source.path)), `${e.id}: template exists in-tree`);
+        assert.ok(e.target_file, `${e.id}: system-prompt names its target file`);
+        const tpl = readFileSync(join(ROOT, e.source.path), "utf8");
+        assert.ok(tpl.includes(`<!-- dsh:${e.id} -->`) && tpl.includes(`<!-- /dsh:${e.id} -->`), `${e.id}: template carries its marker block (unscoped prompt writes are refused)`);
+        assert.ok(/TCC/i.test(tpl), `${e.id}: template carries the TCC exclusion (issue #254: consent dialogs are owner-once)`);
+      }
     }
   }
+  // issue #254: the reflex directive is a mac-lane bake-in — a system-prompt
+  // entry must not silently ride the linux set (Linux nodes never mount it).
+  assert.ok(!m.linux.some((e) => e.seam === "system-prompt"), "no system-prompt entry on the linux set");
 });
 
 test("consult: platform gate — linux node sees nothing from the macos set", () => {
@@ -273,4 +284,63 @@ test("consult: plugin require_profile_packages — backend missing SKIPs the too
   assert.ok(ok.some((l) => l.startsWith("MOUNTED\ttool-session-query")), "mounts once the backend is present");
   const copied = join(d, "profiles", "node_modules", "@deepseek-ai", "dsh-tool-session-query", "package.json");
   assert.ok(existsSync(copied), "vendored package copied into the @deepseek-ai flat-fallback namespace");
+});
+
+test("consult: system-prompt — live engine merges the marker block; operator text untouched", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const root = mkdtempSync(join(tmpdir(), "lp-root-"));
+  const tplDir = join(root, "config", "system-prompts");
+  mkdirSync(tplDir, { recursive: true });
+  const tpl = join(tplDir, "macos.md");
+  writeFileSync(tpl, "<!-- dsh:mac-reflex-prompt -->\nREFLEX RULE v1\n<!-- /dsh:mac-reflex-prompt -->\n");
+  const home = mkdtempSync(join(tmpdir(), "lp-home-"));
+  const target = join(home, "system-prompt.md");
+  writeFileSync(target, "operator preamble — never touched\n");
+  const manifest = join(d, "m.json");
+  const entry = (port) => ({
+    id: "mac-reflex-prompt",
+    seam: "system-prompt",
+    nodes: ["*"],
+    source: { path: "config/system-prompts/macos.md" },
+    target_file: target, // absolute: expanduser leaves it alone
+    probe_port: port,
+    require_probe: true,
+  });
+  writeFileSync(manifest, JSON.stringify({ macos: [entry(1)] }));
+  const dead = consult(["--platform", "Darwin", "--node", "mini-L1", "--home", home, "--root", root, manifest]);
+  const skip = dead.find((l) => l.startsWith("SKIP\tmac-reflex-prompt"));
+  assert.ok(skip && /not answering/.test(skip), `dead engine skips loud, got: ${skip}`);
+  assert.ok(!readFileSync(target, "utf8").includes("REFLEX RULE"), "dead engine writes nothing");
+
+  return new Promise((resolve) => {
+    const srv = createServer(() => {});
+    srv.listen(0, "127.0.0.1", () => resolve(srv.address().port));
+    setTimeout(() => srv.close(), 20000).unref?.();
+  }).then((port) => {
+    writeFileSync(manifest, JSON.stringify({ macos: [entry(port)] }));
+    const out = consult(["--platform", "Darwin", "--node", "mini-L1", "--home", home, "--root", root, manifest]);
+    assert.ok(out.some((l) => l.startsWith("MOUNTED\tmac-reflex-prompt")), `mounts with a live engine, got: ${out.join(" | ")}`);
+    let merged = readFileSync(target, "utf8");
+    assert.ok(merged.includes("operator preamble"), "operator text preserved");
+    assert.ok(merged.includes("REFLEX RULE v1"), "template block merged");
+
+    // idempotent: unchanged template is a no-op write
+    const before = readFileSync(target, "utf8");
+    const again = consult(["--platform", "Darwin", "--node", "mini-L1", "--home", home, "--root", root, manifest]);
+    assert.ok(again.some((l) => l.includes("already current")), "second run reports no-op");
+    assert.equal(readFileSync(target, "utf8"), before, "no rewrite when current");
+
+    // template change replaces ONLY the block
+    writeFileSync(tpl, "<!-- dsh:mac-reflex-prompt -->\nREFLEX RULE v2\n<!-- /dsh:mac-reflex-prompt -->\n");
+    consult(["--platform", "Darwin", "--node", "mini-L1", "--home", home, "--root", root, manifest]);
+    merged = readFileSync(target, "utf8");
+    assert.ok(merged.includes("REFLEX RULE v2") && !merged.includes("REFLEX RULE v1"), "block replaced on template change");
+    assert.ok(merged.includes("operator preamble"), "operator text still preserved");
+
+    // unmarked template is refused, never merged
+    writeFileSync(tpl, "REFLEX RULE v3 without markers\n");
+    const refused = consult(["--platform", "Darwin", "--node", "mini-L1", "--home", home, "--root", root, manifest]);
+    assert.ok(refused.some((l) => l.startsWith("SKIP\tmac-reflex-prompt") && /marker block/.test(l)), "unmarked template skips loud");
+    assert.ok(!readFileSync(target, "utf8").includes("v3"), "unmarked template writes nothing");
+  });
 });
