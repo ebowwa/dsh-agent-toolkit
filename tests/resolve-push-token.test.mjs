@@ -414,6 +414,27 @@ test("agent-dispatch.yml: persist-credentials false + resolver wired before the 
   assert.ok(checkoutIdx < resolveIdx && resolveIdx < runIdx, "resolver must run after checkout, before the agent");
 });
 
+// Regression pin: the flight-recorder step used to embed GH_TOKEN in the
+// `git remote add` URL — the credential rode argv (bash-expanded, so the
+// full token URL was ps-readable to same-user processes) and persisted in
+// the temp clone's .git/config remote URL. It also interpolated
+// ${{ github.repository }} / ${{ github.run_id }} raw into the run block
+// (the injection seam the env-routing rule closes). Both must stay fixed.
+test("agent-dispatch.yml: flight recorder keeps the token off argv and ${{ }} out of the run block", () => {
+  const wf = readFileSync(path.join(ROOT, ".github", "workflows", "agent-dispatch.yml"), "utf8");
+  const start = wf.indexOf("Archive session transcript (flight recorder)");
+  assert.ok(start !== -1, "flight recorder step must exist");
+  const end = wf.indexOf("\n      - name:", start);
+  const step = end === -1 ? wf.slice(start) : wf.slice(start, end);
+  const remoteAdd = step.split("\n").find((l) => l.includes("git remote add")) ?? "";
+  assert.ok(!remoteAdd.includes("x-access-token:"), "remote URL must not embed the token (argv + .git/config leak)");
+  assert.ok(step.includes("GIT_CONFIG_COUNT"), "credential must flow via env-fed git config (sanctioned seam)");
+  const runBlock = step.slice(step.indexOf("run: |"));
+  assert.ok(!runBlock.includes("github.repository }}"), "run block must route github.repository through step env");
+  assert.ok(!runBlock.includes("github.run_id }}"), "run block must route github.run_id through step env");
+  assert.ok(step.includes("REPO_FULL_NAME:") && step.includes("FLIGHT_RUN_ID:"), "env-fed context vars must be declared");
+});
+
 test("agent-comment.yml: persist-credentials false + resolver wired before agent AND shipper", () => {
   const wf = readFileSync(path.join(ROOT, ".github", "workflows", "agent-comment.yml"), "utf8");
   assert.ok(wf.includes("persist-credentials: false"), "main checkout must not persist the ephemeral token");
