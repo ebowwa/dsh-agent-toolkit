@@ -190,9 +190,16 @@ test("DSH_SEARCH_COMPOSE unset: byte-identical launch line — no feature-owned 
   const stray = nonLanePatchFiles(args);
   assert.deepEqual(stray, [], `no feature-owned --patch when unset, got: ${stray.join(", ")}\nfull argv: ${args}`);
   assert.ok(!existsSync(path.join(home, "search-compose.patch.yml")), "no overlay stamped when unset");
+  // Scope to the compose-owned package, not the whole namespace (issue #134,
+  // same class as #123): the lane-plugin seam derives mount destinations from
+  // the source package's name, so the day any manifest entry mounts an
+  // in-tree '@dsh-agent-toolkit/*' plugin compose-style, its per-job copy
+  // legitimately lands under profiles/node_modules/@dsh-agent-toolkit/ —
+  // a whole-namespace absence assertion would red on exactly the engine
+  // boxes #123 is about.
   assert.ok(
-    !existsSync(path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit")),
-    "no plugin copy when unset",
+    !existsSync(path.join(home, "profiles", "node_modules", "@dsh-agent-toolkit", "tool-search-compose")),
+    "no compose copy when unset",
   );
 });
 
