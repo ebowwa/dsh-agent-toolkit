@@ -728,7 +728,16 @@ if [ -f "$LANE_PLUGINS_MANIFEST" ] && command -v python3 >/dev/null 2>&1; then
   while IFS="$(printf '\t')" read -r LP_KIND LP_A LP_B; do
     [ -n "${LP_KIND:-}" ] || continue
     case "$LP_KIND" in
-      ENV)    export "$LP_A=$LP_B";;
+      # ENV is PRIMING, not override (issue #133): the consult's native-web
+      # ENV directives exist to turn the section-2e seam on where the
+      # manifest gates it on. A caller that explicitly pinned a DSH_*
+      # variable (e.g. a dispatched job exporting DSH_WEB_SEARCH_CELLS on a
+      # primed node) must keep that pin — the caller-wins shape the
+      # RUNNER_NAME bridge above already uses. Applying the prime only when
+      # the variable is unset/empty keeps section 2e's own doc ("default
+      # (unset/empty) is off on every cell — no silent fleet-wide flip")
+      # true from BOTH directions.
+      ENV)    [ -n "${!LP_A:-}" ] || export "$LP_A=$LP_B";;
       PATCH)  LANE_PATCH_FILES+=("$LP_A");;
       MOUNTED) echo "lane-plugins: $LP_A mounted ($LP_B)" >&2;;
       SKIP)   echo "lane-plugins: $LP_A skipped — ${LP_B:-gated}" >&2;;

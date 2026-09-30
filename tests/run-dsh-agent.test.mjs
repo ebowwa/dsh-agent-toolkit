@@ -993,6 +993,61 @@ test("DSH_WEB_SEARCH_CELLS without this runner's name stays off: no overlay, no 
   assert.ok(!existsSync(path.join(unnamed.home, "web-search-browser.patch.yml")), "no runner name = never enables");
 });
 
+// --- lane-plugin ENV priming must not override a caller's pin (issue #133).
+// A live consult on a manifest-gated node emits `ENV DSH_WEB_SEARCH_CELLS
+// <node>`; section 2e-pre applies it. The launcher's ENV directive is
+// PRIMING (unset/empty only) — a caller-set DSH_WEB_SEARCH_CELLS must
+// survive. These tests build a REAL priming manifest (native-web entry,
+// canonical copy present, no browser gate) so the consult actually emits
+// ENV for this node; HERMETIC_LANE_PLUGINS is swapped out via
+// DSH_LANE_PLUGINS_MANIFEST (the documented re-pin seam).
+const primingManifest = (dir) => {
+  const canon = path.join(dir, "canonical", "dsh-web-search-browser");
+  mkdirSync(path.join(canon, "lib"), { recursive: true });
+  writeFileSync(path.join(canon, "package.json"), JSON.stringify({ name: "@local/dsh-web-search-browser", version: "0.0.0" }));
+  const manifest = { _doc: "issue #133 pin test" };
+  const entry = { id: "web-pin-test", seam: "native-web", nodes: ["*"], canonical_dest: canon };
+  manifest.macos = [entry];
+  manifest.linux = [entry];
+  const manifestPath = path.join(dir, "lane-plugins-priming.json");
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return manifestPath;
+};
+
+test("lane-plugins consult ENV prime must NOT replace a caller's explicit DSH_WEB_SEARCH_CELLS pin (issue #133)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-env-prime-"));
+  const manifest = primingManifest(dir);
+  // Caller pins a cell that is NOT this node; the manifest gates native-web
+  // on every node ("*"), so the consult DOES emit ENV for this node. Under
+  // the unconditional export the prime replaced the pin with the node's own
+  // name, which matched RUNNER_NAME — the pin was silently discarded.
+  const { proc, home } = runLauncher({
+    DSH_LANE_PLUGINS_MANIFEST: manifest,
+    DSH_RUNNER_NAME: "primed-node",
+    RUNNER_NAME: "primed-node",
+    DSH_WEB_SEARCH_CELLS: "some-other-cell",
+  });
+  assert.equal(proc.status, 0, `launcher must succeed with the caller's pin intact, stderr: ${proc.stderr}`);
+  assert.doesNotMatch(proc.stderr, /web-search-browser: mounted/, "the caller's off-pin must survive the prime");
+  assert.ok(!existsSync(path.join(home, "web-search-browser.patch.yml")), "no web overlay stamped from the discarded pin");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("lane-plugins consult ENV prime still applies when the caller left the variable unset (priming works, issue #133)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-env-prime-on-"));
+  const manifest = primingManifest(dir);
+  const { proc, home } = runLauncher({
+    DSH_LANE_PLUGINS_MANIFEST: manifest,
+    DSH_RUNNER_NAME: "primed-node",
+    RUNNER_NAME: "primed-node",
+    DSH_WEB_SEARCH_BROWSER_PATH: makePluginCopy(dir),
+  });
+  assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
+  assert.match(proc.stderr, /web-search-browser: mounted/, "the prime turns the seam on when the caller set nothing");
+  assert.ok(existsSync(path.join(home, "web-search-browser.patch.yml")), "prime-primed mount stamps the overlay");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a listed runner without a complete cell copy fails loud with the provisioning hint (no dead mounts)", () => {
   const { proc, home } = runLauncher({ DSH_WEB_SEARCH_CELLS: "mini-dsh-2", RUNNER_NAME: "mini-dsh-2" });
   assert.notEqual(proc.status, 0, "the launcher must fail loud, not dead-mount");
