@@ -35,7 +35,7 @@ broadcast.
   `[a-z0-9]+(-[a-z0-9]+)*`), then `WHEN TO USE:` and `THE PROCEDURE:`
   lines (both required; a partial block is not a candidate). Full grammar
   and a pinned example: [.agents/README.md](.agents/README.md) —
-  "ship-exit skill candidates". The PR itself carries the closing ticket's milestone (issue #185 — `ship-changes.sh` stamps it from `DSH_CLOSING_TICKET` or the PR body's `#N` reference; set it yourself when you open the PR: `gh pr edit N --repo R --milestone "anchor"`)
+  "ship-exit skill candidates"; the PR itself carries the closing ticket's milestone (issue #185 — `ship-changes.sh` stamps it from `DSH_CLOSING_TICKET` or the PR body's `#N` reference; set it yourself when you open the PR: `gh pr edit N --repo R --milestone "anchor"`)
 
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
 you). A thread that goes silent for 30+ minutes is a thread where
