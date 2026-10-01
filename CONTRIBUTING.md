@@ -26,7 +26,16 @@ broadcast.
 3. **IMPLEMENTING** — one line: the approach you're taking
 4. **TESTING** — one line: what you're verifying and how
 5. **BLOCKED** — when stuck longer than ~10 minutes: what is blocking you and what you already tried (a blocked agent that speaks can be helped; a silent one just burns the clock)
-6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works; when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene)
+6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works; when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene). The exit summary MAY additionally carry one
+  or more `SKILL CANDIDATE` blocks so the tower's skill-promotion pass can
+  collect a newly discovered procedure into the fleet skill catalog: each
+  block rides INSIDE the final result comment (thread comments are the
+  only durable channel a runner checkout leaves) and has exactly three
+  lines — a `SKILL CANDIDATE: <kebab-name>` header (name matching
+  `[a-z0-9]+(-[a-z0-9]+)*`), then `WHEN TO USE:` and `THE PROCEDURE:`
+  lines (both required; a partial block is not a candidate). Full grammar
+  and a pinned example: [.agents/README.md](.agents/README.md) —
+  "ship-exit skill candidates".
 
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
 you). A thread that goes silent for 30+ minutes is a thread where

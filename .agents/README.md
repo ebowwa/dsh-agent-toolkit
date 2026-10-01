@@ -98,6 +98,49 @@ orphaned too — the same linking belongs in the redo machinery. Noted for
 the factory#60 work or a follow-up; out of scope for this repo's
 implementation.
 
+## Standing contract: ship-exit skill candidates (issue #187)
+
+**Optional, additive.** A dispatched agent's ship-exit summary MAY carry
+one or more `SKILL CANDIDATE` blocks — the fleet's skill-promotion pass
+collects them into the shared skill catalog (`.dsh/skills/`), so a
+procedure you derived once becomes standing fleet knowledge. The block
+rides INSIDE the final result comment: thread comments are the only
+durable channel a runner checkout leaves, so a block in any other surface
+(assistant-only text, a local file) is lost at discard.
+
+Each block has EXACTLY this shape — the header line, then both labeled
+lines, in this order:
+
+```
+SKILL CANDIDATE: <kebab-name>
+WHEN TO USE: <the triggering situation>
+THE PROCEDURE: <the exact steps that worked>
+```
+
+The grammar is literal-prefix parseable:
+
+- The header line starts `SKILL CANDIDATE: ` and the name is kebab-case
+  (`[a-z0-9]+(-[a-z0-9]+)*`) — lowercase letters and digits, hyphens as
+  separators, nothing else.
+- Both labeled lines are REQUIRED. A header with no `WHEN TO USE:` and
+  `THE PROCEDURE:` lines is a mention, not a candidate — the parser
+  rejects it. Do not paraphrase the labels (`WHEN:` / `STEPS:` do not
+  parse).
+- The block MAY appear one or more times in the same summary; each block
+  is a separate candidate.
+
+**Pinned example of a good block** (copy the shape, not a paraphrase):
+
+```
+SKILL CANDIDATE: merge-adjacency-conflict-dissolve
+WHEN TO USE: the branch conflicts with main only because a sibling PR landed adjacent hunks in the same files, with no semantic overlap
+THE PROCEDURE: 1. git fetch origin main && git merge-base HEAD origin/main. 2. git rebase origin/main and list the conflicted files. 3. For each, git diff --name-only of the sibling PR (gh pr view N --json files) — if your changed lines are disjoint from its changed lines, take theirs wholesale: git checkout --theirs <file> is WRONG for a rebase; instead git checkout origin/main -- <file>, then re-apply only your disjoint hunks with git apply of a hand-built diff. 4. Run the targeted tests for the touched modules before the full gate. 5. Push with --force-with-lease.
+```
+
+The block does not replace any required exit-summary line — the
+`filed-followups:`, `branches-left:`, and parts-table rules above are
+unchanged; this is an optional extra section in the same summary.
+
 ## Standing contract: branch hygiene (issue #127)
 
 **Zero orphan branches.** A branch whose work outlives the session without
