@@ -1,0 +1,46 @@
+TAP version 13
+# Subtest: vendored package: parseable, pinned, structurally complete
+ok 1 - vendored package: parseable, pinned, structurally complete
+  ---
+  duration_ms: 91.978209
+  type: 'test'
+  ...
+# Subtest: vendored package: imports only @deepseek-ai/* bare specifiers (the flat-fallback contract)
+ok 2 - vendored package: imports only @deepseek-ai/* bare specifiers (the flat-fallback contract)
+  ---
+  duration_ms: 0.414583
+  type: 'test'
+  ...
+# Subtest: manifest: the three session-query entries cross-pin (ids are the SHIPPED profile ids; tool entry gated on the backend)
+ok 3 - manifest: the three session-query entries cross-pin (ids are the SHIPPED profile ids; tool entry gated on the backend)
+  ---
+  duration_ms: 0.844
+  type: 'test'
+  ...
+# Subtest: skill: exists and points at the native tools (not the hand-parser path) as step one
+ok 4 - skill: exists and points at the native tools (not the hand-parser path) as step one
+  ---
+  duration_ms: 0.335
+  type: 'test'
+  ...
+# Subtest: the three overlays compose into the real profile (skip when dsh is absent)
+ok 5 - the three overlays compose into the real profile (skip when dsh is absent)
+  ---
+  duration_ms: 226.122333
+  type: 'test'
+  ...
+# Subtest: the composed tree BOOTS: all three plugins load, boot dies at the credential wall (skip when dsh is absent)
+ok 6 - the composed tree BOOTS: all three plugins load, boot dies at the credential wall (skip when dsh is absent)
+  ---
+  duration_ms: 1386.582458
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1841.346583

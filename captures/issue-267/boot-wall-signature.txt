@@ -1,0 +1,7 @@
+composed-tree boot probe — verbatim capture of the wall (tests/session-query-mount.test.mjs boot shape), mac lane mini-L1, dsh 0.1.0-rc.7
+exit code: 1 | wall reached in <2s | no UI dialog spawned | no live call placed
+--- stdout (verbatim; empty below means truly empty) ---
+
+
+--- stderr (verbatim) ---
+dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment
