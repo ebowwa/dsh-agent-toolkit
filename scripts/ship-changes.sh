@@ -37,6 +37,11 @@
 #   DSH_PR_NUM_FILE         optional: first reviewable PR number opened is
 #                           written here (the worker's review stage reads it).
 #   DSH_TASK_TITLE          optional title seed for PRs.
+#   DSH_CLOSING_TICKET      optional: issue number the shipped work closes
+#                           ("185" or "#185") — its milestone is stamped on
+#                           the PR (issue #185). When unset, the shipper
+#                           scans the PR body for "#N" issue references and
+#                           carries the first referenced ticket's milestone.
 #   ACK_COMMENT_ID          optional: ack comment to PATCH to "shipping".
 #   REVIEW_WORKFLOW         optional: workflow filename to dispatch per PR
 #                           (empty/absent = worker mode: no dispatch — the
@@ -100,6 +105,45 @@ NOTE=""
 # turns it into exit 3), including the paths that never reach the ship block.
 SHIP_SCRUB_FAILED=""
 
+# ship_milestone <pr-num> <gh-pr-create args...>: milestone carry (issue
+# #185) — a shipped PR inherits the CLOSING TICKET's milestone (milestones
+# render on PR lists and close out with the chain). The ticket comes from
+# DSH_CLOSING_TICKET when the caller knows it, else the first "#N" issue
+# reference in the PR body (the closing reference). Best-effort with a
+# precise warning on failure — a milestone miss must never fail a ship
+# (same degrade-or-loud treatment as open_pr's review dispatch).
+ship_milestone() {
+  local pr_num="$1" a prev="" body refs ref ms
+  shift
+  command -v gh >/dev/null 2>&1 || return 0
+  refs=""
+  if [ -n "${DSH_CLOSING_TICKET:-}" ]; then
+    refs="$(printf '%s' "$DSH_CLOSING_TICKET" | grep -oE '[0-9]+' || true)"
+  fi
+  for a in "$@"; do
+    case "$prev" in
+      --body-file) body="$(cat "$a" 2>/dev/null || true)";;
+      --body)      body="$a";;
+      *)           body="";;
+    esac
+    if [ -n "$body" ]; then
+      refs="$refs $(printf '%s' "$body" | grep -oE '#[0-9]+' | tr -d '#' | head -5 || true)"
+    fi
+    prev="$a"
+  done
+  for ref in $refs; do
+    ms="$(gh issue view "$ref" --repo "$DSH_SHIP_REPO" --json milestone --jq '.milestone.title' 2>/dev/null || true)"
+    if [ -n "$ms" ] && [ "$ms" != "null" ]; then
+      if gh pr edit "$pr_num" --repo "$DSH_SHIP_REPO" --milestone "$ms" >/dev/null 2>&1; then
+        echo "milestone '$ms' set on PR #$pr_num (carried from #$ref)"
+      else
+        echo "::warning::milestone carry FAILED on PR #$pr_num (run: gh pr edit $pr_num --repo $DSH_SHIP_REPO --milestone \"$ms\")" >&2
+      fi
+      return 0
+    fi
+  done
+}
+
 # open_pr <head-branch> <title> <gh-pr-create args...>: create the PR and
 # dispatch its review with the same degrade-or-loud treatment as the
 # relay/reply guards — gh missing is a ::warning:: plus a precise ship note
@@ -120,6 +164,9 @@ open_pr() {
       PR_NUM="$(gh pr view "$head_b" --repo "$DSH_SHIP_REPO" --json number --jq .number 2>/dev/null || true)"
       if [ -n "$PR_NUM" ] && [ -n "${DSH_PR_NUM_FILE:-}" ] && [ ! -f "$DSH_PR_NUM_FILE" ]; then
         echo "$PR_NUM" > "$DSH_PR_NUM_FILE" 2>/dev/null || true
+      fi
+      if [ -n "$PR_NUM" ]; then
+        ship_milestone "$PR_NUM" "$@"
       fi
       if [ -n "$PR_NUM" ] && [ -n "${REVIEW_WORKFLOW:-}" ]; then
         if gh workflow run "$REVIEW_WORKFLOW" --repo "$DSH_SHIP_REPO" -f pr="$PR_NUM" 2>/dev/null; then

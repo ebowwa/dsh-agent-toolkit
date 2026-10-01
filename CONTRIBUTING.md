@@ -35,7 +35,7 @@ broadcast.
   `[a-z0-9]+(-[a-z0-9]+)*`), then `WHEN TO USE:` and `THE PROCEDURE:`
   lines (both required; a partial block is not a candidate). Full grammar
   and a pinned example: [.agents/README.md](.agents/README.md) —
-  "ship-exit skill candidates".
+  "ship-exit skill candidates". The PR itself carries the closing ticket's milestone (issue #185 — `ship-changes.sh` stamps it from `DSH_CLOSING_TICKET` or the PR body's `#N` reference; set it yourself when you open the PR: `gh pr edit N --repo R --milestone "anchor"`)
 
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
 you). A thread that goes silent for 30+ minutes is a thread where
@@ -59,6 +59,12 @@ working a claim, if you observe one:
 4. **Do NOT fix it in the current claim** — that is scope-creep — unless
    it is trivial AND in-scope. The claim's diff stays on-task; PRs are
    task work-products, not discoveries.
+5. **Stamp the chain/sweep milestone** (issue #185): a `found:` ticket
+   that belongs to a chain or sweep carries that chain's milestone — the
+   filer sets it, creating the milestone if absent (name = the chain's
+   anchor): `gh issue edit N --repo R --milestone "chain-anchor"`. One
+   call, part of the file step; the milestone's open/closed counts are
+   the chain's progress bar.
 
 The driver stamps this contract into every task it assembles
 (`scripts/run-dsh-agent.sh`), so every lane agent inherits it; the

@@ -80,6 +80,20 @@ case " $* " in
     echo "https://github.com/owner/repo/pull/999" ;;
   *" --json number "*) echo 99 ;;
   *" --json state "*) echo OPEN ;;
+  *" --json milestone "*)
+    # issue #185: the milestone lookup behind the shipper's carry step
+    prev=""
+    TICKET=""
+    for a in "$@"; do
+      if [ "$prev" = "view" ]; then TICKET="$a"; fi
+      prev="$a"
+    done
+    case "$TICKET" in
+      185) echo "alpha-sweep" ;;
+      *)   echo "null" ;;
+    esac ;;
+  *" pr edit "*)
+    echo "https://github.com/owner/repo/pull/999" ;;
   *) exit 0 ;;
 esac
 `);
@@ -282,4 +296,80 @@ test("shipper env PATH drops the driver's transient dsh-shim dirs, keeps the amb
   );
   // empty entries (PATH trailing colon = cwd semantics) pass through untouched
   assert.equal(ambientPathWithoutDriverShims(`${sep}${sep}`), `${sep}${sep}`);
+});
+// --- milestone carry (issue #185) -------------------------------------------
+// A shipped PR carries the closing ticket's milestone: the shipper resolves
+// the ticket from DSH_CLOSING_TICKET or the PR body's "#N" closing
+// reference, reads its milestone, and stamps the same one on the PR —
+// best-effort (a milestone miss degrades with a warning, never fails a ship).
+
+const shipFixture = (f, agentOutput) => {
+  writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+  writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
+  writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+  writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), agentOutput);
+  writeFileSync(path.join(f.work, "a.txt"), "base content\nagent changed it\n");
+  return spawnSync("bash", [SHIPPER], { encoding: "utf8", env: f.env() });
+};
+
+test("milestone carry: shipped PR inherits the closing ticket's milestone from the body's #N reference (issue #185)", () => {
+  const f = fixture();
+  try {
+    const res = shipFixture(f,
+      "done. Closes #185 — the chain ticket. landed 2026-09-26\n");
+    assert.equal(res.status, 0, res.stderr);
+    const log = readFileSync(f.ghLog, "utf8");
+    // the carry ran: milestone lookup on the referenced ticket, then the
+    // same milestone stamped on the created PR
+    assert.match(log, /gh: issue view 185 --repo owner\/repo --json milestone/);
+    assert.match(log, /gh: pr edit 99 --repo owner\/repo --milestone alpha-sweep/);
+    // the note still ships normally (carry is additive, not the ship itself)
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /shipped/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("milestone carry: DSH_CLOSING_TICKET takes precedence over the body scan (issue #185)", () => {
+  const f = fixture();
+  try {
+    const res = shipFixture(f, "done. no refs here\n");
+    assert.equal(res.status, 0, res.stderr);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.ok(!log.includes("milestone"), "no carry without a closing ticket or #N reference");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+
+  const g = fixture();
+  try {
+    const res = shipFixture(g, "done. see #42 for noise\n");
+    assert.equal(res.status, 0, res.stderr);
+    const env = g.env({ DSH_CLOSING_TICKET: "185" });
+    const res2 = spawnSync("bash", [SHIPPER], { encoding: "utf8", env });
+    assert.equal(res2.status, 0, res2.stderr);
+    const log = readFileSync(g.ghLog, "utf8");
+    assert.match(log, /gh: issue view 185 --repo owner\/repo --json milestone/,
+      "the explicit closing ticket is looked up even when the body references another number");
+    assert.match(log, /gh: pr edit 99 --repo owner\/repo --milestone alpha-sweep/);
+  } finally {
+    rmSync(g.dir, { recursive: true, force: true });
+  }
+});
+
+test("milestone carry degrades, never fails the ship: ticket without a milestone ships clean (issue #185)", () => {
+  const f = fixture();
+  try {
+    // #42 carries no milestone in the shim — the carry step finds nothing
+    const res = shipFixture(f, "done. Closes #42\n");
+    assert.equal(res.status, 0, res.stderr);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.match(log, /gh: issue view 42 --repo owner\/repo --json milestone/);
+    assert.ok(!log.includes("pr edit"), "no pr edit when the closing ticket has no milestone");
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /shipped/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
 });

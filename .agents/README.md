@@ -31,6 +31,40 @@ claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
 4. **Never fix it in the current claim** — that is scope-creep — unless
    the fix is trivial AND in-scope. The claim diff stays on-task; PRs are
    task work-products, not discoveries.
+5. **Stamp the chain/sweep milestone** (issue #185): when the `found:`
+   ticket belongs to a chain or sweep, the FILER sets that chain's
+   milestone on it — creating the milestone if absent (name = the chain's
+   anchor, e.g. `citation-sweep` or the root defect key). One call, part
+   of the file step:
+
+   ```bash
+   gh issue edit N --repo R --milestone "chain-anchor"
+   ```
+
+   Siblings inherit the same milestone from then on; the milestone's
+   open/closed counts are the owner-visible chain progress bar.
+
+## Standing contract: chain/sweep milestones (issue #185)
+
+Coordination state must not live only in flat labels and threads. Every
+chain or sweep files under a GitHub **milestone** named for its anchor
+(the sweep key or root defect):
+
+1. **Filer stamps** — a newly filed ticket that belongs to a chain/sweep
+   carries that milestone; absent, the filer creates it (same anchor
+   name). One `gh issue edit N --repo R --milestone "anchor"` call, part
+   of the file step (checklist item 5 of the discovery protocol above).
+2. **Ship carries** — a shipped PR carries the closing ticket's
+   milestone (`gh pr edit N --repo R --milestone "anchor"`), so the PR
+   list renders chain progress and the milestone closes out with the
+   chain. `scripts/ship-changes.sh` does this automatically (the closing
+   ticket comes from `DSH_CLOSING_TICKET` or the PR body's `#N`
+   reference); an agent pushing and opening its own PR sets it in the
+   same breath as the PR.
+3. **Out of scope by design**: GitHub Projects v2 (tokens lack
+   `read:project`; if enabled later it is a tick-synced index, never
+   per-face field writes). The authoritative queue stays the git
+   claims-stream; milestones are the visibility layer only.
 
 ## Standing contract: issue relationships (issue #115)
 
@@ -156,7 +190,11 @@ setting cannot reach:
    its PR opened in the same session that pushed it. If your lane ships
    for you (the deterministic shipper opens the PRs), confirm the PR
    exists before you exit; if you push yourself, you create the PR. A
-   pushed branch with no PR is an orphan.
+   pushed branch with no PR is an orphan. The PR also **carries the
+   closing ticket's milestone** (issue #185 — `ship-changes.sh` stamps
+   it from `DSH_CLOSING_TICKET` or the PR body's `#N` reference; when
+   you open the PR yourself, set it in the same breath:
+   `gh pr edit N --repo R --milestone "anchor"`).
 2. **DELETE ON CLOSE WITHOUT MERGE** — when a PR of yours closes without
    merging (superseded, wrong approach, duplicate), delete its branch in
    the same breath (`gh pr close NUMBER --delete-branch`; fallback
