@@ -185,7 +185,31 @@ this claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    nothing: omit the line entirely — never write filed-followups: none.
 4. Do NOT fix it in the current claim — that is scope-creep — unless the
    fix is trivial AND in-scope. The claim diff stays on-task; PRs are task
-   work-products, not discoveries.'
+   work-products, not discoveries.
+
+SKILL CANDIDATE — when your work surfaces a NEW reusable procedure (steps
+that worked and a peer would otherwise re-derive), end your final summary
+with a block of this exact shape. Optional: the summary MAY carry one or
+more such blocks, and every rule above is unchanged — this block is
+additive. The WHOLE block rides INSIDE the final result comment (thread
+comments are the only durable channel a runner checkout leaves). The
+lines are emitted UNINDENTED at column 0 — the parser is line-start
+anchored:
+
+SKILL CANDIDATE: <kebab-name>
+WHEN TO USE: <the triggering situation>
+THE PROCEDURE: <the exact steps that worked>
+
+The header line starts "SKILL CANDIDATE: " and the name is kebab-case
+([a-z0-9]+(-[a-z0-9]+)*); both labeled lines are REQUIRED — a partial
+block (a header without both labeled lines, or the labeled lines without
+a header) is not a candidate and the harvester rejects it. A good block
+copies the shape, not a paraphrase (the same canonical example the
+reference doc pins):
+
+SKILL CANDIDATE: merge-adjacency-conflict-dissolve
+WHEN TO USE: the branch conflicts with main only because a sibling PR landed adjacent hunks in the same files, with no semantic overlap
+THE PROCEDURE: 1. git fetch origin main && git merge-base HEAD origin/main. 2. git rebase origin/main and list the conflicted files. 3. For each, git diff --name-only of the sibling PR (gh pr view N --json files) — if your changed lines are disjoint from its changed lines, take theirs wholesale: git checkout --theirs <file> is WRONG for a rebase; instead git checkout origin/main -- <file>, then re-apply only your disjoint hunks with git apply of a hand-built diff. 4. Run the targeted tests for the touched modules before the full gate. 5. Push with --force-with-lease.'
 TASK="${TASK}
 
 ${STANDING_CONTRACT}"
