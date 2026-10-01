@@ -231,14 +231,18 @@ test("consult: profile-config shared_index — unique per-job db under the share
   const d = mkdtempSync(join(tmpdir(), "lp-"));
   const manifest = join(d, "m.json");
   makeProfilePkg(d, "@deepseek-ai/dsh-session-query-sqlite");
-  const sharedIndex = "~/.dsh/lp-test-session-index";
+  // Unique per-RUN dir under the real home: still exercises the ~/ expansion
+  // against the shared per-box parent (~/.dsh), but a fixed name here let two
+  // concurrent suite runs on a multi-tenant box wipe each other's dir with
+  // the rmSync calls below — the load-only flake of issue #140.
+  const sharedIndex = `~/.dsh/lp-test-session-index-${process.pid}-${Date.now()}`;
   writeFileSync(
     manifest,
     JSON.stringify({
       macos: [{ id: "session-query-sqlite", seam: "profile-config", nodes: ["*"], package: "@deepseek-ai/dsh-session-query-sqlite", config: { openAt: "first-search" }, shared_index: sharedIndex }],
     })
   );
-  const indexDir = join(homedir(), ".dsh", "lp-test-session-index");
+  const indexDir = join(homedir(), sharedIndex.replace(/^~\/?/, ""));
   // a stale file older than any keep window must be pruned by the stamp
   rmSync(indexDir, { recursive: true, force: true });
   mkdirSync(indexDir, { recursive: true });
