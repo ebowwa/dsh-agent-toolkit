@@ -167,7 +167,18 @@ test("the skill contract exists in .agents with the skill-file shape", () => {
 const materializeLauncher = (base, { withManifest = true } = {}) => {
   mkdirSync(path.join(base, "scripts"), { recursive: true });
   mkdirSync(path.join(base, "config"), { recursive: true });
-  for (const f of ["run-dsh-agent.sh", "scrub-output.mjs"]) {
+  // The driver's script dependency closure: settings-write.mjs is spawned
+  // by run-dsh-agent.sh for the preserve-by-default settings write
+  // (FleetTower #642) and imports the two lib files — a copy without them
+  // fails loud at the settings step (by design: no unmerged-overwrite
+  // fallback), so the fixture carries the whole closure beside scrub-output.mjs.
+  for (const f of [
+    "run-dsh-agent.sh",
+    "scrub-output.mjs",
+    "settings-write.mjs",
+    "settings-normalize.mjs",
+    "lane-settings-guard.mjs",
+  ]) {
     cpSync(path.join(ROOT, "scripts", f), path.join(base, "scripts", f));
   }
   // settings template + the standing manifest the driver injects
