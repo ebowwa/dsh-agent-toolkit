@@ -26,6 +26,11 @@
 #   DSH_MODEL             head model, "provider/model" (default zai/glm-5.3)
 #   DSH_SUBAGENT_MODEL    subagent/subagent_fork children's model, "provider/model"
 #                         (unset = inherit the head's route)
+#   DSH_FACE_ID           ambient session identity (ebowwa/factory#864):
+#                         minted here when absent — harness session id when
+#                         one exists, else user-p<pid of the driver>; fresh
+#                         per session, stable for its lifetime, children
+#                         inherit
 #   DSH_WEB_SEARCH_CELLS  comma-separated runner names where the local
 #                         web-search-browser provider is mounted (per-cell
 #                         adoption; unset/empty = off everywhere). Requires the
@@ -590,6 +595,24 @@ elif [ -f "$DSH_HOME/settings.yaml" ]; then
 fi
 
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+
+# AMBIENT SESSION IDENTITY (issue ebowwa/factory#864): every spawned
+# session carries DSH_FACE_ID — fresh per session, stable for the
+# session's lifetime, inherited by every child the session spawns (env
+# propagation, so step 50 self-identifies as the face-lock holder).
+# Derivation, in spec order: an existing value wins (the node minted
+# one in agentEnvFor); else the harness session id when one exists;
+# else `user-p<pid of the driver>` — the launcher's PPID is fresh per
+# session and stable for its lifetime, the same fallback shape
+# bin/face-lock's defaultFace mints for bare shells.
+if [ -z "${DSH_FACE_ID:-}" ]; then
+  if [ -n "${DSH_SESSION_ID:-}" ]; then
+    DSH_FACE_ID="$DSH_SESSION_ID"
+  else
+    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p${PPID}"
+  fi
+  export DSH_FACE_ID
+fi
 DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 
 echo "::group::dsh setup" >&2
