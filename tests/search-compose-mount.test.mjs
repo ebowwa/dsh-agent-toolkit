@@ -71,7 +71,17 @@ const HERMETIC_ENV = (() => {
 // working tree.
 const materializeLauncher = (base, { withPlugin = true, pluginFiles = null } = {}) => {
   mkdirSync(path.join(base, "scripts"), { recursive: true });
-  for (const f of ["run-dsh-agent.sh", "scrub-output.mjs"]) {
+  // Same closure rule as decompose-contract's materializeLauncher: the
+  // driver spawns scripts/settings-write.mjs (preserve-by-default settings
+  // write, FleetTower #642), which imports settings-normalize.mjs +
+  // lane-settings-guard.mjs — the copy must carry the whole closure.
+  for (const f of [
+    "run-dsh-agent.sh",
+    "scrub-output.mjs",
+    "settings-write.mjs",
+    "settings-normalize.mjs",
+    "lane-settings-guard.mjs",
+  ]) {
     cpSync(path.join(ROOT, "scripts", f), path.join(base, "scripts", f));
   }
   // The settings template the launcher reads from $SCRIPT_DIR/../config —
@@ -271,8 +281,12 @@ test("same-tree guard: a DSH_HOME at the plugin itself copies nothing and delete
     const modules = path.join(home, "profiles", "node_modules");
     mkdirSync(path.join(modules, "scripts"), { recursive: true });
     mkdirSync(path.join(modules, "config"), { recursive: true });
-    cpSync(path.join(ROOT, "scripts", "run-dsh-agent.sh"), path.join(modules, "scripts", "run-dsh-agent.sh"));
-    cpSync(path.join(ROOT, "scripts", "scrub-output.mjs"), path.join(modules, "scripts", "scrub-output.mjs"));
+    // Same script dependency closure as materializeLauncher above: the
+    // driver spawns settings-write.mjs (+ its two lib imports, FleetTower
+    // #642) out of its own scripts/ dir.
+    for (const f of ["run-dsh-agent.sh", "scrub-output.mjs", "settings-write.mjs", "settings-normalize.mjs", "lane-settings-guard.mjs"]) {
+      cpSync(path.join(ROOT, "scripts", f), path.join(modules, "scripts", f));
+    }
     cpSync(path.join(ROOT, "config", "settings.zai.yaml"), path.join(modules, "config", "settings.zai.yaml"));
     const pkgDir = path.join(modules, "@dsh-agent-toolkit", "tool-search-compose");
     cpSync(PLUGIN, pkgDir, { recursive: true });

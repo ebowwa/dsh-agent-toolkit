@@ -543,9 +543,15 @@ install_gh_release() {
 ensure_cell_tools
 
 
-# Per-run model: "provider/model" (e.g. zai/glm-5.2). Settings are
-# REGENERATED from the pristine template every run (never regex-patched in
-# place): idempotent, immune to drift, restores the default after overrides.
+# Per-run model: "provider/model" (e.g. zai/glm-5.2). Settings are written
+# through the PRESERVE-BY-DEFAULT normalize-write (FleetTower #642; the
+# tower-side lib is #641): the stamped template's own keys win, every key
+# the template does not manage — the user's nested provider routes,
+# per-route credential pins — survives every spawn, and the write is
+# ATOMIC. The old regenerate-by-overwrite (node -e stamp + `|| cp`
+# fallback) is GONE, not degraded: that line was the stomp — it dropped
+# unknown/nested routes on every spawn and followed symlinks into the
+# user's own file (FleetTower #640: the air16 clobber class).
 #   DSH_MODEL=zai/glm-5.2      DSH_MODEL=opencode-go2/deepseek-v4-flash
 EFFECTIVE_MODEL="${DSH_MODEL:-${DSH_DEFAULT_MODEL:-zai/glm-5.3}}"
 case "$EFFECTIVE_MODEL" in
@@ -555,12 +561,28 @@ esac
 PROVIDER="${EFFECTIVE_MODEL%/*}"
 MODEL_ID="${EFFECTIVE_MODEL#*/}"
 
+# Symlink refusal BEFORE both settings write sites (the #641 lane-settings-
+# guard rule, ported flat: scripts/lane-settings-guard.mjs). -L tests the
+# link ITSELF, never its target — a symlinked lane settings file would put
+# every write (this stamp AND the runtime normalizer's own write later in
+# the same spawn) inside the user's file. That is a misconfigured lane:
+# fail the spawn loudly, touch nothing.
+if [ -n "${DSH_HOME:-}" ] && [ -L "$DSH_HOME/settings.yaml" ]; then
+  echo "error: refusing spawn — $DSH_HOME/settings.yaml is a SYMLINK. Every settings write would stomp the link target (the 2026-09-21/28/30 settings.yaml clobber class); replace it with a real lane-owned file." >&2
+  exit 2
+fi
+
 SETTINGS_TEMPLATE="${DSH_SETTINGS_TEMPLATE:-$SCRIPT_DIR/../config/settings.zai.yaml}"
 if [ -f "$SETTINGS_TEMPLATE" ]; then
   mkdir -p "$DSH_HOME"
-  node -e 'const fs=require("fs");const t=fs.readFileSync(process.argv[1],"utf8");const out=t.replace(/^  model: \S+$/m,"  model: "+process.argv[2]);fs.writeFileSync(process.argv[3],out);' \
-    "$SETTINGS_TEMPLATE" "$MODEL_ID" "$DSH_HOME/settings.yaml" \
-    || cp "$SETTINGS_TEMPLATE" "$DSH_HOME/settings.yaml"
+  # settings-write.mjs: guard → stamp → merge-preserve → atomic write.
+  # First boot (file absent) needs no YAML runtime; an existing file is
+  # normalized with the stamped template's keys winning and everything
+  # else preserved (Bun.YAML → node:yaml → js-yaml from the dsh tree).
+  # Any refusal exits nonzero — the spawn FAILS, the file stays untouched;
+  # there is deliberately no unmerged-overwrite fallback.
+  node "$SCRIPT_DIR/settings-write.mjs" "$DSH_HOME/settings.yaml" "$SETTINGS_TEMPLATE" "$MODEL_ID" \
+    || { rc=$?; echo "error: settings write refused (exit $rc) — $DSH_HOME/settings.yaml left untouched" >&2; exit "$rc"; }
   echo "run model: $PROVIDER/$MODEL_ID${DSH_MODEL:+ (overridden)}" >&2
 elif [ -f "$DSH_HOME/settings.yaml" ]; then
   # no template available: leave existing settings (fleet default assumed)
