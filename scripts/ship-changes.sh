@@ -16,6 +16,9 @@
 # make the script runnable anywhere):
 #   GH_TOKEN                required — the push + gh identity
 #   DSH_SHIP_REPO           repo to ship to (default $GITHUB_REPOSITORY)
+#   DSH_SHIP_BASE           the PR base branch for the freshness preflight
+#                           (factory#840); unset = the remote's HEAD branch
+#                           (default branch) via `git remote show origin`
 #   DSH_RUN_ID              run identifier for branch naming (default $GITHUB_RUN_ID)
 #   DSH_RUN_ATTEMPT         attempt counter (default ${GITHUB_RUN_ATTEMPT:-1})
 #   DSH_WORKTREE            the checkout the agent worked in (default $GITHUB_WORKSPACE)
@@ -144,19 +147,94 @@ ship_milestone() {
   done
 }
 
-# open_pr <head-branch> <title> <gh-pr-create args...>: create the PR and
+# freshness_preflight <head-branch>: the PR-mint freshness guard
+# (ebowwa/factory#840, the #830 class — a stale-base PR duplicated a mirror
+# commit that had landed on main 9 minutes before the PR head was committed,
+# and its as-merge tree did not compile). Before the PR opens, compare the
+# head branch's merge-base against the LIVE base tip:
+#
+#   - fresh (merge-base == tip): nothing, silently — the common case must
+#     stay zero-cost;
+#   - stale (behind > 0): rebase the head onto the base tip and re-push with
+#     --force-with-lease, so the tree GitHub will merge is the tree that can
+#     still be gated. The rebase runs ONLY on the CURRENT branch (the caller
+#     checked it out); a detached/other-branch mint skips the cure and warns.
+#     A conflicted rebase aborts clean (git rebase --abort) and warns — the
+#     fix round owns it, the ship never dies;
+#   - same-scope overlap (a base commit since the branch point touched a file
+#     the head branch also touched): a loud note even when the rebase was
+#     clean — adjacent auto-merged hunks are exactly how a duplicate fix
+#     compiles locally but not as-merge (#830's duplicate object keys).
+#
+# Degrade-safe: any unresolvable piece (no base, fetch failure, merge-base
+# failure — shallow history is the usual cause) ships exactly as before with
+# an UNVERIFIED-freshness warning; the guard must never fail a ship.
+freshness_preflight() {
+  local head_b="$1" base="${DSH_SHIP_BASE:-}" mb tip behind overlap
+  if [ -z "$base" ]; then
+    base="$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || true)"
+  fi
+  if [ -z "$base" ]; then
+    echo "freshness: base branch unresolvable — NOT verified (set DSH_SHIP_BASE)" >&2
+    echo "freshness UNVERIFIED (base unresolvable)"
+    return 0
+  fi
+  if ! git fetch origin "$base" --quiet 2>/dev/null; then
+    echo "freshness: fetch of origin/$base failed — NOT verified" >&2
+    echo "freshness UNVERIFIED (fetch of origin/$base failed)"
+    return 0
+  fi
+  mb="$(git merge-base "$head_b" "origin/$base" 2>/dev/null || true)"
+  tip="$(git rev-parse "origin/$base" 2>/dev/null || true)"
+  if [ -z "$mb" ] || [ -z "$tip" ]; then
+    echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) — NOT verified" >&2
+    echo "freshness UNVERIFIED (merge-base unresolvable)"
+    return 0
+  fi
+  if [ "$mb" = "$tip" ]; then
+    return 0
+  fi
+  behind="$(git rev-list --count "$mb..origin/$base" 2>/dev/null || echo '?')"
+  overlap="$(comm -12 <(git diff --name-only "$mb" "origin/$base" 2>/dev/null | sort) <(git diff --name-only "$mb" "$head_b" 2>/dev/null | sort) | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$(git branch --show-current 2>/dev/null)" = "$head_b" ]; then
+    if git rebase "origin/$base" >/dev/null 2>&1; then
+      if git push --force-with-lease origin "$head_b" >/dev/null 2>&1; then
+        echo "rebased onto origin/$base (was $behind behind)"
+      else
+        echo "::warning::rebased $head_b onto origin/$base but the force-with-lease re-push FAILED — remote head is stale, the PR may show the pre-rebase tree" >&2
+        echo "rebased locally but re-push FAILED ($head_b was $behind behind)"
+      fi
+    else
+      git rebase --abort >/dev/null 2>&1 || true
+      echo "::warning::$head_b is $behind behind origin/$base and the rebase CONFLICTED (aborted clean) — fix round must rebase before merge" >&2
+      echo "rebase CONFLICTED ($head_b was $behind behind origin/$base)"
+    fi
+  else
+    echo "::warning::$head_b is $behind behind origin/$base and is not the checked-out branch — no rebase attempted; update before merge" >&2
+    echo "stale, no rebase attempted ($head_b was $behind behind origin/$base)"
+  fi
+  if [ -n "$overlap" ]; then
+    echo "::warning::same-scope overlap since the branch point: $overlap — base commits touched files this branch also touches; verify the PR does not duplicate already-landed work (factory#830)" >&2
+    echo "same-scope overlap: $overlap"
+  fi
+}
+
+# open_pr <head-branch> <title> <gh pr create args...>: create the PR and
 # dispatch its review with the same degrade-or-loud treatment as the
 # relay/reply guards — gh missing is a ::warning:: plus a precise ship note
 # AFTER a successful push, never a bare 127 that leaves "branch pushed, no
 # PR, no review" recorded only as a generic failure (review r2 finding 5).
 open_pr() {
-  local head_b="$1" title="$2" PR_OUT PR_NUM
+  local head_b="$1" title="$2" PR_OUT PR_NUM FRESH
   shift 2
   if ! command -v gh >/dev/null 2>&1; then
     echo "::warning::gh unavailable — $head_b pushed, PR NOT opened (open it from the branch); no review dispatched" >&2
     echo "pushed $head_b (gh unavailable: PR not opened)"
     return 0
   fi
+  # Freshness BEFORE the mint (factory#840): a stale base is cured (rebase +
+  # re-push) or named loudly before the PR exists, never after.
+  FRESH="$(freshness_preflight "$head_b")"
   PR_OUT="$(gh pr create --repo "$DSH_SHIP_REPO" --head "$head_b" \
     --title "$title" "$@" 2>&1 || true)"
   case "$PR_OUT" in
@@ -170,13 +248,13 @@ open_pr() {
       fi
       if [ -n "$PR_NUM" ] && [ -n "${REVIEW_WORKFLOW:-}" ]; then
         if gh workflow run "$REVIEW_WORKFLOW" --repo "$DSH_SHIP_REPO" -f pr="$PR_NUM" 2>/dev/null; then
-          echo "shipped [$head_b]($PR_OUT); review dispatched"
+          echo "shipped [$head_b]($PR_OUT); review dispatched${FRESH:+; $FRESH}"
         else
           echo "review dispatch failed for #$PR_NUM (run: gh workflow run $REVIEW_WORKFLOW -f pr=$PR_NUM)" >&2
-          echo "shipped [$head_b]($PR_OUT)"
+          echo "shipped [$head_b]($PR_OUT)${FRESH:+; $FRESH}"
         fi
       else
-        echo "shipped [$head_b]($PR_OUT)"
+        echo "shipped [$head_b]($PR_OUT)${FRESH:+; $FRESH}"
       fi;;
     *)
       echo "gh pr create failed for $head_b: $PR_OUT" >&2
