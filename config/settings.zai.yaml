@@ -18,6 +18,14 @@
 # `zai-completions` keeps the old OpenAI-compatible coding PAAS door as a
 # per-run escape hatch (DSH_MODEL=zai-completions/<id>).
 #
+# INPUT TYPES (2026-10-03): every model the plan can serve declares its input
+# types explicitly. Fleet law: under-claiming refuses an image at attach time,
+# over-claiming dies mid-run — omission (implicit text-only) hides the claim,
+# so no more. Verified live on the coding door, one 1x1-png image turn + text
+# control per model: glm-5.3-flash answers images (200); every OTHER reachable
+# model rejects them with 400 code 1210 "messages.content.type is invalid,
+# allowed values: ['text']" (text controls all 200).
+#
 # The models list is the live endpoint catalog (verified against the /models
 # API) so per-run overrides (DSH_MODEL=zai/<id>) resolve.
 #
@@ -47,46 +55,74 @@ llm-pi-ai:
           name: GLM-5.3
           contextWindow: 1000000
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5.3-flash
           name: GLM-5.3 Flash
           contextWindow: 1000000
           maxTokens: 131072
+          # native multimodal — the ONLY reachable model on this catalog that
+          # takes image turns (200 live 2026-10-03; all others 400 code 1210)
+          input:
+            - text
+            - image
         - id: glm-5.3-flashx
           name: GLM-5.3 FlashX
           contextWindow: 1000000
           maxTokens: 131072
+          # PLAN-GATED: every request (text included) dies with 429 code 1311
+          # "subscription plan does not yet include access" (2026-10-03), so
+          # its input types are UNVERIFIABLE here — no claim is made on
+          # purpose. Revisit when the plan admits it; consider dropping the
+          # entry until then (an override that always 429s is dead weight).
         - id: glm-5.2
           name: GLM-5.2
           contextWindow: 1000000
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5.1
           name: GLM-5.1
           contextWindow: 202752
           maxTokens: 32768
+          input:
+            - text
         - id: glm-5-turbo
           name: GLM-5 Turbo
           contextWindow: 204800
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5
           name: GLM-5
           contextWindow: 204800
           maxTokens: 131072
+          input:
+            - text
         - id: glm-4.7
           name: GLM-4.7
           contextWindow: 200000
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.6
           name: GLM-4.6
           contextWindow: 200000
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.5
           name: GLM-4.5
           contextWindow: 131072
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.5-air
           name: GLM-4.5 Air
           contextWindow: 131072
           maxTokens: 65536
+          input:
+            - text
     zai-completions:
       displayName: Z.AI Coding Plan (completions door, fallback)
       apiKeyEnv: ZAI_API_KEY
@@ -100,48 +136,75 @@ llm-pi-ai:
       streamIdleTimeoutMs: 600000
       api: openai-completions
       baseURL: https://api.z.ai/api/coding/paas/v4
+      # Same catalog + input-type declarations as the `zai` route (evidence
+      # in this file's header) — the doors serve one catalog; keep in lockstep.
       models:
         - id: glm-5.3
           name: GLM-5.3
           contextWindow: 1000000
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5.3-flash
           name: GLM-5.3 Flash
           contextWindow: 1000000
           maxTokens: 131072
+          # native multimodal — the ONLY reachable model on this catalog that
+          # takes image turns (200 live 2026-10-03; all others 400 code 1210)
+          input:
+            - text
+            - image
         - id: glm-5.3-flashx
           name: GLM-5.3 FlashX
           contextWindow: 1000000
           maxTokens: 131072
+          # PLAN-GATED (429 code 1311 on every request, 2026-10-03) — no input
+          # claim on purpose; see the twin note on the `zai` route.
         - id: glm-5.2
           name: GLM-5.2
           contextWindow: 1000000
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5.1
           name: GLM-5.1
           contextWindow: 202752
           maxTokens: 32768
+          input:
+            - text
         - id: glm-5-turbo
           name: GLM-5 Turbo
           contextWindow: 204800
           maxTokens: 131072
+          input:
+            - text
         - id: glm-5
           name: GLM-5
           contextWindow: 204800
           maxTokens: 131072
+          input:
+            - text
         - id: glm-4.7
           name: GLM-4.7
           contextWindow: 200000
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.6
           name: GLM-4.6
           contextWindow: 200000
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.5
           name: GLM-4.5
           contextWindow: 131072
           maxTokens: 65536
+          input:
+            - text
         - id: glm-4.5-air
           name: GLM-4.5 Air
           contextWindow: 131072
           maxTokens: 65536
+          input:
+            - text
