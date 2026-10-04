@@ -28,9 +28,11 @@
 #                         (unset = inherit the head's route)
 #   DSH_FACE_ID           ambient session identity (ebowwa/factory#864):
 #                         minted here when absent — harness session id when
-#                         one exists, else user-p<pid of the driver>; fresh
-#                         per session, stable for its lifetime, children
-#                         inherit
+#                         one exists, else user-p<pid of the driver> (the
+#                         driver's OWN pid: concurrent sibling drivers of
+#                         one parent mint distinct faces, issue #278);
+#                         fresh per launch, stable for its lifetime,
+#                         children inherit
 #   DSH_WEB_SEARCH_CELLS  comma-separated runner names where the local
 #                         web-search-browser provider is mounted (per-cell
 #                         adoption; unset/empty = off everywhere). Requires the
@@ -632,14 +634,18 @@ export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 # propagation, so step 50 self-identifies as the face-lock holder).
 # Derivation, in spec order: an existing value wins (the node minted
 # one in agentEnvFor); else the harness session id when one exists;
-# else `user-p<pid of the driver>` — the launcher's PPID is fresh per
-# session and stable for its lifetime, the same fallback shape
-# bin/face-lock's defaultFace mints for bare shells.
+# else `user-p<pid of the driver>` — the driver's OWN pid ($$): fresh
+# per LAUNCH by construction, so concurrent sibling drivers of one
+# parent mint DISTINCT faces (issue #278: the PPID form was per-PARENT,
+# and two siblings shared one face — the foreign-face misattribution
+# class this identity exists to close), stable for the driver's
+# lifetime, the same fallback shape bin/face-lock's defaultFace mints
+# for bare shells.
 if [ -z "${DSH_FACE_ID:-}" ]; then
   if [ -n "${DSH_SESSION_ID:-}" ]; then
     DSH_FACE_ID="$DSH_SESSION_ID"
   else
-    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p${PPID}"
+    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p$$"
   fi
   export DSH_FACE_ID
 fi
