@@ -49,6 +49,16 @@ run straight off the tree on Node.
   `agent-comment-thin.yml` + `scripts/dsh-worker.sh`) and legacy (the
   in-job `agent-comment.yml` family). Legacy removal is the next major's
   deliberate breaking change, not a drive-by cleanup.
+- **One open ticket, one live carrier (claim dedup, #414).** The
+  lane-pass preamble lives on two surfaces — `DEFAULT_TASK` in
+  `scripts/run-dsh-agent.sh` and the `agent-dispatch-thin.yml` fallback —
+  and both send the claiming agent through a carrier-PR check
+  (`gh pr list --repo R --state open`, match the issue ref) before work
+  starts: a live carrier (open, updated within 3 days) means skip the
+  ticket; a stale one (closed without merge, or untouched 3+ days) means
+  take over and name it. Reference text: `.agents/README.md`; the pin is
+  `tests/carrier-dedup-contract.test.mjs`. Change one surface, change
+  all three — a drift between them is a defect.
 
 ## Where things live
 

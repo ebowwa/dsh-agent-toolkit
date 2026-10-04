@@ -49,6 +49,35 @@ claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    Siblings inherit the same milestone from then on; the milestone's
    open/closed counts are the owner-visible chain progress bar.
 
+## Standing contract: lane-pass claim dedup (issue #414)
+
+**One open ticket, one live carrier.** The lane-pass protocol picks a
+ticket by fleet priority, but picking is not claiming: a ticket that
+already has an open PR carrying it is TAKEN. Working it anyway mints a
+duplicate carrier — each duplicate costs a full review pass and a
+pile-gate slot while genuinely unclaimed tickets sit idle (measured
+2026-10-04 on dsh-agent-toolkit: ~60 open PRs, one ticket raced by 8
+concurrent cells). The claim step dedups:
+
+1. **Check before you claim.** For candidate ticket N in repo R, run
+   `gh pr list --repo R --state open` and match the issue ref N in the
+   open PR titles/bodies (`--search "N in:title"` or an equivalent
+   read). No match → the ticket is yours.
+2. **A live carrier blocks.** An open carrier updated within the last
+   3 days is live: that ticket is taken — skip to the next qualifying
+   ticket and say so in the exit summary (e.g. "skipped #N — live
+   carrier #M").
+3. **A stale carrier yields.** A carrier closed without merge, or open
+   but untouched for 3+ days, is stale: you may take the ticket over —
+   and the exit summary names the superseded carrier.
+
+The rule rides the driver's lane-pass preamble (`DEFAULT_TASK` in
+`scripts/run-dsh-agent.sh`) and the dispatch workflow fallback
+(`.github/workflows/agent-dispatch-thin.yml`) — the two preambles stay
+in step, and `tests/carrier-dedup-contract.test.mjs` is the structural
+pin: a drift between the surfaces, or a revert of the dedup clause,
+goes red there.
+
 ## Standing contract: chain/sweep milestones (issue #185)
 
 Coordination state must not live only in flat labels and threads. Every
