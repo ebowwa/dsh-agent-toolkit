@@ -3,7 +3,9 @@
 # When scripts or reusable workflows change on main, this agent:
 #   1. computes the next minor tag,
 #   2. REVIEWS its own diff (agent pass): what changed, is any consumer's
-#      shell input broken, is the change safe to auto-propagate,
+#      shell input broken, is the change safe to auto-propagate — an EMPTY
+#      watched-path diff skips both the review and the tag green, ZERO
+#      agent passes (issues #231, #385),
 #   3. tags ONLY if the review approves (TAG or TAG-WITH-FINDINGS; findings
 #      ride along as release notes),
 #   4. writes a release on the tag with the agent's review as notes, and
