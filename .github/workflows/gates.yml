@@ -101,3 +101,16 @@ jobs:
         # bare --test auto-discovers *.test.mjs (a directory argument is not
         # portable across the node versions on the runner lanes)
         run: node --test
+      - name: Fleet manifest drift fence
+        # config/fleet-manifest.md is the standing fleet context injected into
+        # every dispatched task. #397: it rotted 8 days behind the tower
+        # registry — two air machines (three nodes) absent from the table while
+        # one of them minted ~half the day's claim rows, and nothing checked.
+        # The fence diffs the table's node ids against FleetTower's live
+        # fleet.manifest.json: a node added or removed there without this
+        # table following fails HERE, naming the node. No cross-repo
+        # credential on the cell → the tool SKIPs loud (exit 0 with the
+        # reason in the log), never a silent verdict either way.
+        env:
+          GH_TOKEN: ${{ secrets.TOWER_PROBE_PAT || github.token }}
+        run: node scripts/fleet-manifest-drift.mjs
