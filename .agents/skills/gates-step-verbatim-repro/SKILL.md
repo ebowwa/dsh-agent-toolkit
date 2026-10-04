@@ -12,24 +12,35 @@ showed it. Approximate local re-creations diverge exactly where the bug lives
 
 ## Procedure
 
-1. **Extract the step's `run: |` block byte-for-byte** from the workflow YAML,
-   not from memory:
+1. **Mint a per-run scratch path** — never a fixed name: two same-box
+   siblings repro'ing DIFFERENT steps through one shared scratch file
+   silently run each other's bytes (#355, the #346 clobber class). Keep the
+   X-run TRAILING — BSD `mktemp` rejects a suffix after the X's:
 
-       python3 - <<'EOF'
+       step="$(mktemp "${TMPDIR:-/tmp}/dsh-step.XXXXXX")"
+
+2. **Extract the step's `run: |` block byte-for-byte** from the workflow YAML,
+   not from memory, into that minted path — pass it as argv so the quoted
+   heredoc needs no expansion (a `<<EOF` heredoc would corrupt any `$` in
+   the step text):
+
+       python3 - "$step" <<'EOF'
+       import sys
        s = open('.github/workflows/<workflow>.yml').read()
        i = s.index('run: |', s.index('<step name anchor>'))
        j = s.index('      - name:', i)          # next step at same indent
-       open('/tmp/step.sh','w').write(s[i+7:j])
+       open(sys.argv[1],'w').write(s[i+7:j])
        EOF
 
-2. **Syntax-check it before running**: `bash -n /tmp/step.sh`.
-3. **Wipe the state the step mutates** (the step assumes a fresh runner):
+3. **Syntax-check it before running**: `bash -n "$step"`.
+4. **Wipe the state the step mutates** (the step assumes a fresh runner):
    `rm -rf node_modules` (or the lockfile/artifacts the step regenerates).
    A repro against dirty state "passes" for the wrong reason.
-4. **Run it**: `bash /tmp/step.sh` from the repo root — CI-faithful output
+5. **Run it**: `bash "$step"` from the repo root — CI-faithful output
    from the same commands, including `set -euo pipefail` and env lines that
-   were part of the block.
-5. Divergence between local repro and CI means you extracted the wrong block
+   were part of the block. Then remove the scratch: `rm -f "$step"` —
+   the extraction is disposable evidence, not a leftover.
+6. Divergence between local repro and CI means you extracted the wrong block
    or missed a `env:`/`if:` at the step or job level — re-read the YAML.
 
 ## Guardrails
