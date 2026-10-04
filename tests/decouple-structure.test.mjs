@@ -146,6 +146,24 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
 });
+test("#305: the 3a systemd unit example invokes the worker via /bin/bash, never a direct exec", () => {
+  // The repo ships scripts mode 644 — a direct `exec <script>` dies
+  // "Permission denied" (exit 126) before the worker runs, so an
+  // operator copying the unit arms a service that dies on every start
+  // (live-proven for the cron sweep; install-worker.test.mjs pins the
+  // same discipline for the cron line). Pin the rule, not the sentence
+  // shape: find the unit's --loop line wherever the prose puts it.
+  const doc = read("docs/decoupled-worker.md");
+  const loopLine = doc
+    .split("\n")
+    .find((l) => l.includes("exec") && l.includes("dsh-worker.sh --loop")) ?? "";
+  assert.ok(loopLine !== "", "doc must carry a systemd unit line running dsh-worker.sh --loop");
+  assert.match(
+    loopLine,
+    /exec \/bin\/bash \$HOME\/\S*\/scripts\/dsh-worker\.sh --loop/,
+    "the 3a systemd example must exec via /bin/bash (scripts are mode 644 — direct exec is Permission denied)",
+  );
+});
 test("review queue: worker claims dsh/review items and runs review-pr.sh on them", () => {
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /REVIEW_LABEL="\$\{DSH_WORKER_REVIEW_LABEL:-dsh\/review\}"/);
