@@ -145,6 +145,14 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /dsh\/queued/);
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
+  // #305: the manual systemd (3a) example must invoke the worker via
+  // /bin/bash — the repo ships scripts mode 644, so a direct exec dies
+  // "Permission denied" (exit 126) on every unit start (the same
+  // invocation discipline install-worker.sh's cron line pins: the sweep
+  // runs via `bash <script>`, NEVER a direct exec).
+  const unitLine = doc.split("\n").find(l => /exec .+dsh-worker\.sh --loop/.test(l));
+  assert.ok(unitLine, "the manual systemd (3a) unit example line exists");
+  assert.match(unitLine, /exec \/bin\/bash \S+scripts\/dsh-worker\.sh --loop/, "3a unit invokes the worker via /bin/bash (scripts are mode 644 — direct exec is Permission denied, exit 126)");
 });
 test("review queue: worker claims dsh/review items and runs review-pr.sh on them", () => {
   const w = read("scripts/dsh-worker.sh");

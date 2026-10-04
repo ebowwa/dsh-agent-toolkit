@@ -79,7 +79,7 @@ chmod 600 "$HOME/.dsh-worker/env"
 # 3a. systemd (the box has passwordless sudo — the issue #6 path):
 #     sudo ~/factory-runner/svc.sh install && sudo ~/factory-runner/svc.sh start
 #     (or a unit running: bash -c 'set -a; . $HOME/.dsh-worker/env; set +a; \
-#      exec $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
+#      exec /bin/bash $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
 
 # 3b. cron keepalive, one line — starts within 60s, self-heals after
 #     reboots and job-cleanup kills (the pattern factory-runner proves):
