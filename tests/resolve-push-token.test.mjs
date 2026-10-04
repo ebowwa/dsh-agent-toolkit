@@ -186,14 +186,29 @@ test("hung doppler fetch is watchdog-bounded (falls back, does not hold the job)
   // watchdog must cut it at DOPPLER_FETCH_TIMEOUT_S and take the typed
   // fallback — the fetch-side twin of the --max-time 15 curl pin below
   // (review round-1 finding 4: the fetch was the one unbounded call).
+  //
+  // Load tolerance (#389): the FUNCTIONAL proof of the kill is the
+  // fallback path itself — an unwatched fetch sleeps DOPPLER_HANG_S out,
+  // exits 0 with DOPPLER_OUT, and the resolver takes the doppler token
+  // (different stdout line, different header), so the two assertions
+  // below can only pass if the watchdog fired. The elapsed bound is only
+  // the timing witness, and its margins are DERIVED, not picked: a
+  // bounded run costs the 1s timer plus spawn+load overhead — 5699ms
+  // isolated, 10717ms in a full gate on a loaded cell (#389 receipts,
+  // same tree) — so a 10s bound reds bounded runs by construction. The
+  // hang floor is 60s (what an unbounded run must pay before the shim
+  // answers); 40s sits ~3.7x above the worst observed loaded BOUNDED
+  // run and 20s under the unbounded floor — teeth in both directions
+  // regardless of box load. Raising the hang costs no suite time: the
+  // watchdog still cuts at DOPPLER_FETCH_TIMEOUT_S.
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "30", DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_HANG_S: "60", DOPPLER_FETCH_TIMEOUT_S: "1",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 10_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.ok(Date.now() - t0 < 40_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
@@ -290,17 +305,23 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // NON-NUMERIC one: `sleep "abc"` fails instantly, the watchdog
   // subshell dies silently, and a hung fetch is unbounded again. So the
   // pin rides "abc" — the case `:-` alone lets through — and asserts
-  // the guard's 20s default still fires: the doppler shim sleeps 25s,
-  // comfortably past 20, so the ONLY bounded outcome is the watchdog
-  // kill + typed fallback.
+  // the guard's 20s default still fires: the doppler shim sleeps past
+  // the default, so the ONLY bounded outcome is the watchdog kill +
+  // typed fallback. The unbounded floor is the 90s hang; the elapsed
+  // bound (50s) carries the same #389 load math as the numeric-timeout
+  // leg: a bounded run pays the 20s timer + overhead (observed ~20.3s
+  // here, worse under full-gate load), while an unbounded one pays the
+  // full hang — 50s keeps ≥1.7x headroom over any loaded bounded run
+  // and still sits 40s under the floor. The 90s hang costs no suite
+  // time: the default watchdog cuts at 20s.
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "25", DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_HANG_S: "90", DOPPLER_FETCH_TIMEOUT_S: "abc",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 30_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.ok(Date.now() - t0 < 50_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
