@@ -72,8 +72,31 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "--- diff scope $BASE..HEAD ---"
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
+          # Empty-range fence (issue #385, the #231 racing shape): a racing
+          # run adopts the just-pushed tag as BASE while its HEAD is still
+          # that same merge — the gated diff is EMPTY, yet the flow below
+          # spent a full agent review pass on nothing before the tag step
+          # gave up. Detect it here — the only step that knows the range —
+          # and stamp it as an output both later steps skip on: an empty
+          # range costs ZERO agent passes. Pathspec mirrors the --stat
+          # line exactly (the surface agreement drift-gate.test.mjs pins).
+          if git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config; then
+            EMPTY=true
+          else
+            EMPTY=false
+          fi
+          echo "empty=$EMPTY" >> "$GITHUB_OUTPUT"
+          if [ "$EMPTY" = true ]; then
+            echo "empty gated range $BASE..HEAD — no agent review, no tag, no release (zero agent passes; issue #385)"
+          fi
 
       - name: Agent reviews its own diff (release gate)
+        # #385: an empty gated range must spend ZERO agent passes — the
+        # scope step already stamped it. Fail-open by shape: `!= 'true'`
+        # still runs the review when the output is missing (a scope
+        # regression costs one agent pass, never a silently skipped
+        # release).
+        if: steps.scope.outputs.empty != 'true'
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +165,11 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        # #385: skip on the same fence as the review — with the review
+        # skipped there is no VERDICT to gate on, and running anyway would
+        # hit the verdict case's fail-closed exit 1 and turn the
+        # empty-range skip into a red run.
+        if: steps.scope.outputs.empty != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
