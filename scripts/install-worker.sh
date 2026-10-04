@@ -10,7 +10,7 @@
 #   2. the worker env file (0600) at $DSH_WORKER_HOME/env (default
 #      ~/.dsh-worker/env) — the ONLY place the credentials ever land
 #      (never the cron line, never the log);
-#   3. the cron keepalive line: every minute, pgrep-guard, RE-PIN the
+#   3. the cron keepalive line: every minute, flock-guard, RE-PIN the
 #      toolkit to the moving `v1` tag (fetch --tags + checkout v1 — the
 #      audited-release pin drift-check advances), source the env file,
 #      run one sweep. The worker's code therefore updates itself only
