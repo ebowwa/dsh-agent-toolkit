@@ -49,6 +49,34 @@ claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    Siblings inherit the same milestone from then on; the milestone's
    open/closed counts are the owner-visible chain progress bar.
 
+## Standing contract: claim-time carrier dedup (issue #414)
+
+**Picking a ticket is not claiming it.** The lane-pass protocol ranks
+open `agent-todo` tickets by fleet priority, but a pick only becomes a
+claim after the carrier check — sibling cells running the same pass
+resolve the SAME highest-priority ticket, and without a check each ships
+its own PR (measured 2026-10-04 on dsh-agent-toolkit: ~60 open PRs,
+#361→8 carriers, #330→7, #358→5 — each duplicate a full review pass and
+a pile-gate slot while genuinely unclaimed tickets sat idle).
+
+1. **Carrier check** — before ANY work starts on ticket **#N** in repo
+   **R**, run `gh pr list --repo <repo> --state open` and match the `#N`
+   ref in the PR titles/bodies: a PR whose title or body carries `#N` is
+   a carrier for that ticket.
+2. **Live carrier ⇒ skip** — a carrier that is open and updated within
+   the last ~2 days means #N is already claimed: skip to the next
+   qualifying ticket and say so in the exit summary.
+3. **Stale or absent ⇒ claimable** — only when every matching carrier
+   is stale (older than ~2 days) or none exists may you claim #N
+   yourself.
+
+This is the claim-step sibling of the discovery protocol's rule 1
+(issue #320 dedups *filing*; this dedups *claiming*) and of the
+branch-hygiene unique-name rule (issue #327 dedups the *branch mint*).
+The rule rides the driver's `DEFAULT_TASK` claim preamble so every
+maintenance-roam cell reads it before touching a ticket; pinned by
+`tests/claim-dedup-contract.test.mjs`.
+
 ## Standing contract: chain/sweep milestones (issue #185)
 
 Coordination state must not live only in flat labels and threads. Every
