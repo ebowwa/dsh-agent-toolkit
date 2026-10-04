@@ -58,8 +58,11 @@ serialization matches the CI flow: the worker takes the **last** trusted
 pattern — and installs everything below idempotently: credentials from the
 repo's `TOWER_PROBE_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
 env file, and the cron line re-pins the toolkit to the moving `v1` tag
-every sweep, so the worker's code updates exclusively through
-drift-check's audited releases.
+every sweep through `scripts/re-pin-toolkit.sh` — a GUARDED re-pin that
+refuses (loudly, into worker.log) while the shared checkout carries
+tracked modifications or a working branch, so an update never destroys
+in-flight agent work sitting in the tree (issue #276) — and the worker's
+code updates exclusively through drift-check's audited releases.
 
 The manual equivalent (what the installer automates; cron keepalive needs
 no sudo, `svc.sh`/systemd when sudo exists — issue #6):

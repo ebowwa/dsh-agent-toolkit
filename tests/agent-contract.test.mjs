@@ -109,6 +109,19 @@ test("no-scope-creep is stated as a refusal with the trivial AND in-scope carve-
   }
 });
 
+test("the live-checkout discipline is stamped into every task and documented (issue #276)", () => {
+  // stamped: the rule rides INSIDE the single-quoted contract assignment
+  const assign = driverSrc.match(/STANDING_CONTRACT='[^']*'/);
+  assert.ok(assign, "one balanced single-quoted assignment");
+  assert.match(assign[0], /LIVE CHECKOUTS — never work in-place in a shared lane checkout/, "the rule is inside the stamped contract");
+  assert.match(assign[0], /private clone or worktree/, "the prescribed alternative");
+  assert.match(assign[0], /DSH_AGENT_TOOLKIT_DIR/, "names the shared checkout so a lane agent recognizes it");
+  // documented: .agents/README.md carries the long-form section
+  assert.match(agentsReadme, /live checkout discipline \(issue #276\)/, "the long-form section exists");
+  assert.match(agentsReadme, /never in-place in the shared checkout/, "the same rule, long-form");
+  assert.match(agentsReadme, /re-pin-toolkit\.sh/, "cites the guard that closed the destructive half");
+  assert.match(agentsReadme, /worktree-over-stash/, "links the worktree-lane skill");
+});
 test("the discovery protocol carries the pre-file dedup check (issue #320)", () => {
   // Sibling agents working sibling PRs of one root issue each discovered
   // the SAME follow-on defect and each minted a found: ticket — #309 and

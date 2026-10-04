@@ -237,6 +237,27 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: live checkout discipline (issue #276)
+
+The shared toolkit checkout on a lane node (`$DSH_AGENT_TOOLKIT_DIR`,
+the `~/dsh-bot`-class directories) is **infrastructure, not a
+workspace**: a per-minute keepalive re-pins it to the moving `v1`
+release tag (`scripts/re-pin-toolkit.sh`, armed by
+`scripts/install-worker.sh`). The #276 receipt — an agent's in-place
+edits destroyed twice in ten minutes when drift-check advanced the tag —
+closed the destructive half (the re-pin now REFUSES while the tree
+carries tracked modifications or a working branch, logging one loud
+refusal per sweep to `worker.log` instead of silently discarding), and
+this contract closes the other half:
+
+**Do claim work in a private clone or worktree of the target repo —
+never in-place in the shared checkout.** The refusal is the loud alarm
+that a box is stranded on an old release, not a workspace to ride: a
+dirty shared tree blocks that box's updates until an operator cleans
+it, so an agent working in-place trades its own work's safety for the
+whole box's currency. See
+[`skills/worktree-over-stash/`](skills/worktree-over-stash/SKILL.md)
+for the worktree lane pattern.
 ## Standing contract: claim-time carrier dedup (issue #414)
 
 **Never work a ticket a live carrier already holds.** The lane-pass claim
