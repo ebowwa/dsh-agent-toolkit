@@ -127,6 +127,36 @@ if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
 fi
+# A tower-minted claim can arrive with the literal token `undefined` (or
+# `null`) as its task body — a JS undefined/null stringified in the mint
+# chain (issues #360/#361: on 2026-10-04, 185+ task-less claim rows spawned
+# full agent sessions whose ENTIRE task was the 9-char token, burning pool
+# seats and throttle-wave retries to conclude "there is no task"). The
+# `${1:-$DEFAULT_TASK}` fallback above only guards unset/EMPTY — a
+# non-empty token passes verbatim, and the standing-contract apparatus gets
+# appended to a no-op claim. Refuse it typed and early, BEFORE any
+# install/spend: a mint that lost its task text must surface, not silently
+# become a maintenance roam. Exact-token match only — a real task merely
+# CONTAINING the word (this repo's own tests do) is legitimate. The repo
+# already guards this stringification class for `npm view` output
+# (install-plugin-smoke-deps.mjs, `raw === "undefined"`).
+case "$TASK" in
+  "undefined"|"null")
+    echo "error: task body is the literal token \"$TASK\" — a stringified JS undefined/null from the claim mint (empty-claim class, issues #360/#361); refusing to boot a no-op claim; pass real task text as \$1" >&2
+    # A pre-boot refusal never enters the attempt loop, so its tombstone
+    # (#360: the death must be countable as a DISTINCT class, not unknown)
+    # is written here: class empty-claim, attempt 0, lifetime ~0. Only the
+    # ambient persistent home carries the ledger (native nodes export
+    # DSH_HOME around the driver; a CI job has not minted one yet). Best-
+    # effort — accounting must never break the run.
+    if [ -n "${DSH_HOME:-}" ]; then
+      { mkdir -p "$DSH_HOME" && printf '{"at":"%s","lifetime_s":0,"exit_code":2,"class":"empty-claim","had_session":false,"attempt":0}\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          >> "$DSH_HOME/boot-tombstones.jsonl"; } 2>/dev/null || true
+    fi
+    exit 2
+    ;;
+esac
 
 # The agent always launches via `doppler run` with the service token passed
 # through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.

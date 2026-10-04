@@ -1592,3 +1592,176 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
   );
 });
+
+// --- 13. the empty-claim guard: stringified undefined/null task bodies -----
+//
+// Issues #360/#361 (2026-10-04): the tower mint stringified a JS undefined
+// into the claim's task slot, and 185+ task-less rows spawned full agent
+// sessions whose ENTIRE task was the 9-char token `undefined` — a full
+// API-powered session spent to conclude "there is no task", during a
+// provider throttle wave exactly when retry slots were precious. The
+// `${1:-$DEFAULT_TASK}` seam only guards unset/empty, so the non-empty
+// token passed verbatim. Contract: the driver REFUSES the no-op claim
+// typed (empty-claim class) and early — exit 2 before any launch path is
+// entered — and the refusal is countable: a distinct-class tombstone lands
+// in the ambient persistent home (#360's acceptance criterion), because a
+// pre-boot death never enters the attempt loop that writes the ledger.
+test("a literal undefined/null task body is refused typed and early: exit 2, no launch, empty-claim tombstone (issues #360/#361)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-empty-claim-"));
+  const bin = path.join(dir, "bin");
+  mkdirSync(bin);
+  // Launch canaries: doppler/dsh stubs that RECORD being entered. The guard
+  // must fire before any launch path — if a refactor ever moves it after
+  // the spawn, these markers turn the test red.
+  writeFileSync(
+    path.join(bin, "doppler"),
+    '#!/bin/sh\ntouch "$LAUNCH_MARKER" 2>/dev/null\nshift; shift\nexec "$@"\n',
+  );
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'touch "$LAUNCH_MARKER" 2>/dev/null',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  for (const token of ["undefined", "null"]) {
+    const tokenHome = path.join(dir, `home-${token}`);
+    mkdirSync(tokenHome);
+    const marker = path.join(dir, `launched-${token}`);
+    const env = {
+      ...HERMETIC_ENV,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: tokenHome,
+      DOPPLER_SERVICE_TOKEN: "stub-token", // past the token check IF the guard misses — the marker catches that
+      LAUNCH_MARKER: marker,
+      DSH_HOME: tokenHome, // ambient persistent home: the tombstone must land here
+      DSH_PERSISTENT_HOME: "1",
+      // tests-lint rule 2: every driver spawn pins the backoff seam.
+      DSH_RETRY_BACKOFF_S: "0",
+      GH_BIN: path.join(bin, "gh"),
+      DOPPLER_BIN: path.join(bin, "doppler"),
+      CELL_PROBE_DIRS: "",
+    };
+    delete env.GH_TOKEN;
+    delete env.GITHUB_ENV;
+    delete env.GITHUB_PATH;
+    delete env.DSH_SESSION_PATH_FILE;
+
+    const proc = spawnSync("bash", [SCRIPT, token], { encoding: "utf8", env, timeout: 60_000 });
+
+    assert.equal(proc.status, 2, `token ${JSON.stringify(token)}: the driver must refuse the no-op claim with exit 2`);
+    assert.match(
+      proc.stderr,
+      new RegExp(`task body is the literal token "${token}"`),
+      `token ${JSON.stringify(token)}: the refusal must be typed with the offending token`,
+    );
+    assert.match(proc.stderr, /empty-claim/, `token ${JSON.stringify(token)}: the refusal must name its class`);
+    assert.match(
+      proc.stderr,
+      /refusing to boot a no-op claim/,
+      `token ${JSON.stringify(token)}: the refusal must state what it refused to do`,
+    );
+    assert.ok(!existsSync(marker), `token ${JSON.stringify(token)}: no launch path may be entered — the guard fires before any install/spend`);
+    assert.doesNotMatch(proc.stdout, /STUB-FINAL-ANSWER/, `token ${JSON.stringify(token)}: the agent must never run`);
+
+    // #360's acceptance criterion: the refusal is COUNTABLE as a distinct
+    // class — pre-boot deaths never enter the attempt loop, so the guard
+    // writes its own tombstone (attempt 0, no session).
+    const ledger = path.join(tokenHome, "boot-tombstones.jsonl");
+    assert.ok(existsSync(ledger), `token ${JSON.stringify(token)}: the empty-claim tombstone must land in the ambient persistent home`);
+    const rows = readFileSync(ledger, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+    const mine = rows.filter((r) => r.class === "empty-claim");
+    assert.equal(mine.length, 1, `token ${JSON.stringify(token)}: exactly one empty-claim tombstone, got ${rows.length} rows`);
+    assert.equal(mine[0].exit_code, 2);
+    assert.equal(mine[0].attempt, 0, "attempt 0 — the attempt loop was never entered");
+    assert.equal(mine[0].had_session, false, "no session was ever created");
+    assert.ok(typeof mine[0].at === "string" && mine[0].at.endsWith("Z"), "ISO timestamp");
+  }
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 14. the guard is EXACT-TOKEN: the fallback and in-text words survive --
+//
+// Two neighboring contracts that a sloppy substring guard would break:
+//   (a) an EMPTY $1 must keep falling back to DEFAULT_TASK (the scheduled-
+//       run path — workflow_dispatch-less cron boots ride it);
+//   (b) a REAL task that merely CONTAINS the word "undefined" (this repo's
+//       own issue text does) must run to completion.
+test("empty $1 still falls back to DEFAULT_TASK, and a task containing the word 'undefined' still runs (exact-token anchoring)", () => {
+  // (a) fallback: DEFAULT_TASK rides, the driver proceeds PAST the task
+  // seam and dies at the next usage check (the doppler token) — a guard
+  // that wrongly swallowed the empty case would die at the task seam
+  // instead, with a different message.
+  const fdir = mkdtempSync(path.join(tmpdir(), "dsh-default-task-"));
+  const fenv = {
+    ...HERMETIC_ENV,
+    HOME: fdir,
+    DEFAULT_TASK: "fallback maintenance roam",
+    // tests-lint rule 2: every driver spawn pins the backoff seam.
+    DSH_RETRY_BACKOFF_S: "0",
+  };
+  delete fenv.DOPPLER_SERVICE_TOKEN; // the NEXT usage check after the seam
+  delete fenv.DSH_HOME;
+  delete fenv.DSH_PERSISTENT_HOME;
+  delete fenv.DSH_SESSION_PATH_FILE;
+  const fallback = spawnSync("bash", [SCRIPT, ""], { encoding: "utf8", env: fenv, timeout: 30_000 });
+  assert.equal(fallback.status, 2, "usage-error class is still exit 2");
+  assert.match(
+    fallback.stderr,
+    /DOPPLER_SERVICE_TOKEN unset/,
+    "empty $1 must reach the token check via the DEFAULT_TASK fallback — not die at the task seam",
+  );
+  assert.doesNotMatch(fallback.stderr, /no task given/, "the fallback must not trip the empty-task death");
+  assert.doesNotMatch(fallback.stderr, /empty-claim/, "the fallback must not trip the token guard");
+  rmSync(fdir, { recursive: true, force: true });
+
+  // (b) in-text word: full harness, task text naming the token as a WORD.
+  const { dir, env } = runAccounting({
+    dshStub: [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ],
+  });
+  const proc = spawnSync(
+    "bash",
+    [SCRIPT, "fix the driver bug where a minted claim task renders as undefined"],
+    { encoding: "utf8", env, timeout: 60_000 },
+  );
+  assert.equal(proc.status, 0, `a task containing the word must run to completion, stderr: ${proc.stderr}`);
+  assert.match(proc.stdout, /STUB-FINAL-ANSWER/, "the agent ran and its answer relayed");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- 15. structural pin: the guard is an exact-token case, seam-ordered ----
+//
+// The behavioral pins above prove today's behavior; this pin holds the
+// SHAPE against silent regressions: the case must match the exact tokens
+// (a glob like *undefined* would reject legitimate in-text tasks — test
+// 14b's world), and it must sit BETWEEN the task seam and the doppler
+// token check so the refusal fires before any install/spend.
+test("issue #360/#361 structural pins: exact-token case, ordered after the task seam and before the launch machinery", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  assert.match(
+    src,
+    /case "\$TASK" in\n  "undefined"\|"null"\)/,
+    "the guard must be an exact-token case match — a substring/glob form would reject real tasks that contain the word",
+  );
+  const seamIdx = src.indexOf('TASK="${1:-$DEFAULT_TASK}"');
+  const guardIdx = src.indexOf('case "$TASK" in');
+  const tokenIdx = src.indexOf("if [ -z \"${DOPPLER_SERVICE_TOKEN:-}\" ]; then");
+  assert.ok(seamIdx !== -1 && guardIdx !== -1 && tokenIdx !== -1, "seam, guard, and token check all present");
+  assert.ok(seamIdx < guardIdx && guardIdx < tokenIdx,
+    "the guard must sit after the task seam and before the doppler token check — it fires before any install/spend");
+  // the tombstone the guard writes carries the distinct class (#360)
+  assert.match(src, /class":"empty-claim"/, "the pre-boot tombstone must carry the empty-claim class");
+});
