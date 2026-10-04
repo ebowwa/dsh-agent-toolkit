@@ -65,7 +65,9 @@ The manual equivalent (what the installer automates; cron keepalive needs
 no sudo, `svc.sh`/systemd when sudo exists — issue #6):
 
 ```bash
-# 1. toolkit checkout (keep updated: git pull — or via the drift bump PR)
+# 1. toolkit checkout (the keepalive below re-pins it to the moving v1 tag
+#    every sweep — worker code updates only through drift-check's audited
+#    releases, exactly like an installed box):
 git clone --depth 1 https://github.com/ebowwa/dsh-agent-toolkit "$HOME/dsh-bot"
 
 # 2. worker env — secrets live ONLY here, 0600:
@@ -74,16 +76,38 @@ chmod 600 "$HOME/.dsh-worker/env"
 #   edit: GH_TOKEN, DOPPLER_SERVICE_TOKEN (REQUIRED — the agent launches
 #   only via `doppler run`, with the token passed through the DOPPLER_TOKEN
 #   env, never argv; the driver fails typed, exit 2, without it),
-#   DSH_WORKER_REPOS
+#   DSH_WORKER_REPOS, and point DSH_AGENT_TOOLKIT_DIR at the step-1
+#    checkout (the example ships the installer default
+#    ~/dsh-agent-toolkit — here it must read "$HOME/dsh-bot")
 
 # 3a. systemd (the box has passwordless sudo — the issue #6 path):
 #     sudo ~/factory-runner/svc.sh install && sudo ~/factory-runner/svc.sh start
 #     (or a unit running: bash -c 'set -a; . $HOME/.dsh-worker/env; set +a; \
 #      exec $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
 
-# 3b. cron keepalive, one line — starts within 60s, self-heals after
-#     reboots and job-cleanup kills (the pattern factory-runner proves):
-#     * * * * * pgrep -f 'dsh-worker.sh --once' >/dev/null || { set -a; . $HOME/.dsh-worker/env; set +a; $HOME/dsh-bot/scripts/dsh-worker.sh --once >> $HOME/.dsh-worker/worker.log 2>&1; }
+# 3b. cron keepalive, one line — the canonical shape scripts/install-worker.sh
+#     mints (its LINE, with $HOME spelled out); starts within 60s, self-heals
+#     after reboots and job-cleanup kills:
+#     * * * * * flock -n $HOME/.dsh-worker/sweep.lock /bin/bash -c 'git -C $HOME/dsh-bot fetch --tags --force -q && git -C $HOME/dsh-bot checkout -q --force v1 || true; set -a; . $HOME/.dsh-worker/env; set +a; exec /bin/bash $HOME/dsh-bot/scripts/dsh-worker.sh --once >> $HOME/.dsh-worker/worker.log 2>&1'
+#
+#     Three properties of that line are NOT stylistic (install-worker.sh's
+#     own receipts, lines ~93-111):
+#     - flock, never pgrep: every pgrep form self-matches the carrier's own
+#       cmdline (the sweep braces contain the script path), so the guard
+#       always finds ITSELF and no sweep ever fires — worker.log stays
+#       empty. Live-proven twice on seed-dshbot. flock -n is the canonical
+#       cron mutual exclusion: a running sweep makes this tick exit
+#       instantly.
+#     - re-pin to the moving v1 tag each sweep (fetch --tags --force +
+#       checkout -q --force v1, || true): a manual box updates its worker
+#       code exactly like an installed one, only through drift-check's
+#       audited releases; a failed fetch degrades to the previously pinned
+#       release (the error lands in worker.log) — never a broken sweep.
+#     - invoked via /bin/bash <script>: the repo ships scripts mode 644, so
+#       direct execution of dsh-worker.sh is "Permission denied".
+#     Prefer running scripts/install-worker.sh itself (the deploy-worker
+#     workflow, or on-box): it owns the canonical line and re-enforces it
+#     on every run — this manual copy must track its LINE.
 ```
 
 The cron line and unit must NOT contain tokens — only the 0600 env file
@@ -152,7 +176,8 @@ else here.
 - **Concurrency**: `--once` processes every queued item sequentially;
   multiple boxes each running `--once` on the same repos share the queue
   safely via the claim DELETE. `--loop` is for single-processor service
-  mode; when used, ensure only one loop per box (`pgrep` guard in cron).
+  mode; when used, ensure only one loop per box (flock-guarded — a pgrep
+  guard self-matches its own carrier line, the keepalive law above).
 - **Boot accounting (issue #96)**: the driver appends one JSONL tombstone
   per FAILED agent attempt to `$DSH_HOME/boot-tombstones.jsonl`
   (`at`, `lifetime_s`, `exit_code`, `class`, `had_session`, `attempt`), and

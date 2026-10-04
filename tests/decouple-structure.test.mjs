@@ -223,6 +223,31 @@ test("live fixes (seed-dshbot): Basic-auth git header, $(cat) note bodies, brack
   assert.match(inst, /canonical line enforced/);
 });
 
+test("manual-path doc teaches the canonical keepalive, never the self-matching pgrep (#285)", () => {
+  const doc = read("docs/decoupled-worker.md");
+  const inst = read("scripts/install-worker.sh");
+  const instLine = inst.split("\n").find(l => l.startsWith('LINE="'));
+  assert.ok(instLine, "installer keepalive LINE exists");
+  // the step-3b manual cron example must mirror the installer's LINE
+  const docLine = doc.split("\n").find(l => l.includes("* * * * *"));
+  assert.ok(docLine, "doc carries a cron keepalive example");
+  // flock overlap guard — never pgrep (EVERY pgrep form self-matches the
+  // carrier's cmdline; the doc taught exactly this dead guard — #285)
+  assert.match(docLine, /flock -n /, "doc keepalive uses the flock overlap guard");
+  assert.ok(!docLine.includes("pgrep"), "doc keepalive must not teach the self-matching pgrep guard");
+  assert.ok(!/pgrep -f/.test(doc), "no pgrep -f guard pattern survives anywhere in the doc");
+  // the per-sweep re-pin the installer carries — a manual box updates
+  // like an installed one, only through drift-check's audited releases
+  assert.match(docLine, /fetch --tags --force/, "doc keepalive force-fetches tags each sweep");
+  assert.match(docLine, /checkout -q --force v1/, "doc keepalive re-pins to the moving v1 tag");
+  // invoked via bash — the repo ships scripts mode 644 (direct exec = EACCES)
+  assert.match(docLine, /\/bin\/bash .*dsh-worker\.sh --once/, "doc keepalive invokes the sweep via bash");
+  // credentials never in the line — it sources the 0600 env file
+  assert.match(docLine, /\. \$HOME\/\.dsh-worker\/env/, "doc keepalive sources the env file, carries no token");
+  // and the doc points at the installer as the canonical owner of the line
+  assert.match(doc, /install-worker\.sh itself/, "doc defers to install-worker.sh as the line's owner");
+});
+
 test("per-repo model map: mapped repos run their own model, unmapped run the fleet default", () => {
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /DSH_WORKER_MODEL_MAP/);
