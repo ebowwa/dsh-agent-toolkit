@@ -84,8 +84,15 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
     // live twice). flock is the canonical cron mutual exclusion.
     assert.match(cron, /flock -n .*sweep\.lock/, "flock-overlapped, no pgrep self-match possible");
     assert.ok(!cron.includes("pgrep"), "no pgrep guard may ship in the keepalive");
-    assert.match(cron, /checkout -q --force v1/, "re-pins to the moving v1 tag each sweep (--force: dirty trees must never shadow the tag — 2026-09-21 incident)");
-    assert.match(cron, /fetch --tags --force/, "force-moves the moving tag (plain fetch clobbers: \"would clobber existing tag\")");
+    // #276: the re-pin is GUARDED — the guarded script is the FIRST arm;
+    // the bare force-checkout survives only as the transition fallback
+    // for a checkout pinned before the script existed (never a wedge).
+    assert.match(cron, /if \[ -f [^\]]*scripts\/repin-toolkit\.sh \]/, "the guarded re-pin arm is preferred (issue #276)");
+    assert.match(cron, /then \/bin\/bash [^;]*scripts\/repin-toolkit\.sh/, "the guarded script owns the checkout decision when present");
+    assert.match(cron, /else git -C [^;]* checkout -q --force v1/, "transition fallback: a pre-#276 checkout still pins forward (no permanent wedge)");
+    const guardIdx = cron.indexOf("repin-toolkit.sh");
+    const bareIdx = cron.indexOf("checkout -q --force v1");
+    assert.ok(guardIdx !== -1 && bareIdx > guardIdx, "the bare force-checkout only ever runs in the fallback else-arm");
     assert.ok(!cron.includes(GH_CRED), "NO credential in the cron line");
     assert.ok(!cron.includes(DOPPLER_CRED), "NO doppler credential in the cron line");
     // the installer's own output never echoes the values either
@@ -110,15 +117,15 @@ test("idempotent: a second run does not duplicate the cron line", () => {
   }
 });
 
-test("always refreshes the toolkit pin to v1 (with safe.directory; no silent failures)", () => {
+test("always refreshes the toolkit pin to v1 via the guarded script (safe.directory; no silent failures)", () => {
   const f = fixture();
   try {
     const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stdout, /toolkit pinned at/);
+    assert.match(res.stdout, /repin: pinned at/, "the installer reports the guarded re-pin's own note");
     const git = readFileSync(f.gitLog, "utf8");
-    assert.match(git, /fetch --tags/, "fetches tags every install");
-    assert.match(git, /checkout --force v1/, "checks out the moving v1 pin (--force — local edits never shadow tags)");
+    assert.match(git, /fetch --tags/, "fetches tags every install (inside repin-toolkit.sh)");
+    assert.match(git, /checkout -q --force v1/, "checks out the moving v1 pin (--force on the pin — local edits never shadow tags)");
     assert.match(git, /safe\.directory=/, "ownership guard explicitly satisfied");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });

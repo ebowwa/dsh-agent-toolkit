@@ -58,8 +58,18 @@ serialization matches the CI flow: the worker takes the **last** trusted
 pattern — and installs everything below idempotently: credentials from the
 repo's `TOWER_PROBE_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
 env file, and the cron line re-pins the toolkit to the moving `v1` tag
-every sweep, so the worker's code updates exclusively through
+every sweep through the GUARDED re-pin (`scripts/repin-toolkit.sh`,
+issue #276), so the worker's code updates exclusively through
 drift-check's audited releases.
+
+**The live checkout is the worker's — never work in-place in it (#276).**
+The per-minute re-pin refuses to move HEAD while a working branch is
+checked out or the default branch is dirty (a dated SKIP note lands in
+`worker.log`), so an in-place agent's tree is no longer destroyed — but
+holding the checkout pauses the box's release tracking until it is
+cleaned. Agents dispatched on a box that hosts a live checkout MUST clone
+their own workdir (a path they minted) and leave the pinned checkout
+alone.
 
 The manual equivalent (what the installer automates; cron keepalive needs
 no sudo, `svc.sh`/systemd when sudo exists — issue #6):
