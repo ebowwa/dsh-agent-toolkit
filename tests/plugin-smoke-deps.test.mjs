@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import {
   Union,
@@ -184,5 +184,31 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
     assert.ok(failed, "--dry-run on a bare tree must exit non-zero");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI arm is symlink-aware: main() runs through a symlinked entry (issues #309/#311, the #302 class)", () => {
+  // pathToFileURL normalizes the URL shape but NOT symlinks: through the
+  // pre-fix isMain compare, a symlinked entry mismatched and main()
+  // silently never ran — exit 0, no output, a wrapper green without
+  // installing anything. Hermetic loud probe: CWD holds an EMPTY
+  // plugins/ dir, so main() must die loudly ("no tested plugins found",
+  // exit 1) BEFORE any registry walk — no network, never a silent 0.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-"));
+  try {
+    fs.mkdirSync(path.join(dir, "plugins"));
+    const link = path.join(dir, "ipsd-link.mjs");
+    fs.symlinkSync(
+      path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs"),
+      link,
+    );
+    const r = spawnSync(process.execPath, [link], {
+      encoding: "utf8",
+      cwd: dir,
+    });
+    assert.equal(r.status, 1, `main() must run and die loudly — stderr: ${r.stderr}`);
+    assert.match(r.stderr, /no tested plugins found under plugins\//);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

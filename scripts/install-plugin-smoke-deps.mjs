@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WALK_CAP = 50;
 
@@ -282,6 +282,22 @@ export async function main(argv = process.argv.slice(2)) {
   );
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) await main();
+// isMain is symlink-aware (issues #309/#311, the #302 class):
+// pathToFileURL repairs the URL-encoding half (spaces etc.) but NOT
+// symlinks — import.meta.url resolves the entry's symlinks while
+// process.argv[1] stays as invoked, so through a symlinked entry the
+// compare mismatched and main() silently never ran (exit 0, no output —
+// a wrapper got green without installing the smoke deps). Same canonical
+// shape as settings-write.mjs: href fast path, realpath fallback.
+const THIS_FILE = fileURLToPath(import.meta.url);
+function isMain() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(THIS_FILE);
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) await main();

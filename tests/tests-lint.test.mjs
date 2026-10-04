@@ -32,7 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,4 +308,31 @@ test("unusable invocation is a loud usage error", () => {
   const r = runTool([]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: tests-lint\.mjs/);
+});
+
+test("a symlinked entry still arms the CLI block (issues #309/#311, the #302 class)", () => {
+  // Node resolves the entry's symlinks into import.meta.url while
+  // argv[1] stays as invoked: through the pre-fix raw compare
+  // (`import.meta.url === \`file://\${process.argv[1]}\``) the CLI block
+  // silently never ran and a bare invocation exited 0 having linted
+  // NOTHING — a lint gate false-greening on itself. The loud probes,
+  // both through a symlink: bare must still exit 2 with the usage
+  // error; a violating fixture must still exit 1 with the finding.
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-lint-symlink-"));
+  try {
+    const link = path.join(dir, "tests-lint-link.mjs");
+    symlinkSync(TOOL, link);
+    const bare = spawnSync(process.execPath, [link], { encoding: "utf8" });
+    assert.equal(bare.status, 2, `stderr: ${bare.stderr}`);
+    assert.match(bare.stderr, /usage: tests-lint\.mjs/);
+    const broken = path.join(dir, "broken.test.mjs");
+    writeFileSync(broken, DEFECT_SOURCE);
+    const flagged = spawnSync(process.execPath, [link, broken], {
+      encoding: "utf8",
+    });
+    assert.equal(flagged.status, 1, `stderr: ${flagged.stderr}`);
+    assert.match(flagged.stderr, /broken\.test\.mjs:4:/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
