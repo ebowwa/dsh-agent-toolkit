@@ -12,6 +12,14 @@
 //   1. a pushed branch with no PR — SAME-SESSION PR PER BRANCH;
 //   2. a PR closed without merging — DELETE ON CLOSE WITHOUT MERGE.
 //
+//   ...and (issue #327) the same-claim collision landmine: two concurrent
+//   agents on one issue minting the IDENTICAL branch name — the push
+//   rejection's reflex remedies (`git pull`, `--force-with-lease`) both
+//   destroy a racing claim. Rule 4 collision-proofs the mint twice: a
+//   unique suffix in every name, and a `git ls-remote` preflight before
+//   the first push that re-mints on collision instead of pulling or
+//   forcing onto the sibling's name.
+//
 // ...and gives the exit summary its machine-checkable receipt: ONE
 // `branches-left:` line, comma-space separated branch names, nothing else
 // on the line; left nothing — the line is omitted entirely
@@ -166,6 +174,17 @@ test("issue #127: the prompt assembly appends the branch-hygiene contract to the
   assert.match(task, /branches-left: dsh\/issue-127-c5844082078, dsh\/issue-128-nextticket/);
   assert.match(task, /never write branches-left: none/);
 
+  // Rule 4 — unique name + push preflight (issue #327): the suffix
+  // mandate, the ls-remote preflight, and the two forbidden reflexes.
+  assert.match(task, /4\. UNIQUE NAME \+ PUSH PREFLIGHT — a minted branch name is collision-proofed twice/);
+  assert.match(task, /It carries a unique suffix \(pid, claim id, or timestamp\)/);
+  assert.match(task, /never the bare dsh\/issue-N-slug two agents racing one issue derive identically/);
+  assert.match(task, /before the FIRST push of a minted name, run git ls-remote origin <name>/);
+  assert.match(task, /a non-empty answer means a sibling already owns the name/);
+  assert.match(task, /delete your unpushed local branch, re-mint with a fresh suffix, push that/);
+  assert.match(task, /NEVER git pull onto the collided name/);
+  assert.match(task, /NEVER git push --force-with-lease over it/);
+
   // The acceptance sentence (zero orphans, three states) and the
   // auto-delete-on-merge fact it leans on:
   assert.match(task, /Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states/);
@@ -222,6 +241,11 @@ const HYGIENE_RULES = [
     /3\. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind/,
     /\*\*BRANCHES-LEFT EXIT LINE\*\*/,
   ],
+  [
+    "UNIQUE NAME + PUSH PREFLIGHT",
+    /4\. UNIQUE NAME \+ PUSH PREFLIGHT — a minted branch name is collision-proofed twice/,
+    /\*\*UNIQUE NAME \+ PUSH PREFLIGHT\*\*/,
+  ],
 ];
 
 test("issue #127: driver and contract doc carry the two leak-path rules and the exit-line rule", () => {
@@ -241,6 +265,13 @@ test("issue #127: driver and contract doc carry the two leak-path rules and the 
     /pushed branch with no PR is an orphan/,
     /gh pr close NUMBER --delete-branch/,
     /git push origin --delete BRANCH/,
+    // Rule 4 (issue #327) — the suffix mandate and the preflight recipe,
+    // including both forbidden collision reflexes, on both surfaces:
+    /`?dsh\/issue-127-c5844082078`?, never the bare\s+`?dsh\/issue-N-slug`?/,
+    /git ls-remote origin <name>/,
+    /delete your unpushed local branch, re-mint\s+with a fresh suffix, push that/,
+    /NEVER `?git pull`? onto the collided\s+name/,
+    /NEVER\s+`?git push --force-with-lease`? over it/,
   ]) {
     assert.match(src, re, "driver block drift");
     assert.match(doc, re, "contract doc drift");

@@ -184,7 +184,7 @@ survey agent files it as mess (HYGIENE.md measured exactly this: gat's
 repo"). The repos run auto-delete-on-merge (already live everywhere;
 verified on this repo: `delete_branch_on_merge=true`), so a **merged**
 branch cleans itself up. The contract closes the two leak paths the
-setting cannot reach:
+setting cannot reach — plus the same-claim collision landmine (#327):
 
 1. **SAME-SESSION PR PER BRANCH** — every branch your work lands on gets
    its PR opened in the same session that pushed it. If your lane ships
@@ -212,6 +212,17 @@ setting cannot reach:
    nothing: omit the line entirely — never write `branches-left: none`;
    absence is the machine-checkable signal that the session left no
    branches behind.
+4. **UNIQUE NAME + PUSH PREFLIGHT** — a minted branch name is
+   collision-proofed twice. It carries a **unique suffix** (pid, claim id,
+   or timestamp): `dsh/issue-127-c5844082078`, never the bare
+   `dsh/issue-N-slug` two agents racing one issue derive identically
+   (#327). And before the FIRST push of a minted name, run
+   `git ls-remote origin <name>`: a non-empty answer means a sibling
+   already owns the name — delete your unpushed local branch, re-mint
+   with a fresh suffix, push that. NEVER `git pull` onto the collided
+   name (it merges the sibling's work into yours) and NEVER
+   `git push --force-with-lease` over it (it overwrites the sibling's
+   pushed work behind an open PR); both reflexes destroy a racing claim.
 
 **Acceptance — zero orphans:** at exit, every branch the session pushed is
 in exactly one of three states — merged (auto-deleted by the repo setting),
