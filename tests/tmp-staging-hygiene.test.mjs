@@ -8,7 +8,7 @@
 // curl/unzip/mkfile overwrites the first's staging (or proof file)
 // mid-flight, silently. Same silent-loss class as the workdir-hygiene
 // protocol (issue #333 — clone recipes; pinned separately in
-// tests/workdir-hygiene-contract.test.mjs), release/baseline flavor.
+// tests/workdir-collision-contract.test.mjs), release/baseline flavor.
 //
 // Receipts (issue #346, pristine main 2026-10-04):
 //   .agents/skills/gauge-plugin-release/SKILL.md:35-41 —
