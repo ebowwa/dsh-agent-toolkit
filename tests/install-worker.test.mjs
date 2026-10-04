@@ -95,6 +95,21 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
   }
 });
 
+test("header comment names the guard the LINE arms (flock-guard, never pgrep-guard) — #292", () => {
+  // Static source pin: the "What it installs" header is the first thing a
+  // reader skims; it may never teach the discredited pgrep guard the cron
+  // LINE replaced (every pgrep form self-matches — lines 93-99). Scoped to
+  // the header block only: the flock-NOT-pgrep explanation below legitimately
+  // spells "pgrep" while arguing against it.
+  const src = readFileSync(INSTALLER, "utf8");
+  const header = src.slice(0, src.indexOf("set -euo pipefail"));
+  assert.ok(header.length > 0, "header block located in installer source");
+  assert.match(header, /cron keepalive line: every minute, flock-guard, RE-PIN/,
+    "the keepalive bullet labels the flock guard the LINE arms (#292)");
+  assert.ok(!header.includes("pgrep-guard"),
+    "the discredited pgrep-guard label never ships in the installer header");
+});
+
 test("idempotent: a second run does not duplicate the cron line", () => {
   const f = fixture();
   try {
