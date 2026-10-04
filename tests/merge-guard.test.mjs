@@ -11,8 +11,14 @@
 //
 //   1. GREEN is exactly {status=completed, conclusion=success} on the PR's
 //      HEAD SHA — queued / in_progress / cancelled / failure / absent /
-//      wrong-name / wrong-SHA all refuse (the stale-green legs are the
-//      ones a "just look for a green run" implementation gets wrong).
+//      wrong-SHA all refuse (the stale-green legs are the ones a "just look
+//      for a green run" implementation gets wrong). Since FleetTower issue
+//      #1132, "absent" is per-name: the DEFAULT name (`gates`) is a guess
+//      about the consumer repo's gates.yml, so when no run carries it the
+//      guard grades the head by the rollup — ≥1 completed+success run ON the
+//      head SHA and no red conclusion passes loudly; reds-present or
+//      nothing-green refuses; an EXPLICIT MERGE_GUARD_CHECK never falls
+//      back.
 //   2. ONE snapshot: exactly one check-runs API call per check, even on
 //      the refusal path — no sleep/poll/retry loop may ever appear.
 //   3. Fail-closed: unresolvable states (no gh, PR unresolvable) refuse
@@ -139,6 +145,12 @@ const runShim = (t, argv, { legs = [], guardEnv = {} } = {}) => {
   // REVIEW.md lane-leak class). Delete BEFORE the guardEnv spread so an
   // armed test still overrides the arm deliberately.
   delete env.GH_MERGE_GUARD;
+  // Same class for the guard's check-name stamp (FleetTower #1132 pins): an
+  // ambient GH_MERGE_GUARD_CHECK would flip the unset-default legs into
+  // explicit-assertion semantics machine-dependently. (The general
+  // runShim-carrier audit lives in issue #490; this delete covers only the
+  // var these pins introduce.)
+  delete env.GH_MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [SHIM, ...argv], {
     encoding: "utf8",
     cwd: dir,
@@ -186,10 +198,72 @@ test("guard: no check run on the head at all refuses (the never-ran case)", (t) 
   assert.match(res.stderr, /no 'gates' check run graded head/);
 });
 
-test("guard: a green run under a DIFFERENT name is not the gates check", (t) => {
-  const { res } = runGuard(t, "check", ["434"], { legs: [leg({ name: "ci/other" })] });
+test("guard: a green run under a DIFFERENT name grades the head when no 'gates' run exists (FleetTower #1132 fallback)", (t) => {
+  // The FleetTower #1132 receipt: consumer repos name their gates jobs
+  // `guard-tests` / `notebooks-gist-reconcile`, so the hardcoded default
+  // refused EVERY merge on EVERY green head ("no 'gates' check run graded
+  // head a40574f" issued while the rollup showed both jobs SUCCESS on
+  // exactly that SHA). The default name is a guess about the consumer
+  // repo's gates.yml — when no run carries it, the guard grades the head by
+  // the #434 semantics that actually matter: completed/success ON this head
+  // SHA. Wrong-SHA still refuses below; this leg is same-SHA.
+  const { res } = runGuard(t, "check", ["434"], {
+    legs: [leg({ name: "guard-tests" }), leg({ id: 2, name: "notebooks-gist-reconcile" })],
+  });
+  assert.equal(res.status, 0, `a green head must pass under a foreign default name (stderr: ${res.stderr})`);
+  assert.match(res.stdout, /GREEN/);
+  assert.match(res.stdout, /no 'gates' check run graded head/, "the pass must stay loud about the name miss");
+  assert.match(res.stdout, /guard-tests/, "the pass must name what actually graded the head");
+});
+
+test("guard: a RED sibling refuses even when another check is green (no 'gates' run — the #784/#748 class)", (t) => {
+  // The fallback must never become a "find any green run" bypass: a head
+  // whose real gate failed while an advisory sibling passed is the #748
+  // merge-on-green class. Reds present + greens present refuses, and names
+  // the explicit-name escape (the #1132 workaround parameter).
+  const { res } = runGuard(t, "check", ["434"], {
+    legs: [leg({ name: "guard-tests", conclusion: "failure" }), leg({ id: 2, name: "notebooks-gist-reconcile" })],
+  });
+  assert.equal(res.status, 1, "a red sibling must refuse even with a green sibling");
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /MERGE_GUARD_CHECK=/, "the refusal must name the explicit-name escape");
+});
+
+test("guard: nothing green on the head under a foreign default name refuses (the never-ran case)", (t) => {
+  const { res } = runGuard(t, "check", ["434"], {
+    legs: [leg({ name: "guard-tests", status: "queued", conclusion: null })],
+  });
   assert.equal(res.status, 1);
-  assert.match(res.stderr, /no 'gates' check run/);
+  assert.match(res.stderr, /no 'gates' check run graded head/);
+  assert.match(res.stderr, /never ran green/);
+});
+
+test("guard: a green run for a STALE head SHA under a foreign name still refuses (re-push stale green)", (t) => {
+  // The SHA filter is shared by the fallback — a green run for a previous
+  // head is not green, whatever the job is named (issue #434).
+  const { res } = runGuard(t, "check", ["434"], {
+    legs: [leg({ name: "guard-tests", head_sha: HEAD2 })],
+  });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /no 'gates' check run graded head/);
+});
+
+test("guard: an EXPLICIT MERGE_GUARD_CHECK is an assertion — a green foreign-name run never satisfies it", (t) => {
+  // The #1132 workaround (`GH_MERGE_GUARD_CHECK=<job>`) keeps ALL guard
+  // semantics intact: the named check counts only when a run carries it, so
+  // an explicit name with no matching run refuses instead of falling back.
+  const { res } = runGuard(t, "check", ["434"], {
+    legs: [leg()],
+    env: { MERGE_GUARD_CHECK: "guard-tests" },
+  });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /no 'guard-tests' check run/);
+  assert.match(res.stderr, /#422 receipt/, "the explicit path keeps the original fail-closed wording");
+});
+
+test("guard: exactly ONE check-runs call on the fallback green path — no polling", (t) => {
+  const { dir } = runGuard(t, "check", ["434"], { legs: [leg({ name: "guard-tests" })] });
+  assert.equal(apiCalls(dir), 1, "the fallback must decide from the same ONE snapshot");
 });
 
 test("guard: a green run for a STALE head SHA is not green (re-push stale green)", (t) => {
@@ -308,6 +382,41 @@ test("shim: armed + green merge passes through, -m reaches gh verbatim", (t) => 
   assert.equal(res.status, 0, `stderr: ${res.stderr}`);
   assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"],
     "the #159 boolean-flag pin holds under the guard too");
+});
+
+test("shim: armed + a FleetTower-shaped head (guard-tests green, no 'gates' run) passes — the #1132 end-to-end", (t) => {
+  // The shim must NOT manufacture an explicit check name: with
+  // GH_MERGE_GUARD_CHECK unset the guard takes its repo-agnostic default,
+  // so a head graded by differently-named jobs merges instead of refusing
+  // (the exact FleetTower #1118/#1132 refusal on a fully-green head).
+  const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+    legs: [leg({ name: "guard-tests" }), leg({ id: 2, name: "notebooks-gist-reconcile" })],
+    guardEnv: { GH_MERGE_GUARD: "on" },
+  });
+  assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+  assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+});
+
+test("shim: armed + a stamped GH_MERGE_GUARD_CHECK keeps assertion semantics (refuses when absent)", (t) => {
+  // A driver-stamped name rides through as an explicit assertion: it counts
+  // only when a run carries it — never the #1132 fallback (the issue's
+  // "the parameter exists for exactly this" workaround semantics).
+  const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+    legs: [leg()],
+    guardEnv: { GH_MERGE_GUARD: "on", GH_MERGE_GUARD_CHECK: "guard-tests" },
+  });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /no 'guard-tests' check run/);
+  assert.equal(mergeCapture(dir), null);
+});
+
+test("shim: armed + a stamped GH_MERGE_GUARD_CHECK=<job> gates on that job when it IS green", (t) => {
+  const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+    legs: [leg({ name: "guard-tests", conclusion: "failure" }), leg({ id: 2, name: "notebooks-gist-reconcile" })],
+    guardEnv: { GH_MERGE_GUARD: "on", GH_MERGE_GUARD_CHECK: "notebooks-gist-reconcile" },
+  });
+  assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+  assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
 });
 
 test("shim: armed + green still scrubs GitHub-bound text (guard never bypasses scrubbing)", (t) => {

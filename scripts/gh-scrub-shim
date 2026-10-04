@@ -197,9 +197,18 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then
       if [ $# -ge 3 ] && [ -n "${3:-}" ] && [ "${3#-}" = "${3:-}" ]; then
         MERGE_TARGET="$3"
       fi
-      MERGE_GUARD_GH="$REAL" MERGE_GUARD_CHECK="${GH_MERGE_GUARD_CHECK:-gates}" \
+      # GH_MERGE_GUARD_CHECK passes through ONLY when the driver actually
+      # stamped it — the shim must not manufacture an "explicit" check name,
+      # because an explicit name is an assertion in merge-guard.sh (it never
+      # falls back), while the unset default is repo-agnostic (FleetTower
+      # issue #1132: consumer repos' gates jobs are not named 'gates').
+      if [ -n "${GH_MERGE_GUARD_CHECK:-}" ]; then
+        export MERGE_GUARD_CHECK="$GH_MERGE_GUARD_CHECK"
+      fi
+      MERGE_GUARD_GH="$REAL" \
         bash "$MERGE_GUARD" check ${MERGE_TARGET:+"$MERGE_TARGET"} \
         || die "merge REFUSED by the gates guard (merge-guard.sh, issue #434) — merge only when the check is completed/success on the PR head; do NOT poll-and-retry around this"
+      unset MERGE_GUARD_CHECK 2>/dev/null || true
       ;;
     "")
       echo "gh-scrub-shim: WARNING: merge guard INACTIVE (GH_MERGE_GUARD unset) — this merge runs UNGATED (issue #434)" >&2;;
