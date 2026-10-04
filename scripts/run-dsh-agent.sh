@@ -137,9 +137,17 @@ TASK="${1:-}"
 # mint that lost its task text must surface, not silently become a roam —
 # the boot tombstone's exit code plus the class token below make this
 # death greppable, the #360 corollary).
+# Widened per #420: a mint that stringifies can stringify an OBJECT just as
+# easily as a nullish — `String({})` is the 15-char `[object Object]` and it
+# sailed through the two-literal guard verbatim (the same no-op session
+# burn, one type over). The `"[object "*` glob arm catches every
+# String(obj) shape (`[object Object]`, `[object Promise]`, …) — no
+# legitimate task text starts with `[object `. #420's proposed `""` arm is
+# deliberately NOT taken: empty $1 is the scheduled no-arg boot path and
+# must keep the DEFAULT_TASK roam (pinned by the (c) leg of the #361 test).
 case "$TASK" in
-  "undefined"|"null")
-    echo "::error::task argument is the literal string \"$TASK\" — the dispatch mint stringified a JS $TASK and the claim's task text never arrived (class: task-body-stringified-nullish, issue #361); refusing to launch a no-op session" >&2
+  "undefined"|"null"|"[object "*)
+    echo "::error::task argument is the literal string \"$TASK\" — the dispatch mint stringified a JS undefined/null/object and the claim's task text never arrived (class: task-body-stringified-nullish, issues #361/#420); refusing to launch a no-op session" >&2
     exit 2
     ;;
 esac

@@ -318,6 +318,11 @@ test("a literal undefined/null task body dies classified before any launch; empt
     /TASK="\$\{1:-\$DEFAULT_TASK\}"/,
     "the seam must not regress to the one-line \${1:-$DEFAULT_TASK} form that passes literal undefined/null through (issue #361)",
   );
+  assert.match(
+    src,
+    /"undefined"\|"null"\|"\[object "\*/,
+    "the guard must carry the #420 object arm — a stringified [object *] body is the same no-op session burn as undefined/null",
+  );
 
   const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-nullish-task-"));
   const bin = path.join(dir, "bin");
@@ -367,13 +372,16 @@ test("a literal undefined/null task body dies classified before any launch; empt
   };
 
   // (a)+(b): the stringified-nullish bodies die classified, launch nothing.
-  for (const garbage of ["undefined", "null"]) {
+  // "[object Object]" rides the #420 widening: a mint that stringifies can
+  // stringify an object as easily as a nullish, and the two-literal guard
+  // let it pass verbatim.
+  for (const garbage of ["undefined", "null", "[object Object]"]) {
     if (existsSync(argsFile)) rmSync(argsFile);
     const proc = spawnSync("bash", [SCRIPT, garbage], { encoding: "utf8", env: baseEnv(), timeout: 60_000 });
     assert.equal(proc.status, 2, `literal ${garbage} must exit 2 (typed usage death), stderr: ${proc.stderr}`);
     assert.match(
       proc.stderr,
-      /::error::task argument is the literal string "(undefined|null)"/,
+      /::error::task argument is the literal string "(undefined|null|\[object Object\])"/,
       `literal ${garbage} must fail with the typed error`,
     );
     assert.match(
