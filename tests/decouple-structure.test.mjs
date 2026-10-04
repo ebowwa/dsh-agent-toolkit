@@ -146,6 +146,26 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
 });
+
+test("#305: the 3a systemd unit execs the worker via /bin/bash — scripts ship mode 644", () => {
+  const doc = read("docs/decoupled-worker.md");
+  // The repo ships its scripts mode 644 (`git ls-files -s` = 100644), so a
+  // unit's direct `exec <script>` dies "Permission denied" (exit 126) on
+  // every start — the exact class install-worker.sh documents for its cron
+  // LINE ("invoked via `bash <script>` (NEVER directly)"). The unit must
+  // carry the same discipline. Path-agnostic on purpose: the checkout dir
+  // is $HOME/dsh-bot on main and $HOME/dsh-agent-toolkit in the #288
+  // re-path — both ride /bin/bash.
+  assert.match(
+    doc,
+    /exec \/bin\/bash \$HOME\/[a-z-]+\/scripts\/dsh-worker\.sh --loop/,
+    "the 3a unit must exec /bin/bash <dsh-worker.sh> --loop, never the 644 script directly",
+  );
+  assert.ok(
+    !doc.includes("exec $HOME"),
+    "a bare `exec $HOME/...script' form is exit 126 on the 644 tree",
+  );
+});
 test("review queue: worker claims dsh/review items and runs review-pr.sh on them", () => {
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /REVIEW_LABEL="\$\{DSH_WORKER_REVIEW_LABEL:-dsh\/review\}"/);
