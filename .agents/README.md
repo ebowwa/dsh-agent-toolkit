@@ -221,6 +221,72 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir hygiene (issues #333, #374)
+
+**A workdir is yours only if no sibling can predict it, and only while
+you can prove it.** Concurrent fleet agents on one box clone their claim
+repos into throwaway workdirs, and two predictability vectors have now
+destroyed in-flight work. First the shared-path class (#333): the
+standard `rm -rf /tmp/<repo> && gh repo clone` recipe re-clones OVER any
+sibling already at that path — silently. Then the pseudo-unique class
+(#374): an agent minted `work-<issue>-<repo>-$(date +%s)`, called it
+unique, and a same-issue sibling minted the SAME path inside the same
+epoch second — worse, the takeover was silent: the first agent's
+confirmed edits were replaced by the sibling's implementation
+mid-session, and every syntax check and test run after the takeover
+validated a tree that was no longer theirs (receipts: a single-entry
+clone reflog stamped over an edited tree, #333, 2026-10-04 02:25:39;
+`work-361-toolkit-1791109240` file mtimes 10:23:45Z/10:24:45Z over edits
+confirmed at 10:21Z, #374; the concurrent-maintenance wave that makes
+same-second mints the normal case is factory#869 — 14 identical-prompt
+agents on one box). The contract:
+
+1. **MINT A RANDOM WORKDIR PER CLAIM** — a timestamp is NOT uniqueness.
+   Uniqueness comes from a random component a sibling cannot guess:
+
+   ```bash
+   workdir="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"
+   gh repo clone OWNER/REPO "$workdir" && cd "$workdir"
+   ```
+
+   (A `$HOME`-anchored census dir works the same way:
+   `mktemp -d "$HOME/dsh-node/work-<issue>-<repo>-XXXXXX"`.) The bare
+   `$(date +%s)` suffix is banned — it collides for same-issue siblings
+   within one second, the #327 branch-mint lesson applied to directories
+   — and the shared-path clone recipe (`rm -rf /tmp/<repo> && gh repo
+   clone ...`) is banned outright: `rm -rf` is legal only inside a dir
+   YOUR session minted, never on a predictable path another agent could
+   hold.
+2. **RE-ENTER ONLY A PATH YOU RECORDED** — a workdir is re-entered via
+   the exact path your own session minted and recorded (the shell
+   variable, your notes), NEVER via glob reuse
+   (`ls -d work-<issue>-* | head -1`): a matching dir can be a sibling's
+   live tree at ANY time, not just the same epoch second, and landing
+   there silently replaces your edits mid-session — the #374 takeover
+   receipt. A dir you did not mint is not yours.
+3. **THE OWNER-MARKER BELT** — mint stamps ownership, edit batches verify
+   it. At mint, write a marker inside the workdir:
+
+   ```bash
+   printf 'session=%s\nclaim=%s\n' "$$" "$ISSUE" \
+     > "$workdir/.dsh-workdir-owner"
+   ```
+
+   Before each edit batch, re-check the marker matches YOUR session. A
+   tree whose marker is not yours — or a dir you didn't mint, marker or
+   not — is a takeover in progress: stop, do not edit, file it, mint
+   fresh. This is the belt for rule 2's suspenders: it catches the reuse
+   vectors no naming discipline can close.
+
+**Acceptance — structurally impossible collisions:** two same-box
+siblings working the same issue can never share a worktree — neither
+names a path the other could guess (random mint), neither lands in a dir
+the other minted (recorded-path re-entry), and any takeover that slips
+the first two rules is detected before the next edit batch (owner
+marker). The prompt assembly stamps this contract into every task it
+builds too (structural + behavioral pins:
+`tests/workdir-collision-contract.test.mjs`).
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +319,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-collision-contract.test.mjs` — pins the workdir-hygiene
+  driver block (placement + random-mint/re-entry/marker rules) and keeps
+  the corpus free of epoch-mint and glob-reuse recipes (issues #333, #374).
