@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 const WALK_CAP = 50;
 
@@ -282,6 +282,24 @@ export async function main(argv = process.argv.slice(2)) {
   );
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) await main();
+// Symlink-safe CLI guard (issues #309/#311, the #302 class):
+// pathToFileURL repairs the URL ENCODING of argv[1] but not its symlinks
+// — Node resolves the entry symlink at load, so import.meta.url is the
+// REALPATH while argv[1] stays as invoked; through a symlinked entry the
+// compare mismatched, main() silently never ran, and the process exited
+// 0 without seeding, walking, or verifying anything (a false green for
+// every wrapper that reaches the installer through a symlink). href fast
+// path first, realpath fallback second — the settings-write.mjs isMain()
+// shape.
+const THIS_FILE = fileURLToPath(import.meta.url);
+function isMain() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(THIS_FILE);
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) await main();

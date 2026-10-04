@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import {
   Union,
@@ -182,6 +182,37 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
       assert.match(String(e.stderr), /@deepseek-ai\/definitely-not-a-real-pkg-xyz/, "the missing package is named");
     }
     assert.ok(failed, "--dry-run on a bare tree must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked entry still runs main() — LOUD, never a silent 0 (#309, #311)", () => {
+  // The #302 false-green class: pathToFileURL repairs argv[1]'s URL
+  // encoding but not its symlinks, so through a symlinked entry the
+  // isMain compare mismatched, main() silently never ran, and the
+  // process exited 0 without seeding, walking, or verifying anything.
+  // Empty plugins/ dir: main() dies LOUDLY ("no tested plugins") with
+  // no npm and no network — the pre-fix guard instead exited 0 in
+  // silence. (The dir must EXIST: an absent plugins/ crashes
+  // testedPlugins with a raw ENOENT before the die line — see the
+  // found: issue filed from this claim.)
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins"));
+    const link = path.join(tmp, "ipsd-link.mjs");
+    fs.symlinkSync(script, link);
+    const r = spawnSync(process.execPath, [link, "--dry-run"], {
+      encoding: "utf8",
+      cwd: tmp,
+    });
+    assert.notEqual(
+      r.status,
+      0,
+      "main() must run through a symlinked entry — a silent exit 0 verified nothing",
+    );
+    assert.match(String(r.stderr), /no tested plugins found/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

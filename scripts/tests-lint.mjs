@@ -63,7 +63,8 @@
 // continuation line is out of scope for the same reason every lint
 // here is line-based.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Ambient-PATH re-inclusion: the assignment composes with the runner's
  * PATH instead of pretending to replace it — sound on every machine. */
@@ -294,8 +295,27 @@ export const lintTests = (text, name) => {
   return errors;
 };
 
-/** CLI: one or more test files; exit 1 with per-line errors if any fail. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+/** CLI: one or more test files; exit 1 with per-line errors if any fail.
+ * The guard is symlink-safe (issues #309/#311, the #302 class): Node
+ * resolves the entry's symlinks when it loads a module, so
+ * `import.meta.url` is the REALPATH while `process.argv[1]` stays as
+ * invoked — the raw `file://${process.argv[1]}` compare mismatched
+ * through a symlinked argv, the CLI block silently skipped, and the tool
+ * exited 0 having linted NOTHING (a false green on the lint gate
+ * itself). href fast path first, realpath fallback second — the
+ * settings-write.mjs isMain() shape. */
+const THIS_FILE = fileURLToPath(import.meta.url);
+function isMain() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(THIS_FILE);
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   const files = process.argv.slice(2);
   if (!files.length) {
     console.error("usage: tests-lint.mjs <test.mjs> [more.test.mjs ...]");

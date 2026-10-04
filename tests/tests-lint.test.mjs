@@ -32,7 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,4 +308,23 @@ test("unusable invocation is a loud usage error", () => {
   const r = runTool([]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: tests-lint\.mjs/);
+});
+
+test("a symlinked argv still arms the CLI — usage 2, never a silent 0 (#309, #311)", () => {
+  // The #302 false-green class on THIS gate: import.meta.url is the
+  // realpath (Node resolves entry symlinks at load) while argv[1] stays
+  // as invoked — the raw `file://${argv[1]}` compare mismatched through
+  // a symlink, the CLI block skipped, and a bare invocation exited 0
+  // having linted NOTHING. Through the symlink the usage error must
+  // still fire (exit 2), proving the CLI arm ran.
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-lint-symlink-"));
+  try {
+    const link = path.join(dir, "tl-link.mjs");
+    symlinkSync(TOOL, link);
+    const r = spawnSync(process.execPath, [link], { encoding: "utf8" });
+    assert.equal(r.status, 2, `stderr: ${r.stderr}`);
+    assert.match(r.stderr, /usage: tests-lint\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
