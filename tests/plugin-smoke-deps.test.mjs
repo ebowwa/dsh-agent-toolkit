@@ -23,6 +23,7 @@ import {
   verify,
   linkLocals,
   testedPlugins,
+  allPlugins,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -182,6 +183,58 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
       assert.match(String(e.stderr), /@deepseek-ai\/definitely-not-a-real-pkg-xyz/, "the missing package is named");
     }
     assert.ok(failed, "--dry-run on a bare tree must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// #329: a cwd with NO plugins/ directory must reach main()'s
+// `die("no tested plugins found under plugins/")` — the raw ENOENT
+// traceback from readdirSync made that diagnostic unreachable for the
+// missing-dir case (it only fired for a plugins/ that exists and is
+// empty). Message-quality, not behavior: still fail-closed, non-zero.
+test("a missing plugins/ dir reads as 'no plugins', never a raw ENOENT (#329)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-missing-"));
+  try {
+    assert.ok(!fs.existsSync(path.join(tmp, "plugins")), "fixture: no plugins/ dir");
+    assert.deepEqual(testedPlugins(tmp), [], "testedPlugins: missing dir = none");
+    assert.deepEqual(allPlugins(tmp), [], "allPlugins: missing dir = none");
+
+    // an EMPTY plugins/ dir keeps its existing meaning: no plugins,
+    // same [] — the two cases converge on one diagnostic in main()
+    fs.mkdirSync(path.join(tmp, "plugins"));
+    assert.deepEqual(testedPlugins(tmp), [], "testedPlugins: empty dir = none");
+    assert.deepEqual(allPlugins(tmp), [], "allPlugins: empty dir = none");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI on a cwd without plugins/: the die line fires, no traceback (#329)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-missing-"));
+  try {
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(
+        String(e.stderr),
+        /no tested plugins found under plugins\//,
+        "the intended diagnostic fires for a MISSING dir too",
+      );
+      assert.doesNotMatch(
+        String(e.stderr),
+        /ENOENT/,
+        "no raw readdir traceback — the die line is reachable",
+      );
+    }
+    assert.ok(failed, "a cwd without plugins/ still exits non-zero (fail-closed)");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

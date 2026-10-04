@@ -41,9 +41,23 @@ const die = (...m) => {
   process.exit(1);
 };
 
+// A MISSING plugins/ dir reads as "no plugins", not a crash — main()'s
+// `die("no tested plugins found under plugins/")` then delivers its
+// intended diagnostic for both the missing and the empty case (#329).
+// Only ENOENT maps to []; real read failures (EACCES, ENOTDIR, ...)
+// still throw — fail-closed for everything but the absent dir.
+const pluginDirEntries = (root) => {
+  try {
+    return fs.readdirSync(path.join(root, "plugins"));
+  } catch (e) {
+    if (e?.code === "ENOENT") return [];
+    throw e;
+  }
+};
+
 export function testedPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirEntries(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     if (!fs.existsSync(path.join(root, "plugins", dir, "test"))) continue;
@@ -59,7 +73,7 @@ export function testedPlugins(root) {
 // (ui -> editor) may reach a plugin whose own test dir does not exist.
 export function allPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirEntries(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     out.push({
