@@ -17,13 +17,11 @@
  * lib/hot.js fresh-URL shim re-exporting the same API.
  */
 
+import { guardedImport } from "./deps-fence.mjs"; // environmental skip fence (#358)
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 
-const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const nodeHalf = await import(join(pkgDir, "lib", "index.js"));
-const hotHalf = await import(join(pkgDir, "lib", "hot.js"));
+const nodeHalf = await guardedImport("../lib/index.js", import.meta.url);
+const hotHalf = await guardedImport("../lib/hot.js", import.meta.url);
 
 let pass = 0;
 let fail = 0;

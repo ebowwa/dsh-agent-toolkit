@@ -6,12 +6,13 @@
  *   stub seeds, then drives apply() against a mock slots/locale ctx.
  * Run: node test/smoke.mjs
  */
+import { guardedImport } from "./deps-fence.mjs"; // environmental skip fence (#358)
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { apply as nodeApply, BLOCK_ROUTE } from "../lib/index.js";
+const { apply: nodeApply, BLOCK_ROUTE } = await guardedImport("../lib/index.js", import.meta.url);
 
 const dir = mkdtempSync(join(tmpdir(), "sp-ui-"));
 const file = join(dir, "system-prompt.md");

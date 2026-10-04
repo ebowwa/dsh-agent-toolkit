@@ -4,11 +4,13 @@
  * process involved.
  * Run: node test/smoke.mjs
  */
+import { guardedImport } from "./deps-fence.mjs"; // environmental skip fence (#358)
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } from "../lib/index.js";
+const { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } =
+	await guardedImport("../lib/index.js", import.meta.url);
 
 const dir = mkdtempSync(join(tmpdir(), "sp-editor-"));
 const file = join(dir, "system-prompt.md");
