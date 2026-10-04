@@ -12,6 +12,13 @@
 // consumers pinning v1.97.0 saw zero delta to v1.98.0. These tests fail
 // without the fix — delete the empty-range guard block and this suite
 // goes red.
+//
+// Extended for issue #385 (the #231 residual): the #384 guard fired only
+// AFTER a full agent pass had reviewed the empty diff and replied TAG.
+// The scope step now emits an `empty` output and BOTH downstream steps
+// gate on it — an empty range costs ZERO agent passes. Delete the
+// `empty=` output or drop either downstream `if:` and the #385 tests
+// below go red.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -66,4 +73,68 @@ test("README documents the distinct-commit release rule", () => {
     "README's Versioning section must state the distinct-commit rule (issue #231)");
   assert.match(readme, /never re-pointed/,
     "README's Versioning section must state published release tags are never re-pointed");
+});
+
+// --- issue #385: an empty range costs ZERO agent passes -------------------
+
+const stepBlock = (name) => {
+  const lines = read(".github", "workflows", "drift-check.yml").split("\n");
+  const i = lines.findIndex((l) => l.trim() === `- name: ${name}`);
+  assert.notEqual(i, -1, `step "${name}" must exist in drift-check.yml`);
+  const indent = lines[i].match(/^(\s*)-/)[1].length;
+  const out = [];
+  for (let k = i + 1; k < lines.length; k++) {
+    const l = lines[k];
+    if (l.trim() === "") { out.push(l); continue; }
+    const m = l.match(/^(\s*)-/);
+    if (m && m[1].length <= indent) break; // next step / dedent out of steps:
+    out.push(l);
+  }
+  return out.join("\n");
+};
+
+test("scope emits an empty-range flag over the full propagation surface (issue #385)", () => {
+  const block = stepBlock("What changed since the last tag?");
+  // the emptiness probe covers the SAME three pathspec families the
+  // review propagates — a narrower probe would skip a range the review
+  // never got to see (skip surface == review surface)
+  assert.ok(
+    block.includes(
+      `git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config`,
+    ),
+    "scope must probe emptiness with git diff --quiet over scripts, agent-*.yml workflows and config",
+  );
+  // the probe rides an if — under set -e a bare --quiet with changes
+  // would kill the scope step (exit 1) instead of setting the flag
+  assert.match(block, /if git diff --quiet "\$BASE\.\.HEAD"/,
+    "the --quiet probe must sit in an if condition, not run bare under set -e");
+  assert.ok(block.includes('echo "empty=true" >> "$GITHUB_OUTPUT"'),
+    "scope must emit empty=true on an empty range");
+  assert.ok(block.includes('echo "empty=false" >> "$GITHUB_OUTPUT"'),
+    "scope must emit empty=false on a real range — never leave the output unset");
+  assert.match(block, /EMPTY release range .* skipping agent review and publish/,
+    "the empty skip must be loud in the run log, not a silent green");
+});
+
+test("the agent review step never runs on an empty range — zero agent passes (issue #385)", () => {
+  const block = stepBlock("Agent reviews its own diff (release gate)");
+  assert.ok(block.includes(`if: steps.scope.outputs.empty != 'true'`),
+    "the review step must be gated on the scope step's empty flag — an empty range burns ZERO agent passes");
+  assert.equal((block.match(/if: steps\.scope\.outputs\.empty/g) || []).length, 1,
+    "the review gate must be exactly the empty flag — no compound condition that could skip a real review");
+});
+
+test("the tag step skips green on empty — a skipped review leaves VERDICT unset (issue #385)", () => {
+  const block = stepBlock("Tag + release + notify (only on TAG verdicts)");
+  assert.ok(block.includes(`if: steps.scope.outputs.empty != 'true'`),
+    "the tag step must be gated on the empty flag — a skipped review leaves VERDICT unset and the verdict case would exit 1 red");
+  // the #384 race-day belt stays inside the step: scope-time non-empty
+  // can still be tag-time empty (BASE adopted between the two steps)
+  assert.ok(block.includes('HEAD_C="$(git rev-parse "HEAD^{commit}")"'),
+    "the HEAD==BASE belt (PR #384) must remain in the tag step");
+  // and the belt complements, never replaces, the fail-closed verdict
+  assert.ok(block.includes("TAG|TAG-WITH-FINDINGS)"),
+    "the verdict case must still gate a real range's tag");
+  assert.match(block, /verdict '\$\{VERDICT:-none\}' — NOT tagging/,
+    "a non-TAG verdict on a real range must still exit red");
 });

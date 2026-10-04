@@ -15,6 +15,9 @@
 # scrubbed review body to the run log (run 32568700263 blocked with the body
 # stranded in $RUNNER_TEMP, wiped with the runner: a human got one word) —
 # a human decides.
+# EMPTY scoped range (a racing run adopting a just-pushed tag as BASE,
+# #231/#385): the review and publish steps are skipped green — an empty
+# range costs ZERO agent passes, not a full review of a zero-file diff.
 # Model: fleet default unless DSH_DRIFT_MODEL is set on this repo.
 
 name: drift-check
@@ -72,8 +75,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "--- diff scope $BASE..HEAD ---"
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
+          # Empty-range flag (issue #385, the #231 residual): a racing run
+          # can adopt a just-pushed tag as BASE while its HEAD is that same
+          # commit, and a dispatch can find only out-of-scope commits since
+          # the last tag — either way the scoped diff is EMPTY and there is
+          # nothing for the review agent to review or the tag step to
+          # release. Both downstream steps gate on this output: an empty
+          # range must cost ZERO agent passes, not a full review that ends
+          # in a skip (the PR #384 guard fired only after the review).
+          if git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "EMPTY release range $BASE..HEAD — skipping agent review and publish (issue #385)"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Agent reviews its own diff (release gate)
+        if: steps.scope.outputs.empty != 'true'
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +160,12 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        # Skipped on empty too (issue #385): a skipped review step leaves
+        # VERDICT unset, and the verdict `case` below would exit 1 red on
+        # an empty range that has nothing to publish. The scope-step flag
+        # skips this step green; the HEAD==BASE guard inside stays as the
+        # race-day belt (scope-time non-empty can still be tag-time empty).
+        if: steps.scope.outputs.empty != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
