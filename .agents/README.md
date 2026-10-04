@@ -221,6 +221,77 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir ownership (issue #374)
+
+**A workdir is yours only if you minted it — and can prove it.** The
+`work-<issue>-<repo>-<epoch>` habit is not a unique mint: its entire
+uniqueness budget is the issue number plus ONE second of epoch, and the
+fleet routinely arms concurrent agents on the same issue (factory#869:
+14 identical-prompt agents on one box). Observed live 2026-10-04 while
+working claim dsh-agent-toolkit#361 (issue #374): an agent minted
+`work-361-toolkit-$(date +%s)`, cloned, and applied its confirmed fix;
+minutes later the SAME two files carried a DIFFERENT sibling's
+implementation — mtimes restamped at 10:23:45Z and 10:24:45Z, the owner's
+test block gone, `git diff` showing the sibling's +120-line diff instead
+of the owner's. A silent mid-session replacement: every subsequent
+syntax check and test run validated a tree that was no longer the
+owner's — receipts attached to the wrong diff, work destroyed with zero
+signal. Two mechanisms, one blast radius:
+
+- **same-second mint** — a sibling picking the same issue and cloning
+  within the same epoch second lands on the identical path;
+- **glob reuse** — `ls -d work-<issue>-* | head -1` enters whatever
+  matching dir exists, at ANY time: that is a takeover of a live tree,
+  not a resume of an abandoned one.
+
+The contract:
+
+1. **MINT RANDOM, NEVER BARE EPOCH** — before the first clone:
+
+   ```bash
+   owner="${DSH_FACE_ID:-agent-$$-$(date +%s)-$RANDOM}"   # once per session
+   dir="$(scripts/claim-workdir.sh mint "$HOME/dsh-node" "<issue>-<repo>" "$owner")"
+   gh repo clone OWNER/REPO "$dir" && cd "$dir"
+   ```
+
+   `claim-workdir.sh mint` mktemp-mints `<parent>/work-<slug>-XXXXXX`
+   (random suffix — siblings can never collide, issue #333's law) and
+   stamps the ownership marker `.dsh-owner` with the owner token. The
+   token is caller-supplied because claim identity is NOT unique on this
+   fleet — two siblings share the issue number — so ownership proof must
+   carry something a sibling cannot guess (pid + epoch + `$RANDOM`, or
+   the session face id). Bare `mktemp -d
+   "<parent>/work-<slug>-XXXXXX"` is equivalent minus the stamp; a bare
+   `$(date +%s)` suffix is NOT — one second is not a uniqueness budget.
+2. **NEVER REUSE A MATCHING DIR** — `ls -d work-<issue>-* | head -1` is
+   banned: you cannot tell an abandoned dir from a live sibling's tree
+   from outside it. Only a workdir THIS session minted is resumable;
+   there is always a fresh mint instead.
+3. **ASSERT OWNERSHIP BEFORE EDIT BATCHES** — the belt that makes a
+   replacement loud instead of silent. Re-assert when re-entering the
+   tree after any gap (every work block in a new shell):
+
+   ```bash
+   scripts/claim-workdir.sh assert "$dir" "$owner" || exit 1
+   ```
+
+   Exit 0 only when the marker holds THIS session's token. A foreign
+   marker means your tree was replaced (or you are the replacer); a
+   missing marker on a non-empty tree means the tree is not yours —
+   STOP either way, mint a fresh workdir, never edit on top.
+
+**Acceptance — silent replacement becomes loud:** every throwaway
+workdir the session creates carries its `.dsh-owner` marker; every edit
+batch runs on a tree whose marker matches this session; an epoch-only
+or glob-reuse mint is a contract violation even when it "works".
+
+The prompt assembly stamps this contract into every task it builds too,
+and the belt is executable — not prose discipline — through
+`scripts/claim-workdir.sh` (structural + behavioral + executable pins:
+`tests/workdir-ownership-contract.test.mjs`). Complements the #333
+workdir-hygiene contract's mint discipline with what #374 proved it
+lacks: proof of ownership after the mint.
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +324,7 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-ownership-contract.test.mjs` — pins the workdir-ownership
+  driver block (placement + the mint/reuse/assert rules), keeps this doc in
+  agreement with it, and exercises `scripts/claim-workdir.sh`'s executable
+  belt (random mint, foreign-marker death, unmarked-tree death).

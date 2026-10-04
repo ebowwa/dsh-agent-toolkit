@@ -372,6 +372,26 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir ownership (issue #374) -----------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): a
+# workdir is yours only if you minted it AND can prove it. Issue #374
+# receipt: two same-box siblings working ONE issue collided at
+# one-second epoch granularity (work-<issue>-<repo>-$(date +%s) is not
+# unique) and the later mint silently replaced the earlier agent's
+# confirmed edits mid-session; the glob-reuse habit (ls -d
+# work-<issue>-* | head -1) takes over a live tree the same way. Static
+# repo-controlled prose, appended after the input scrub pass and before
+# the launch line below. Long-form reference + receipts: .agents/README.md;
+# executable belt: scripts/claim-workdir.sh; fixtures:
+# tests/workdir-ownership-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir ownership (issue #374): a workdir is YOURS only if you minted it and can prove it — two same-box siblings working one issue collided at one-second epoch granularity and the later mint silently replaced the earlier agent's confirmed edits mid-session.
+1. MINT RANDOM, NEVER BARE EPOCH — work-<issue>-<repo>-\$(date +%s) is NOT unique: two siblings minting in the same second land on one path. Mint a random suffix: scripts/claim-workdir.sh mint <parent> <slug> <owner-token> (mktemp XXXXXX + .dsh-owner marker stamp), or mktemp -d \"<parent>/work-<slug>-XXXXXX\" yourself.
+2. NEVER REUSE A MATCHING DIR — 'ls -d work-<issue>-* | head -1' lands you in a live sibling's tree: that is a takeover, not a resume. Only a workdir THIS session minted is resumable.
+3. ASSERT OWNERSHIP BEFORE EDIT BATCHES — re-assert after any gap away from the tree: scripts/claim-workdir.sh assert <dir> <owner-token>. A foreign marker means your tree was replaced; a missing marker on a non-empty tree means the tree is not yours — STOP either way, mint a fresh workdir, never edit on top.
+Acceptance — silent replacement becomes loud: every throwaway workdir carries this session's .dsh-owner marker, every edit batch runs on a tree whose marker matches this session, and an epoch-only or glob-reuse mint is a contract violation."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).
