@@ -327,20 +327,34 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // 10717ms-class box-load red-shift — healthy legs of this wall-clock
   // shape ran 17–34s under full-gate load on this box class, so a
   // healthy 20s default + load overhead could cross 30s. The pin no
-  // longer races: the hang (40s) OUTLASTS the 20s default with 20s of
-  // scheduler slack, and the defect class it guards (guard removed →
-  // `sleep abc` dies → no watchdog) lets the hang ANSWER, flipping the
-  // output to the doppler-wins shape — the typed-fallback + header
-  // pins below red deterministically. The 60s spawnSync backstop only
-  // ever fires on a resolver that never exits; the healthy path is
-  // ~20s + overhead.
+  // longer races: the hang OUTLASTS the 20s default, and the defect
+  // class it guards (guard removed → `sleep abc` dies → no watchdog)
+  // lets the hang ANSWER, flipping the output to the doppler-wins
+  // shape — the typed-fallback + header pins below red
+  // deterministically.
+  //
+  // #450 differential widening: outcome ordering only proves the bound
+  // if the two kernel timers cannot INVERT under load — timer expiry is
+  // processed late under contention, so the hang must outlast the kill
+  // by more than any plausible differential scheduler slip. The #389
+  // geometry (40s vs 20s) left 20s of margin while the #450 receipt
+  // measured a bare `sleep 15` at 22s wall (~7s slip) under live
+  // sibling load, so this leg rides 60s vs the 20s default — 40s of
+  // differential. Failure direction is safe: the inversion can only
+  // ever false-RED (visible), never false-green. Green runs pay
+  // nothing — the kill still fires at ~20s + overhead; only the defect
+  // path waits out the full hang (~60s), which is why this leg's
+  // spawnSync backstop is 120s: the defect-path completion lands well
+  // inside it, so the backstop only ever fires on a resolver that
+  // never exits and the fallback-path asserts below stay the sole
+  // oracle.
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "40", DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_HANG_S: "60", DOPPLER_FETCH_TIMEOUT_S: "abc",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
-  }, { timeoutMs: 60_000 });
+  }, { timeoutMs: 120_000 });
   try {
     assert.equal(r.status, 0,
-      `resolver status=${r.status} signal=${r.signal ?? "none"} — either it failed or the 60s hang backstop fired; stderr=${r.stderr}`);
+      `resolver status=${r.status} signal=${r.signal ?? "none"} — either it failed or the 120s hang backstop fired; stderr=${r.stderr}`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
