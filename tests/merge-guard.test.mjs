@@ -98,10 +98,24 @@ const mergeCapture = (dir) =>
 const runGuard = (t, mode, args, { legs = [], env = {} } = {}) => {
   const dir = fixture(t);
   setLegs(dir, legs);
+  const baseEnv = {
+    ...process.env,
+    MG_STUB_DIR: dir,
+    MERGE_GUARD_GH: path.join(dir, "gh"),
+  };
+  // The legs pin a `gates`-named check run (scripts/merge-guard.sh reads
+  // CHECK="${MERGE_GUARD_CHECK:-gates}"): an ambient MERGE_GUARD_CHECK=<other>
+  // on a lane would ride the process.env spread, flip the guard's filter to a
+  // name no leg carries, and turn every green leg red (issue #483 — the
+  // env-construction flavor of the REVIEW.md lane-leak class, same shape as
+  // the #479 fix in runShim below). "Default" must mean default on every
+  // machine. Delete BEFORE the caller-env spread so a deliberate override
+  // still wins.
+  delete baseEnv.MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [GUARD, mode, ...args], {
     encoding: "utf8",
     cwd: dir,
-    env: { ...process.env, MG_STUB_DIR: dir, MERGE_GUARD_GH: path.join(dir, "gh"), ...env },
+    env: { ...baseEnv, ...env },
   });
   return { res, dir };
 };
@@ -182,6 +196,25 @@ test("guard: a green run for a STALE head SHA is not green (re-push stale green)
   const { res } = runGuard(t, "check", ["434"], { legs: [leg({ head_sha: HEAD2 })] });
   assert.equal(res.status, 1);
   assert.match(res.stderr, /no 'gates' check run/);
+});
+
+test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (issue #483 pin)", (t) => {
+  // The #483 defect is invisible on a clean dev box: the legs above pin a
+  // `gates`-named check, but the guard reads CHECK="${MERGE_GUARD_CHECK:-gates}"
+  // — on a lane that exports MERGE_GUARD_CHECK=<other> the name rode the
+  // process.env spread, the filter matched no leg, and every green leg went
+  // red. Arm the lane INSIDE this process so the harness env's hermeticity is
+  // graded on every machine, not just on mis-configured lanes (the #479 pin
+  // shape, applied to the guard's own default).
+  process.env.MERGE_GUARD_CHECK = "ci/ambient-not-gates";
+  try {
+    const { res, dir } = runGuard(t, "check", ["434"], { legs: [leg()] });
+    assert.equal(res.status, 0, `the harness 'gates' default must beat the ambient name (stderr: ${res.stderr})`);
+    assert.match(res.stdout, /GREEN — 'gates' completed\/success/, "the guard still graded the gates leg");
+    assert.equal(apiCalls(dir), 1);
+  } finally {
+    delete process.env.MERGE_GUARD_CHECK;
+  }
 });
 
 // --- 2. ONE snapshot: the no-poll pin ---------------------------------------
