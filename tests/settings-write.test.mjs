@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { preserveUnknownRoutes, isPlainObject } from "../scripts/settings-normalize.mjs";
+import { preserveUnknownRoutes, isPlainObject, normalizeWritePreserving } from "../scripts/settings-normalize.mjs";
 import { checkLaneSettings, laneSettingsPath } from "../scripts/lane-settings-guard.mjs";
 import { resolveYaml, runWrite, stampModel } from "../scripts/settings-write.mjs";
 
@@ -298,5 +298,111 @@ describe("stampModel — the template stamp", () => {
   });
   test("a metacharacter id refuses (the stamp lands inside structured YAML)", () => {
     assert.throws(() => stampModel("a: 1\n", "zai/glm\ninjected: true"), /A-Za-z0-9/);
+  });
+});
+
+// ── 6. prototype-named keys survive (issue #330, the FleetTower #791 ──
+// class) — the preserve loop's membership test must be an OWN-key test.
+// `key in out` consults the prototype chain, so a user key named
+// `constructor`, `toString`, `hasOwnProperty`, … read as "the
+// normalizer set it", were never copied, and silently dropped from
+// the written file (Object.entries/stringify only ever see OWN keys).
+// The module contract says EVERY original key the normalizer did not
+// set, at ANY depth, rides through untouched — a route literally
+// named `toString` is a legal YAML settings shape and must survive a
+// normalize-write.
+
+describe("settings-normalize — prototype-named keys survive (issue #330)", () => {
+  test("TOP-LEVEL keys named like Object.prototype members carry through (the issue #330 repro)", () => {
+    const merged = preserveUnknownRoutes(
+      { model: "glm-5.3", providers: { zai: {} } },
+      {
+        constructor: "user-value",
+        toString: { api: "https://x", pin: "secret-pin" },
+        hasOwnProperty: 7,
+        valueOf: null,
+        myRoute: { keep: true },
+      },
+    );
+    assert.equal(merged.constructor, "user-value");
+    assert.equal(canonical(merged.toString), canonical({ api: "https://x", pin: "secret-pin" }));
+    assert.equal(merged.hasOwnProperty, 7);
+    assert.equal(merged.valueOf, null);
+    assert.equal(canonical(merged.myRoute), canonical({ keep: true }));
+    // they are OWN keys now (they serialize; inherited ones never do)
+    for (const k of ["constructor", "toString", "hasOwnProperty", "valueOf", "myRoute"]) {
+      assert.equal(Object.hasOwn(merged, k), true);
+    }
+    // the normalizer's own keys still stand
+    assert.equal(merged.model, "glm-5.3");
+    assert.equal(Object.hasOwn(merged.providers, "zai"), true);
+  });
+
+  test("a key the normalizer SET wins even when prototype-named — own-set beats prototype-consult, not the user", () => {
+    const merged = preserveUnknownRoutes(
+      { toString: { set: "by-normalizer" } },
+      { toString: { set: "by-user", extra: true } },
+    );
+    // both sides are plain objects → merge-preserve recurses; the
+    // normalizer's own `set` wins, the user's unknown `extra` survives
+    assert.equal(merged.toString.set, "by-normalizer");
+    assert.equal(merged.toString.extra, true);
+  });
+
+  test("NESTED route named `toString` and field named `constructor` ride through at depth and inside route arrays", () => {
+    const merged = preserveUnknownRoutes(
+      {
+        providers: {
+          "opencode-go": { type: "openai", routes: { "kimi-k2": { model: "kimi-k2" } } },
+        },
+        chain: [{ id: "keep-me", note: "set" }],
+      },
+      {
+        providers: {
+          "opencode-go": {
+            routes: {
+              // a route LITERALLY named toString — legal YAML key
+              toString: { model: "user-model", credential: "pin:proto" },
+              "kimi-k2": { context: 131072 },
+            },
+          },
+        },
+        chain: [{ id: "user-entry", constructor: "entry-field" }],
+      },
+    );
+    // the toString route is restored verbatim at full depth
+    assert.equal(
+      canonical(merged.providers["opencode-go"].routes.toString),
+      canonical({ model: "user-model", credential: "pin:proto" }),
+    );
+    // shared route merge-preserve still works beside it
+    assert.equal(merged.providers["opencode-go"].routes["kimi-k2"].context, 131072);
+    // array entries carrying a prototype-named FIELD keep it
+    const userEntry = merged.chain.find((e) => e && e.id === "user-entry");
+    assert.equal(userEntry.constructor, "entry-field");
+  });
+
+  test("ROUND-TRIP through YAML on disk: a settings file with prototype-named keys keeps them", { skip: !resolveYaml() && "no YAML runtime resolvable on this box" }, () => {
+    const yamlRuntime = resolveYaml();
+    const home = mkdtempSync(path.join(tmpdir(), "settings-write-proto-"));
+    const lane = path.join(home, ".dsh-open");
+    mkdirSync(lane, { recursive: true });
+    const p = laneSettingsPath(lane);
+    const onDisk = {
+      model: "glm-5.3-flash",
+      constructor: "user-value",
+      providers: {
+        "opencode-go": { routes: { toString: { model: "user-model", credential: "pin:proto" } } },
+      },
+    };
+    writeFileSync(p, yamlRuntime.stringify(onDisk), { mode: 0o600 });
+    normalizeWritePreserving(p, rc7StyleNormalizer, { parse: yamlRuntime.parse, stringify: yamlRuntime.stringify });
+    const after = yamlRuntime.parse(readFileSync(p, "utf8"));
+    assert.equal(after.constructor, "user-value");
+    assert.equal(
+      canonical(after.providers["opencode-go"].routes.toString),
+      canonical(onDisk.providers["opencode-go"].routes.toString),
+    );
+    rmSync(home, { recursive: true, force: true });
   });
 });
