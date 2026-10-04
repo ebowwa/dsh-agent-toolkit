@@ -32,7 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,4 +308,39 @@ test("unusable invocation is a loud usage error", () => {
   const r = runTool([]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: tests-lint\.mjs/);
+});
+
+test("CLI arm runs through a symlinked tool path (#311): the lint executes, never a silent 0", () => {
+  // Regression: the CLI guard compared import.meta.url (always the REAL
+  // path — Node resolves module symlinks at load) against
+  // `file://${process.argv[1]}` (as-invoked). Spawn the tool through a
+  // symlink and the compare never matched: the whole CLI block silently
+  // skipped and a DEFECTIVE test file exited 0 with zero output — the
+  // linter false-greened itself (the #302 class, pinned here for this
+  // sibling; macOS /tmp → /private/tmp makes any wrapper in a symlinked
+  // dir hit this).
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-lint-symlink-"));
+  try {
+    const linkedTool = path.join(dir, "tests-lint-link.mjs");
+    symlinkSync(TOOL, linkedTool); // argv[1] ≠ realpath — the #311 shape
+    const broken = path.join(dir, "broken.test.mjs");
+    writeFileSync(broken, DEFECT_SOURCE);
+    const bad = spawnSync(process.execPath, [linkedTool, broken], { encoding: "utf8" });
+    assert.equal(bad.status, 1,
+      "a defective test file through a symlinked tool must be a LINT failure, not a false-green 0");
+    assert.match(bad.stderr, /broken\.test\.mjs:4:/,
+      "the lint must have actually run and reported the defect");
+    const fixed = path.join(dir, "fixed.test.mjs");
+    writeFileSync(fixed, 'const env = { PATH: `${dir}:${process.env.PATH}` };\n');
+    const good = spawnSync(process.execPath, [linkedTool, fixed], { encoding: "utf8" });
+    assert.equal(good.status, 0);
+    assert.equal(good.stderr, "", "clean file through the symlink: green and quiet");
+    // bare invocation through the symlink must still arm the CLI block:
+    // the usage error (exit 2) proves the guard matched, not skipped.
+    const usage = spawnSync(process.execPath, [linkedTool], { encoding: "utf8" });
+    assert.equal(usage.status, 2);
+    assert.match(usage.stderr, /usage:/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

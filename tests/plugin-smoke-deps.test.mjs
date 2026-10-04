@@ -186,3 +186,63 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("main() runs through a symlinked tool path (#311): the bare tree is still a LOUD red, never a silent 0", () => {
+  // Regression: the main-arm guard compared import.meta.url (always the
+  // REAL path — Node resolves module symlinks at load) against
+  // pathToFileURL(process.argv[1]).href (as-invoked; URL-normalized but
+  // symlink-blind). Spawn the installer through a symlink and the
+  // compare never matched: main() silently never ran, the process
+  // exited 0, and the smoke deps were never installed while the wrapper
+  // read green — the #302 class on this sibling. The bare-fixture red
+  // leg (above) is the observable: through the symlink it MUST still
+  // die loudly, which the old guard's silent 0 could never produce.
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-"));
+  try {
+    const linked = path.join(tmp, "install-plugin-smoke-deps-link.mjs");
+    fs.symlinkSync(script, linked); // argv[1] ≠ realpath — the #311 shape
+
+    // bare fixture with an unmaterializable peer: through the symlink,
+    // main() must still run and fail the verify LOUDLY
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-bare-"));
+    try {
+      fs.mkdirSync(path.join(bare, "plugins", "a", "test"), { recursive: true });
+      fs.writeFileSync(
+        path.join(bare, "plugins", "a", "package.json"),
+        JSON.stringify({
+          name: "@local/a",
+          peerDependencies: { "@deepseek-ai/definitely-not-a-real-pkg-xyz": "^1.0.0" },
+        }),
+      );
+      let failed = false;
+      try {
+        execFileSync("node", [linked, "--dry-run"], {
+          cwd: bare,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (e) {
+        failed = true;
+        assert.match(
+          String(e.stderr),
+          /tree NOT satisfied/,
+          "through the symlink the bare tree is still a LOUD red",
+        );
+        assert.match(
+          String(e.stdout ?? ""),
+          /seed \(/,
+          "main() actually ran (the seed line printed), not a silent skip",
+        );
+      }
+      assert.ok(
+        failed,
+        "symlinked --dry-run on a bare tree must exit non-zero — exit 0 means main() silently skipped (#311)",
+      );
+    } finally {
+      fs.rmSync(bare, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -63,7 +63,8 @@
 // continuation line is out of scope for the same reason every lint
 // here is line-based.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** Ambient-PATH re-inclusion: the assignment composes with the runner's
  * PATH instead of pretending to replace it — sound on every machine. */
@@ -295,7 +296,22 @@ export const lintTests = (text, name) => {
 };
 
 /** CLI: one or more test files; exit 1 with per-line errors if any fail. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+// CLI-arm guard, issue #311 (the #302 class): compare REALPATHS on both
+// sides. Node loads a module through its resolved path, so import.meta.url
+// is always the real file, while process.argv[1] stays as invoked. Spawn
+// this tool through a symlink (wrapper dirs; macOS /tmp → /private/tmp)
+// and the old string compare `file://${argv[1]}` never matched — the
+// whole CLI block silently skipped and the process exited 0 having linted
+// NOTHING (false green). Same fix as workflow-lint.mjs (#302, PR #310).
+const invokedSelf = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false; // argv[1] unreadable — not a self-invocation
+  }
+})();
+if (invokedSelf) {
   const files = process.argv.slice(2);
   if (!files.length) {
     console.error("usage: tests-lint.mjs <test.mjs> [more.test.mjs ...]");

@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const WALK_CAP = 50;
 
@@ -282,6 +282,22 @@ export async function main(argv = process.argv.slice(2)) {
   );
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Main-arm guard, issue #311 (the #302 class): compare REALPATHS on both
+// sides. pathToFileURL normalized the URL shape but not the symlinks:
+// spawn this installer through a symlinked path (wrapper dirs; macOS
+// /tmp → /private/tmp) and the old compare never matched, main()
+// silently never ran, and the process exited 0 — the smoke deps were
+// never installed while the wrapper read green. Same fix as
+// workflow-lint.mjs (#302, PR #310).
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      fs.realpathSync(process.argv[1]) ===
+      fs.realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false; // argv[1] unreadable — not a self-invocation
+  }
+})();
 if (isMain) await main();
