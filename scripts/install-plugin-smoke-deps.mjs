@@ -41,9 +41,19 @@ const die = (...m) => {
   process.exit(1);
 };
 
+// plugins/ dir entries; a root with NO plugins/ dir at all (wrong cwd)
+// yields no plugins so the caller's own "no tested plugins found under
+// plugins/" die line delivers the intended diagnostic — a bare
+// readdirSync would crash with a raw ENOENT traceback first (#329).
+// An existing-but-unreadable dir still throws (fail-closed, honest).
+const pluginDirs = (root) => {
+  const dir = path.join(root, "plugins");
+  return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+};
+
 export function testedPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     if (!fs.existsSync(path.join(root, "plugins", dir, "test"))) continue;
@@ -59,7 +69,7 @@ export function testedPlugins(root) {
 // (ui -> editor) may reach a plugin whose own test dir does not exist.
 export function allPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     out.push({

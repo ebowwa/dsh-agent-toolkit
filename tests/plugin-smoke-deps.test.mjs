@@ -23,6 +23,7 @@ import {
   verify,
   linkLocals,
   testedPlugins,
+  allPlugins,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -152,6 +153,18 @@ test("verify is fail-closed: missing package, unresolved peer, pruned link", () 
   }
 });
 
+test("a root with NO plugins/ dir reads as zero plugins, not an ENOENT (#329)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-noplugins-"));
+  try {
+    // wrong-cwd shape: an empty dir with no plugins/ at all
+    assert.equal(fs.existsSync(path.join(tmp, "plugins")), false, "fixture carries no plugins/");
+    assert.deepEqual(testedPlugins(tmp), [], "testedPlugins: [] instead of a throw");
+    assert.deepEqual(allPlugins(tmp), [], "allPlugins: [] instead of a throw");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
   const green = execFileSync("node", [script, "--dry-run"], {
@@ -182,6 +195,37 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
       assert.match(String(e.stderr), /@deepseek-ai\/definitely-not-a-real-pkg-xyz/, "the missing package is named");
     }
     assert.ok(failed, "--dry-run on a bare tree must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI --dry-run in a cwd with NO plugins/ dir: the script's own die line, not an ENOENT traceback (#329)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-empty-cwd-"));
+  try {
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(
+        String(e.stderr),
+        /no tested plugins found under plugins\//,
+        "the intended diagnostic is reachable for a MISSING dir",
+      );
+      assert.doesNotMatch(
+        String(e.stderr),
+        /ENOENT/,
+        "no raw traceback — the die line fires before any readdir",
+      );
+      assert.ok(typeof e.status === "number" && e.status !== 0, "exit is non-zero (fail-closed)");
+    }
+    assert.ok(failed, "a cwd without plugins/ must still exit non-zero");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
