@@ -258,6 +258,52 @@ it, so an agent working in-place trades its own work's safety for the
 whole box's currency. See
 [`skills/worktree-over-stash/`](skills/worktree-over-stash/SKILL.md)
 for the worktree lane pattern.
+## Standing contract: claim-time carrier dedup (issue #414)
+
+**Never work a ticket a live carrier already holds.** The lane-pass claim
+protocol picks a ticket by fleet priority, but that order says nothing
+about whether a sibling cell already claimed it — so concurrent cells
+independently race the SAME open ticket and each ships its own PR
+(measured 2026-10-04 on this repo: ~60 open PRs — #361 carried 8, #330
+carried 7, #358 carried 5, #385 carried 4, six more tickets carried 3
+each; meanwhile genuinely unclaimed tickets sat idle — #266 sat 3 days
+with zero carriers). The rule:
+
+1. **CLAIM-TIME CARRIER CHECK** — before starting work on ticket N in
+   repo R, run:
+
+   ```bash
+   gh pr list --repo R --state open --search "N in:title"
+   ```
+
+   and treat any open PR whose title or body references #N the same way.
+   A carrier is LIVE while it is open, not closed-without-merge, and not
+   stale (no update or review activity for a full review window).
+2. **SKIP AND DECLARE** — a live carrier means ticket N is taken: skip to
+   the next qualifying ticket by the same priority order, and say so in
+   the exit summary — one line per skip, exact shape:
+
+   ```
+   skipped: #405 — live carrier #413
+   ```
+
+   The declaration is the receipt that the check ran; a silent skip is
+   indistinguishable from never having looked.
+3. **NOT the other dedup rules** — this is the CLAIM step. #320 is dedup
+   before FILING a `found:` ticket (comment receipts onto the existing
+   one); #321 (closed; janitor follow-on FleetTower#896) was tickets
+   duplicating LANDED work. The carrier check closes the remaining hole:
+   two cells both "working" one open ticket.
+
+**Acceptance — no duplicate carriers from this session:** every ticket
+this session works had zero live carrier PRs at claim time, and every
+carrier-caused skip is declared in the exit summary.
+
+The driver's claim preamble (the DEFAULT_TASK lane-pass text in
+`scripts/run-dsh-agent.sh`) carries this rule into every scheduled roam;
+`tests/claim-dedup-contract.test.mjs` pins both surfaces (structural +
+behavioral) the way `tests/branch-hygiene-contract.test.mjs` pins #127.
+
 ## Standing contract: workdir hygiene (issues #333, #374)
 
 **A workdir is yours only if no sibling can predict it, and only while
