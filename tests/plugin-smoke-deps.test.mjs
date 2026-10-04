@@ -23,6 +23,7 @@ import {
   verify,
   linkLocals,
   testedPlugins,
+  allPlugins,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -152,6 +153,42 @@ test("verify is fail-closed: missing package, unresolved peer, pruned link", () 
   }
 });
 
+test("a root with NO plugins/ dir reads as no plugins — not a raw ENOENT (issue #329)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-missing-"));
+  try {
+    // the unit seam: both readers return [] instead of throwing
+    assert.deepEqual(
+      testedPlugins(tmp),
+      [],
+      "testedPlugins on a missing plugins/ dir is [], never a throw",
+    );
+    assert.deepEqual(
+      allPlugins(tmp),
+      [],
+      "allPlugins on a missing plugins/ dir is [], never a throw",
+    );
+
+    // the CLI seam: the die line delivers its intended diagnostic for the
+    // MISSING case (same as the empty case), not a readdir traceback
+    const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(String(e.stderr), /no tested plugins found under plugins\//, "the script's own diagnostic fires");
+      assert.doesNotMatch(String(e.stderr), /ENOENT/, "no raw readdir traceback");
+    }
+    assert.ok(failed, "a cwd without plugins/ must still exit non-zero (fail-closed)");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
   const green = execFileSync("node", [script, "--dry-run"], {
@@ -182,6 +219,61 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
       assert.match(String(e.stderr), /@deepseek-ai\/definitely-not-a-real-pkg-xyz/, "the missing package is named");
     }
     assert.ok(failed, "--dry-run on a bare tree must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
+  // pathToFileURL normalizes URL encoding but resolves NO symlinks:
+  // import.meta.url is the entry's realpath, argv[1] stays as invoked,
+  // so the pre-#324 guard (`import.meta.url ===
+  // pathToFileURL(process.argv[1]).href`) never matched through a
+  // symlink — main() silently never ran and the script exited 0 without
+  // seeding, verifying, or installing anything. A wrapper reaching the
+  // gates dep step through a symlinked path green-skips the whole
+  // dependency closure. Revert the realpath guard and this leg goes red
+  // (observed on pristine main @ 3da299e: symlinked --dry-run exit 0,
+  // zero output; direct run loud red).
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-"));
+  try {
+    // no deps/peers: 0 seed specs, zero registry walks — the @local-link
+    // verify leg alone supplies a state-independent loud observable
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({ name: "@local/a" }),
+    );
+    const link = path.join(tmp, "ipsd-link.mjs");
+    fs.symlinkSync(script, link);
+    let failed = false;
+    try {
+      execFileSync("node", [link, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(String(e.stdout), /seed \(0 specs\)/, "main() RAN through the symlink");
+      assert.match(String(e.stderr), /tree NOT satisfied/, "the dry-run verify is loud");
+      assert.match(String(e.stderr), /@local link pruned or absent/, "the gap is named");
+    }
+    assert.ok(failed, "--dry-run through the symlink must not exit 0");
+
+    // direct invocation is unchanged
+    let directFailed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      directFailed = true;
+    }
+    assert.ok(directFailed, "direct --dry-run on the bare fixture stays red");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

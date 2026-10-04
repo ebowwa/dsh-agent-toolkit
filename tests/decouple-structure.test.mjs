@@ -145,6 +145,20 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /dsh\/queued/);
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
+  // #285: the manual cron example must teach the canonical keepalive the
+  // installer mints — flock overlap guard + v1 re-pin — never the
+  // self-matching pgrep guard install-worker.sh rejects (the carrier's
+  // sweep braces contain the real script path, so every pgrep form finds
+  // ITSELF and no sweep ever runs; worker.log stays empty, silently).
+  const cronExample = doc.split("\n").find(l => l.includes("* * * * *"));
+  assert.ok(cronExample, "the manual cron keepalive example line exists");
+  assert.match(cronExample, /flock -n /, "doc keepalive carries the flock overlap guard");
+  assert.ok(!cronExample.includes("pgrep"), "doc keepalive must not teach the self-matching pgrep guard");
+  assert.match(cronExample, /fetch --tags --force/, "doc keepalive re-pins via a forced tag fetch");
+  assert.match(cronExample, /checkout -q --force v1/, "doc keepalive re-pins to the moving v1 tag each sweep");
+  // the manual path stays coherent with config/dsh-worker.env.example's
+  // DSH_AGENT_TOOLKIT_DIR default and the installer's install dir
+  assert.ok(!doc.includes("$HOME/dsh-bot"), "manual path must not point at the retired dsh-bot checkout location");
 });
 
 test("docs 3a systemd unit exec rides /bin/bash — a 644 script cannot direct-exec (#305)", () => {

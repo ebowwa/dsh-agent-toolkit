@@ -29,6 +29,27 @@ const PINNED_VERSION = "0.1.0-rc.8";
 
 const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
 
+// The live legs need MORE than the CLI: stampOverlays symlinks the box's
+// real backend packages (~/.dsh/profiles/node_modules/@deepseek-ai/...) —
+// their presence is the overlay rows' gate, so an absent or dangling
+// profile tree stamps 2 patches and the legs red at the >=3 assert on a
+// PRISTINE main (issue #273: exactly that red on a box whose profile tree
+// had drifted; healed only by the tree's own refresh — no PR could fix
+// it). Box state, not a code regression: degrade to a LOUD skip naming
+// the missing precondition, the same shape as the dsh-absent gate above.
+// Strict whenever the precondition holds — the offline legs never touch it.
+function backendPackagesPresent(home) {
+  const ns = join(home ?? "", ".dsh", "profiles", "node_modules", "@deepseek-ai");
+  return ["dsh-session-query-sqlite", "dsh-session-persistence-jsonl"].every(
+    (name) => existsSync(join(ns, name, "package.json")),
+  );
+}
+const LIVE_SKIP_REASON = !DSH_PRESENT
+  ? "dsh is absent"
+  : backendPackagesPresent(process.env.HOME)
+    ? false
+    : `box profile tree lacks the backend packages under ~/.dsh/profiles/node_modules/@deepseek-ai (dsh-session-query-sqlite, dsh-session-persistence-jsonl) — box state, not a code regression (issue #273)`;
+
 // Hermetic lane-plugin consult (issue #129): empty-entry manifest — nothing
 // mounts regardless of what answers on the box.
 const HERMETIC_LANE_PLUGINS = join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
@@ -143,7 +164,27 @@ function stampOverlays() {
   return { home, patches };
 }
 
-test("the three overlays compose into the real profile (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
+test("the live-half gate pins its own contract: backend packages absent → skip named, present → strict (issue #273)", () => {
+  // A home whose profile tree lacks the backends must gate the live legs
+  // OFF (skip, never an unexplained red at the >=3 assert); a home that
+  // carries both package.json files must keep the legs strict.
+  const absentHome = mkdtempSync(join(tmpdir(), "dsh-sq-gate-absent-"));
+  assert.equal(backendPackagesPresent(absentHome), false, "absent backends → live legs skip");
+  assert.equal(backendPackagesPresent(join(absentHome, "no-such-home")), false, "a missing home is the absent case too");
+  const presentHome = mkdtempSync(join(tmpdir(), "dsh-sq-gate-present-"));
+  const ns = join(presentHome, ".dsh", "profiles", "node_modules", "@deepseek-ai");
+  for (const name of ["dsh-session-query-sqlite", "dsh-session-persistence-jsonl"]) {
+    mkdirSync(join(ns, name), { recursive: true });
+    writeFileSync(join(ns, name, "package.json"), "{}");
+  }
+  assert.equal(backendPackagesPresent(presentHome), true, "both backends present → live legs stay strict");
+  // A tree with only ONE of the two is still the absent case — the
+  // overlays' gate needs every require_profile_packages row to resolve.
+  rmSync(join(ns, "dsh-session-persistence-jsonl"), { recursive: true });
+  assert.equal(backendPackagesPresent(presentHome), false, "half-present backends → live legs skip (every row must resolve)");
+});
+
+test("the three overlays compose into the real profile (live: needs dsh + the box backend packages)", { skip: LIVE_SKIP_REASON }, () => {
   const { home, patches } = stampOverlays();
   const dump = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"], {
     encoding: "utf8",
@@ -157,7 +198,7 @@ test("the three overlays compose into the real profile (skip when dsh is absent)
   assert.match(dump.stdout, /root: .*\/\.dsh\/sessions/, "corpus rooted at the shared store");
 });
 
-test("the composed tree BOOTS: all three plugins load, boot dies at the credential wall (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
+test("the composed tree BOOTS: all three plugins load, boot dies at the credential wall (live: needs dsh + the box backend packages)", { skip: LIVE_SKIP_REASON }, () => {
   const { home, patches } = stampOverlays();
   const cwd = mkdtempSync(join(tmpdir(), "dsh-sq-bootcwd-"));
   // Strip every plausible inference credential: the boot must die at

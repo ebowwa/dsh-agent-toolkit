@@ -38,6 +38,9 @@ test("manifest: parses, required fields per seam, external refs pinned", () => {
       }
       if (e.seam === "native-web") assert.equal(e.require_browser, true, `${e.id}: native-web gates on a browser`);
       if (e.probe_port) assert.equal(e.require_probe, true, `${e.id}: probe_port implies require_probe`);
+      // issue #256: the converse pin — a probe gate without a port is a
+      // manifest bug; the consult must SKIP it loud, never crash mid-loop.
+      if (e.require_probe) assert.ok(e.probe_port, `${e.id}: require_probe declares probe_port`);
       if (e.seam === "profile-config") {
         assert.ok(e.package, `${e.id}: profile-config names the profile-tree package it restates`);
         assert.ok(!e.source, `${e.id}: profile-config copies nothing`);
@@ -178,6 +181,36 @@ test("consult: node glob gate — a node outside the pattern SKIPs", () => {
   writeFileSync(manifest, JSON.stringify({ macos: [{ id: "x", seam: "plugin", nodes: ["mini-native-*"], source: { path: "p" } }] }));
   const lines = consult(["--platform", "Darwin", "--node", "hetzner-shell", "--home", d, manifest]);
   assert.ok(lines.some((l) => l.startsWith("SKIP\tx\tnode")), "glob mismatch skips loud");
+});
+
+// issue #256: `require_probe` without `probe_port` used to raise KeyError
+// OUTSIDE any try block — the traceback killed the consult mid-loop and
+// every LATER entry silently never mounted. The pin: both seams (plugin +
+// system-prompt) degrade to a loud SKIP and the loop survives.
+test("consult: require_probe without probe_port SKIPs loud on both seams — the loop survives, later entries still mount", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const manifest = join(d, "m.json");
+  const root = join(d, "tk");
+  makePkg(join(root, "plugins", "bad-plugin"), "@local/bad-plugin");
+  makePkg(join(root, "plugins", "good-plugin"), "@local/good-plugin");
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      macos: [
+        { id: "bad-plugin", seam: "plugin", nodes: ["*"], source: { path: "plugins/bad-plugin" }, require_probe: true }, // no probe_port
+        { id: "bad-prompt", seam: "system-prompt", nodes: ["*"], source: { path: "config/system-prompts/none.md" }, target_file: join(d, "prompt.md"), require_probe: true }, // no probe_port
+        { id: "good-plugin", seam: "plugin", nodes: ["*"], source: { path: "plugins/good-plugin" } },
+      ],
+    })
+  );
+  // execFileSync throws on a non-zero exit — the crash class itself fails here
+  const lines = consult(["--platform", "Darwin", "--node", "mini-L1", "--home", d, "--root", root, manifest]);
+  const badPlugin = lines.find((l) => l.startsWith("SKIP\tbad-plugin"));
+  assert.ok(badPlugin && /probe_port missing/.test(badPlugin), `plugin seam skips loud, got: ${badPlugin}`);
+  const badPrompt = lines.find((l) => l.startsWith("SKIP\tbad-prompt"));
+  assert.ok(badPrompt && /probe_port missing/.test(badPrompt), `system-prompt seam skips loud, got: ${badPrompt}`);
+  assert.ok(!lines.some((l) => l.startsWith("PATCH\t" + join(d, "lane-plugin-bad-plugin"))), "no overlay for the ungated probe row");
+  assert.ok(lines.some((l) => l.startsWith("MOUNTED\tgood-plugin")), `the LATER entry still mounts (mid-loop death was the defect), got: ${lines.join(" | ")}`);
 });
 
 // --- profile-config seam + require_profile_packages gate (issue #110) ------

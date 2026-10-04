@@ -29,10 +29,10 @@
 // registry. `--dry-run` pre-flights the walk + verify without npm.
 // Internals are exported for the contract pins (tests/plugin-smoke-deps.test.mjs).
 
-import fs from "node:fs";
+import fs, { realpathSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const WALK_CAP = 50;
 
@@ -41,9 +41,18 @@ const die = (...m) => {
   process.exit(1);
 };
 
+// A cwd with NO plugins/ directory reads as "no plugins" (issue #329):
+// main()'s `die("no tested plugins found under plugins/")` then delivers
+// its intended diagnostic for the missing case too, instead of the raw
+// ENOENT traceback readdirSync throws first.
+function pluginDirs(root) {
+  const pluginsDir = path.join(root, "plugins");
+  return fs.existsSync(pluginsDir) ? fs.readdirSync(pluginsDir) : [];
+}
+
 export function testedPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     if (!fs.existsSync(path.join(root, "plugins", dir, "test"))) continue;
@@ -59,7 +68,7 @@ export function testedPlugins(root) {
 // (ui -> editor) may reach a plugin whose own test dir does not exist.
 export function allPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     out.push({
@@ -282,6 +291,20 @@ export async function main(argv = process.argv.slice(2)) {
   );
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) await main();
+/** CLI guard — compare REALPATHS, not raw URLs (issue #324, the #302
+ * class). pathToFileURL normalizes URL encoding but resolves NO
+ * symlinks: import.meta.url is the entry's realpath while argv[1] stays
+ * as invoked, so through a symlink (or a /tmp → /private/tmp alias) the
+ * old comparison never matched, main() silently never ran, and the
+ * script exited 0 without installing or verifying anything — gates' dep
+ * step green with no deps. An unresolvable argv[1] (module imported
+ * under test) means "not the CLI" and is caught, not crashed. */
+const invokedAsMain = (() => {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedAsMain) await main();

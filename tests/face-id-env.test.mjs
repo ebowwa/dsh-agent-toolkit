@@ -8,14 +8,18 @@
 //
 // Driver-side contract: an existing value wins (the node minted one in
 // agentEnvFor); else the harness session id when one exists; else the
-// `user-p<pid of the driver>` bare-shell fallback. Pinned statically
+// `user-p<pid of the driver>` bare-shell fallback — the driver's OWN pid
+// (issue #278: the launcher's PPID is per-PARENT, so concurrent sibling
+// drivers of one shell minted one SHARED face — the foreign-face
+// misattribution class this identity exists to close). Pinned statically
 // (source contract) AND behaviorally (the stub dsh harness records the
 // env the launch line carries).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,7 +38,11 @@ test("the driver exports DSH_FACE_ID when absent, never overrides a minted one",
 
 test("derivation order: session id first, user-p<driver pid> fallback", () => {
   assert.match(SRC, /DSH_FACE_ID="\$DSH_SESSION_ID"/);
-  assert.match(SRC, /DSH_FACE_ID="\$\{DSH_USER:-\$\{USER:-user\}\}-p\$\{PPID\}"/);
+  // issue #278: the fallback rides the driver's OWN pid ($$) — fresh per
+  // LAUNCH. The PPID form is the collision: per-parent, shared by every
+  // concurrent sibling of one shell.
+  assert.match(SRC, /DSH_FACE_ID="\$\{DSH_USER:-\$\{USER:-user\}\}-p\$\$"/);
+  assert.doesNotMatch(SRC, /-p\$\{PPID\}/, "the PPID fallback must not come back (issue #278)");
 });
 
 test("the header env doc names DSH_FACE_ID with the issue citation", () => {
@@ -46,11 +54,13 @@ test("the header env doc names DSH_FACE_ID with the issue citation", () => {
 // driver source so it cannot drift from what this test runs (a full driver
 // boot needs doppler/runner plumbing out of scope here). The pin dies if
 // the derivation order or the guard ever changes in the script.
+const seamBlock = () =>
+  SRC.slice(SRC.indexOf('if [ -z "${DSH_FACE_ID:-}" ]'), SRC.indexOf("DSH_VERSION="));
+
 test("the seam mints user-p<driver pid> and never overrides an existing face", () => {
-  const block = SRC.slice(SRC.indexOf('if [ -z "${DSH_FACE_ID:-}" ]'), SRC.indexOf("DSH_VERSION="))
-    // bash owns PPID — pin it for the extraction run so the assertion is
-    // deterministic (the seam itself is unchanged in the driver source).
-    .replace(/\$\{PPID\}/, "85681");
+  // bash owns $$ — pin it for the extraction run so the assertion is
+  // deterministic (the seam itself is unchanged in the driver source).
+  const block = seamBlock().replace(/-p\$\$/, "-p85681");
   assert.ok(block.includes("export DSH_FACE_ID"));
   const run = (env) =>
     spawnSync("bash", ["-c", `${block}\nprintf "%s" "$DSH_FACE_ID"`], { env, encoding: "utf8" }).stdout;
@@ -58,7 +68,7 @@ test("the seam mints user-p<driver pid> and never overrides an existing face", (
   assert.match(run({ PATH: process.env.PATH, DSH_USER: "ebowwa" }), /^ebowwa-p85681$/);
   // session id wins over the fallback
   assert.equal(
-    run({ PATH: process.env.PATH, DSH_SESSION_ID: "session-abc", PPID: "85681" }),
+    run({ PATH: process.env.PATH, DSH_SESSION_ID: "session-abc" }),
     "session-abc",
   );
   // a minted face (the node's agentEnvFor) is never overridden
@@ -66,4 +76,39 @@ test("the seam mints user-p<driver pid> and never overrides an existing face", (
     run({ PATH: process.env.PATH, DSH_FACE_ID: "sess-node-minted", DSH_SESSION_ID: "session-abc" }),
     "sess-node-minted",
   );
+});
+
+test("concurrent sibling drivers of one parent mint DISTINCT faces (issue #278 — PPID is per-parent, not per-session)", () => {
+  // The ticket's repro premise, verbatim shape:
+  //   bash scripts/run-dsh-agent.sh "task A" &
+  //   bash scripts/run-dsh-agent.sh "task B" &
+  // Both children share ONE parent, so they shared ONE PPID — and under
+  // the PPID form, ONE face: a claim/release by either was attributed to
+  // both (the foreign-face misattribution class factory#864 exists to
+  // close). Run the REAL seam block (extracted verbatim, nothing pinned —
+  // the whole point is that $$ resolves per child process) as two
+  // concurrent children of one parent bash; on the unfixed source both
+  // write the parent's pid and this test goes red.
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-face-siblings-"));
+  const script = path.join(dir, "seam.sh");
+  writeFileSync(script, `${seamBlock()}\nprintf '%s' "$DSH_FACE_ID" > "$FACE_OUT"\n`);
+  const outA = path.join(dir, "face-a");
+  const outB = path.join(dir, "face-b");
+  const shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const parent = spawnSync(
+    "bash",
+    ["-c", `FACE_OUT=${shq(outA)} bash ${shq(script)} & FACE_OUT=${shq(outB)} bash ${shq(script)} & wait`],
+    { env: { PATH: process.env.PATH, DSH_USER: "ebowwa" }, encoding: "utf8" },
+  );
+  assert.equal(parent.status, 0, `the sibling repro must run clean, stderr: ${parent.stderr}`);
+  const a = readFileSync(outA, "utf8");
+  const b = readFileSync(outB, "utf8");
+  assert.match(a, /^ebowwa-p\d+$/, `sibling A must mint the fallback shape from its own pid, got ${a}`);
+  assert.match(b, /^ebowwa-p\d+$/, `sibling B must mint the fallback shape from its own pid, got ${b}`);
+  assert.notEqual(
+    a,
+    b,
+    "two concurrent sibling drivers of ONE parent must mint DISTINCT faces (issue #278) — the PPID form minted one shared face",
+  );
+  rmSync(dir, { recursive: true, force: true });
 });

@@ -28,9 +28,11 @@
 #                         (unset = inherit the head's route)
 #   DSH_FACE_ID           ambient session identity (ebowwa/factory#864):
 #                         minted here when absent — harness session id when
-#                         one exists, else user-p<pid of the driver>; fresh
-#                         per session, stable for its lifetime, children
-#                         inherit
+#                         one exists, else user-p<pid of the driver> (the
+#                         driver's OWN pid: concurrent sibling drivers of
+#                         one parent mint distinct faces, issue #278);
+#                         fresh per launch, stable for its lifetime,
+#                         children inherit
 #   DSH_WEB_SEARCH_CELLS  comma-separated runner names where the local
 #                         web-search-browser provider is mounted (per-cell
 #                         adoption; unset/empty = off everywhere). Requires the
@@ -122,7 +124,26 @@ fi
 # config/fleet-priority.md is the authoritative tier file.
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
-TASK="${1:-$DEFAULT_TASK}"
+TASK="${1:-}"
+# Nullish-stringification guard (issue #361): the dispatch mint can lose a
+# claim's task text and stringify a JS undefined/null into the argv slot —
+# observed 2026-10-04 as the literal 9-char string `undefined` riding
+# `bash run-dsh-agent.sh "$DSH_TASK"`, where `${1:-…}` only guards
+# unset/empty and the garbage passed through verbatim: a full API-powered
+# session burned (one of the throttle wave's precious retry slots) to
+# conclude "there is no task". These literals are never legitimate task
+# text — fail fast, classified, BEFORE the agent spawn and its retry
+# ladder, and never fall through to the DEFAULT_TASK maintenance roam (a
+# mint that lost its task text must surface, not silently become a roam —
+# the boot tombstone's exit code plus the class token below make this
+# death greppable, the #360 corollary).
+case "$TASK" in
+  "undefined"|"null")
+    echo "::error::task argument is the literal string \"$TASK\" — the dispatch mint stringified a JS $TASK and the claim's task text never arrived (class: task-body-stringified-nullish, issue #361); refusing to launch a no-op session" >&2
+    exit 2
+    ;;
+esac
+TASK="${TASK:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
@@ -169,7 +190,9 @@ fi
 # Standing agent contract (issue #113): the discovery protocol every lane
 # agent inherits — out-of-scope observations are filed as 'found:' issues
 # carrying receipts and referenced in the exit summary, never silently
-# fixed into the claim (scope-creep). The append sits OUTSIDE the
+# fixed into the claim (scope-creep); a pre-file dedup search (issue #320)
+# makes sibling finders comment on the existing ticket instead of minting
+# duplicates. The append sits OUTSIDE the
 # REPLY_TARGET guard on purpose: dispatched worker tasks (REPLY_TARGET
 # empty) and legacy CI comment jobs must both carry it. The full reference
 # text lives in .agents/README.md; tests/agent-contract.test.mjs pins the
@@ -178,17 +201,23 @@ STANDING_CONTRACT='Standing contract — every dsh lane agent inherits this.
 
 DISCOVERY — file what you notice, never silently scope-creep. While working
 this claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
-1. File an issue in the repo where you observed it. Title starts with
+1. Search before you file (issue #320): run
+   gh search issues --repo <repo> --label agent-todo --state open
+   and check whether an open ticket already carries the file/line you
+   are about to cite. If one does, add your receipts as a comment on
+   THAT ticket — never mint a duplicate (sibling finds 95s apart:
+   #309/#311).
+2. File an issue in the repo where you observed it. Title starts with
    "found:". The body carries receipts: file:line, command output, and the
    claim you were working (gh issue create --title "found: ..." --body "...").
-2. Label it with the todo label this repo uses (agent-todo where it
+3. Label it with the todo label this repo uses (agent-todo where it
    exists; the closest todo label otherwise — say which you used).
-3. Reference every filed issue in your final summary on ONE
+4. Reference every filed issue in your final summary on ONE
    filed-followups: line — exact shape:
      filed-followups: #114, #115
    comma-space separated issue refs, nothing else on the line. Filed
    nothing: omit the line entirely — never write filed-followups: none.
-4. Do NOT fix it in the current claim — that is scope-creep — unless the
+5. Do NOT fix it in the current claim — that is scope-creep — unless the
    fix is trivial AND in-scope. The claim diff stays on-task; PRs are task
    work-products, not discoveries.
 
@@ -317,6 +346,36 @@ Disposition is \"executed here\" or \"filed as #N\". End with a
 filed-followups: line listing every issue number you filed. A summary
 without the parts table is an incomplete exit."
 
+# Freshness preflight (factory#840, agent-side half): agents that ship
+# themselves (tower-dispatched claims — the deterministic shipper's
+# ship-changes.sh preflight never runs on that path) get the exact
+# commands, so a stale-base PR stops minting duplicates of already-landed
+# work (#830: branched 27 commits behind, duplicated a mirror commit that
+# had landed 9 minutes before the PR head was committed, as-merge did not
+# compile). Appended UNCONDITIONALLY like the standing contract — shipped
+# self-shipper and comment-workflow agents both inherit it.
+TASK="${TASK}
+
+## Freshness preflight — re-check the base before you mint the PR (factory#840)
+
+Your clone may be HOURS behind the trunk by the time you ship; another
+agent's mirror/sibling PR may have landed your fix in that window. Before
+\`gh pr create\`, against your PR base branch BASE (the dominant branch you
+were told to open against):
+1. git fetch origin BASE   # add --unshallow first if merge-base fails below
+2. mb=\$(git merge-base HEAD origin/BASE); tip=\$(git rev-parse origin/BASE)
+3. behind=\$(git rev-list --count \$mb..\$tip) — if behind > 0:
+   git rebase origin/BASE   # then re-run your TARGETED gates before shipping
+4. Same-scope check (even when behind == 0):
+   comm -12 <(git diff --name-only \$mb \$tip | sort) <(git diff --name-only origin/BASE...HEAD | sort)
+   — non-empty means a base commit since your branch point touched files you
+   also touch. Read those commits: if one already carries your fix, DO NOT
+   ship a duplicate — adopt the landed PR as vehicle of record and post the
+   empty-scope disposition instead.
+A shipped PR whose merge-base is stale past a same-scope landing reads as a
+duplicate and its as-merge tree may not compile; the rebase is cheap, the
+wasted review round is not."
+
 # Comment-agent-toolkit mode: the workflow posts the reply itself (as github-actions[bot]
 # via GITHUB_TOKEN), so the agent must NOT comment. It may still push commits
 # and open PRs; author commits as the bot so attribution is not the runner user.
@@ -359,7 +418,9 @@ Resolve an id first: gh api graphql -f query='query(\$o:String!,\$r:String!,\$n:
 # orphan branches. The consumer repos run auto-delete-on-merge (verified
 # live on this repo: delete_branch_on_merge=true), so a MERGED branch cleans
 # itself up — the leak paths are a pushed branch with no PR and a PR closed
-# without merging. Static repo-controlled prose, appended after the input
+# without merging — plus the same-claim collision landmine: two concurrent
+# agents on one issue minting the identical branch name (#327). Static
+# repo-controlled prose, appended after the input
 # scrub pass and before the launch line below. Long-form reference:
 # .agents/README.md; fixtures: tests/branch-hygiene-contract.test.mjs.
 TASK="${TASK}
@@ -370,7 +431,28 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
 3. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind (open PRs waiting on review) on ONE branches-left: line — exact shape:
      branches-left: dsh/issue-127-c5844082078, dsh/issue-128-nextticket
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
+4. UNIQUE NAME + PUSH PREFLIGHT — a minted branch name is collision-proofed twice. It carries a unique suffix (pid, claim id, or timestamp): dsh/issue-127-c5844082078, never the bare dsh/issue-N-slug two agents racing one issue derive identically (#327). And before the FIRST push of a minted name, run git ls-remote origin <name>: a non-empty answer means a sibling already owns the name — delete your unpushed local branch, re-mint with a fresh suffix, push that. NEVER git pull onto the collided name (it merges the sibling's work into yours) and NEVER git push --force-with-lease over it (it overwrites the sibling's pushed work behind an open PR); both reflexes destroy a racing claim.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
+
+# --- standing agent contract: workdir hygiene (issues #333, #374) -----------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): a
+# throwaway workdir must be unguessable AND verifiably yours. Two silent
+# worktree-destruction receipts: the shared-path rm -rf re-clone (#333,
+# 2026-10-04 02:25:39) and the pseudo-unique bare-epoch mint — a same-issue
+# sibling landed in work-361-toolkit-1791109240 inside the same second and
+# silently replaced the first agent's confirmed edits mid-session (#374).
+# The concurrent-maintenance wave (factory#869: 14 identical-prompt agents
+# on one box) makes same-second mints the normal case, not the tail.
+# Static repo-controlled prose, appended after the input scrub pass and
+# before the launch line below. Long-form reference + receipts:
+# .agents/README.md; fixtures: tests/workdir-collision-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir hygiene (issues #333, #374): a workdir is yours only if no sibling can predict it, and only while you can prove it — two silent-takeover receipts closed.
+1. MINT A RANDOM WORKDIR PER CLAIM — a timestamp is NOT uniqueness: workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\" (a \$HOME-anchored census dir works the same way: mktemp -d \"\$HOME/dsh-node/work-<issue>-<repo>-XXXXXX\"). The bare \$(date +%s) suffix is banned — same-issue siblings collide inside one second (the #327 branch-mint lesson, applied to directories); the shared-path recipe rm -rf /tmp/<repo> && gh repo clone ... is banned outright — rm -rf is legal only inside a dir YOUR session minted.
+2. RE-ENTER ONLY A PATH YOU RECORDED — a workdir is re-entered via the exact path your own session minted and recorded, NEVER via glob reuse (ls -d work-<issue>-* | head -1): a matching dir can be a sibling's live tree at ANY time, and landing there silently replaces your edits mid-session. A dir you did not mint is not yours.
+3. THE OWNER-MARKER BELT — at mint, stamp ownership: printf 'session=%s\nclaim=%s\n' \"\$\$\" \"\$ISSUE\" > \"\$workdir/.dsh-workdir-owner\"; before each edit batch, re-check the marker matches YOUR session. A tree whose marker is not yours — or a dir you didn't mint, marker or not — is a takeover in progress: stop, do not edit, file it, mint fresh.
+Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree — neither names a path the other could guess (random mint), neither lands in a dir the other minted (recorded-path re-entry), and any takeover that slips those rules is detected before the next edit batch (owner marker)."
 
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
@@ -602,14 +684,18 @@ export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 # propagation, so step 50 self-identifies as the face-lock holder).
 # Derivation, in spec order: an existing value wins (the node minted
 # one in agentEnvFor); else the harness session id when one exists;
-# else `user-p<pid of the driver>` — the launcher's PPID is fresh per
-# session and stable for its lifetime, the same fallback shape
-# bin/face-lock's defaultFace mints for bare shells.
+# else `user-p<pid of the driver>` — the driver's OWN pid ($$): fresh
+# per LAUNCH by construction, so concurrent sibling drivers of one
+# parent mint DISTINCT faces (issue #278: the PPID form was per-PARENT,
+# and two siblings shared one face — the foreign-face misattribution
+# class this identity exists to close), stable for the driver's
+# lifetime, the same fallback shape bin/face-lock's defaultFace mints
+# for bare shells.
 if [ -z "${DSH_FACE_ID:-}" ]; then
   if [ -n "${DSH_SESSION_ID:-}" ]; then
     DSH_FACE_ID="$DSH_SESSION_ID"
   else
-    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p${PPID}"
+    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p$$"
   fi
   export DSH_FACE_ID
 fi
