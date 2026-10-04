@@ -16,6 +16,16 @@
 # stranded in $RUNNER_TEMP, wiped with the runner: a human got one word) —
 # a human decides.
 # Model: fleet default unless DSH_DRIFT_MODEL is set on this repo.
+#
+# RELEASE-TAG LAW (issue #231): numbered release tags are immutable and
+# never empty-range. The flow mints vX.Y.0 only at a commit NO existing
+# release tag names — a HEAD an existing release tag already names (re-run,
+# re-point, dispatch with no new commits) skips the release loudly and
+# green; that tag IS the release for this tree. Only the moving major tag
+# (@v1) is ever force-moved, always onto the new release. v1.97.0 and
+# v1.98.0 both naming 47a4f68 left v1.97.0..v1.98.0 an empty range whose
+# release notes described content the range does not carry — that class
+# ends here.
 
 name: drift-check
 
@@ -64,16 +74,31 @@ jobs:
           # pin @v1") — derived from the same MAJOR that builds NEXT, so a
           # future v2 release advances v2 automatically
           MOVING="v${MAJOR}"
+          # RELEASE-TAG LAW (issue #231): refuse the empty-range mint. If a
+          # NUMBERED release tag already names HEAD, tagging NEXT here would
+          # publish a release whose range is empty (v1.97.0 = v1.98.0 =
+          # 47a4f68) while its notes describe real content. Skip loudly and
+          # green — the existing tag is this tree's release. The moving
+          # major also points at HEAD after every release and must not trip
+          # the guard, hence the numbered-only filter.
+          ALREADY_TAGGED="$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+          if [ -n "$ALREADY_TAGGED" ]; then
+            echo "::warning::$ALREADY_TAGGED already names HEAD — refusing to mint ${NEXT} as an empty-range tag (issue #231); nothing to release"
+          fi
           {
             echo "base=$BASE"
             echo "latest=${LATEST:-none}"
             echo "next=$NEXT"
             echo "moving=$MOVING"
+            echo "already_tagged=${ALREADY_TAGGED}"
           } >> "$GITHUB_OUTPUT"
           echo "--- diff scope $BASE..HEAD ---"
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
 
       - name: Agent reviews its own diff (release gate)
+        # issue #231: a HEAD already named by a release tag has no diff to
+        # review and must not reach the tag mint
+        if: steps.scope.outputs.already_tagged == ''
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +167,9 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        # issue #231: never mint a release tag at a commit an existing
+        # numbered release tag already names — empty range, empty delta
+        if: steps.scope.outputs.already_tagged == ''
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
