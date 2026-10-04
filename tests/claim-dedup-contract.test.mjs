@@ -15,6 +15,25 @@
 // Three surfaces, one protocol — these fixtures pin ALL THREE and keep
 // them in agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
 //
+// Same-tick race guards (issue #448): a pick-time check is a
+// point-in-time read — #425 opened 2m47s BEFORE #422 (this contract's
+// own carrier) merged, and both shipped the same #414 fix; no `gh pr
+// list` at pick time can see a carrier minted inside that window. Two
+// guards close it, and both must ride the same two surfaces:
+//
+//   1. the CLAIM MARKER — the claim is WRITTEN onto the ticket as a
+//      comment (`dsh claim: #N — cell <cell-id> at <ISO timestamp>`)
+//      BEFORE implementation starts; GitHub orders comments
+//      server-side, so earliest created_at wins the race and a foreign
+//      live marker skips the ticket exactly like a live carrier.
+//   2. the PRE-SHIP RE-CHECK — immediately before `gh pr create` the
+//      census and the marker scan re-run; a mid-flight sibling carrier
+//      or foreign live marker means ABORT: no PR, delete the pushed
+//      branch, stand down onto the sibling, declare it.
+//
+// Two surfaces, one protocol — these fixtures pin BOTH and keep them in
+// agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
+//
 //   behavioral — a stub agent booted on the no-arg DEFAULT_TASK path (the
 //   scheduled maintenance roam) captures the task it was launched with,
 //   and the carrier-check step must be present in it: the check command,
@@ -121,6 +140,15 @@ test("issue #414: the DEFAULT_TASK maintenance roam boots with the claim-time ca
   // The declared skip line — the receipt that the check ran:
   assert.match(task, /one line per skip: skipped: #N — live carrier #M/);
 
+  // The same-tick race guards (issue #448): the claim marker written
+  // BEFORE implementation starts, and the pre-ship re-check that aborts
+  // onto a mid-flight sibling carrier:
+  assert.match(task, /WRITE THE CLAIM before implementation starts \(issue #448\)/);
+  assert.match(task, /dsh claim: #N — cell <cell-id> at <ISO timestamp>/);
+  assert.match(task, /a foreign live claim marker means the ticket is taken/);
+  assert.match(task, /immediately before gh pr create, RE-run the carrier census/);
+  assert.match(task, /one line per stand-down: stood down: #N — mid-flight carrier #M/);
+
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -142,6 +170,11 @@ test("issue #414: the driver's DEFAULT_TASK, the standing contract doc, and the 
   assert.match(defaultTaskLine, /claim-time carrier check \(issue #414\)/);
   assert.match(defaultTaskLine, /the ticket is taken: skip to the next qualifying ticket/);
   assert.match(defaultTaskLine, /skipped: #N — live carrier #M/);
+
+  // The same-tick race guards (issue #448) ride the preamble too:
+  assert.match(defaultTaskLine, /WRITE THE CLAIM before implementation starts \(issue #448\)/);
+  assert.match(defaultTaskLine, /dsh claim: #N — cell <cell-id> at <ISO timestamp>/);
+  assert.match(defaultTaskLine, /one line per stand-down: stood down: #N — mid-flight carrier #M/);
 
   // The preamble sits BEFORE the argv seam it defaults into, so the
   // scheduled no-arg boot inherits the check (the run-dsh-agent.test.mjs
@@ -192,10 +225,28 @@ test("issue #414: the driver's DEFAULT_TASK, the standing contract doc, and the 
     ["contract doc", doc],
     ["thin-dispatch fallback", workflow],
   ]) {
+
+  // The same-tick race guards (issue #448) in the doc:
+  // The same-tick race guards (issue #448) in the doc:
+  assert.match(doc, /CLAIM MARKER, BEFORE IMPLEMENTATION\*\* \(issue #448\)/);
+  assert.match(docFlat, /dsh claim: #N — cell <cell-id> at <ISO-8601 timestamp>/);
+  assert.match(docFlat, /earliest `created_at` wins, lowest comment id breaks a same-second tie/);
+  assert.match(doc, /PRE-SHIP RE-CHECK\*\* \(issue #448\)/);
+  assert.match(docFlat, /stood down: #405 — mid-flight carrier #413/);
+  assert.match(docFlat, /carries this session's claim marker written before implementation started/);
+
+  // Cross-surface agreement on the phrases a reader must be able to
+  // trust wherever they read the rule from: the check command's shape
+  // (`gh pr list ... --state open --search`), the skip-line label, and
+  // the two #448 race guards (claim marker + mid-flight stand-down).
     const [name, text] = surface;
     assert.match(text, /gh pr list --repo .+ --state open --search/,
       `${name}: the check command's operative shape`);
     assert.match(text, /skip(ped)?:? .{0,3}#/,
       `${name}: the skip declaration rides the surface`);
+    assert.match(text, /claim marker/,
+      `${name}: the claim marker rides the surface`);
+    assert.match(text, /mid-flight/,
+      `${name}: the mid-flight stand-down rides the surface`);
   }
 });

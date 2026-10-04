@@ -296,15 +296,53 @@ with zero carriers). The rule:
 
    The declaration is the receipt that the check ran; a silent skip is
    indistinguishable from never having looked.
-3. **NOT the other dedup rules** — this is the CLAIM step. #320 is dedup
+3. **CLAIM MARKER, BEFORE IMPLEMENTATION** (issue #448) — the rule-1
+   check is a point-in-time read; it cannot see a carrier minted inside
+   the same-tick race window (receipt: #425 opened 2026-10-04T12:15:09Z
+   and #422 — the same #414 fix — merged at 12:17:56Z, 2m47s later). So
+   the claim itself is WRITTEN onto the ticket before any implementation
+   starts: post the claim marker as a comment on ticket N, exact shape:
+
+   ```
+   dsh claim: #N — cell <cell-id> at <ISO-8601 timestamp>
+   ```
+
+   GitHub orders comments server-side, so among same-tick racers the
+   marker decides: earliest `created_at` wins, lowest comment id breaks
+   a same-second tie. Scan the ticket for a foreign marker BEFORE
+   posting yours — a foreign claim marker is a LIVE claim while it is
+   younger than a full review window and no superseding declaration (a
+   carrier PR, a stand-down, or a skip) follows it: skip-and-declare
+   exactly as in rule 2 (`skipped: #N — claim marker by cell <id>`).
+   If the marker fails to post, the claim did not land: fix the
+   permission problem or skip the ticket — working an unmarked claim is
+   the race this contract closes.
+4. **PRE-SHIP RE-CHECK** (issue #448) — immediately before `gh pr
+   create`, re-run the rule-1 census AND rescan the ticket's markers.
+   A sibling carrier PR opened after your claim marker, or a foreign
+   live marker with no carrier PR yet, means you lost the race
+   mid-flight: ABORT — do not open the PR, delete your pushed branch
+   (the #127 close-without-merge rule), stand down onto the sibling,
+   and declare it in the exit summary — one line per stand-down, exact
+   shape:
+
+   ```
+   stood down: #405 — mid-flight carrier #413
+   ```
+
+   The marker serializes the START of the race and the re-check closes
+   its END; neither alone covers a race window measured in minutes.
+5. **NOT the other dedup rules** — this is the CLAIM step. #320 is dedup
    before FILING a `found:` ticket (comment receipts onto the existing
    one); #321 (closed; janitor follow-on FleetTower#896) was tickets
    duplicating LANDED work. The carrier check closes the remaining hole:
    two cells both "working" one open ticket.
 
 **Acceptance — no duplicate carriers from this session:** every ticket
-this session works had zero live carrier PRs at claim time, and every
-carrier-caused skip is declared in the exit summary.
+this session works had zero live carrier PRs at claim time, carries this
+session's claim marker written before implementation started, passed the
+pre-ship re-check before every `gh pr create`, and every carrier-caused
+skip and mid-flight stand-down is declared in the exit summary.
 
 The driver's claim preamble (the DEFAULT_TASK lane-pass text in
 `scripts/run-dsh-agent.sh`) carries this rule into every scheduled roam,
