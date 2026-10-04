@@ -1,52 +1,31 @@
-# Captures: reflex-cleared boot verification for PR #267 (issue #267)
+# Captures: reflex-cleared boot verification for PR #267 (issue #267) — REDACTED
 
-Owner directive (2026-10-01): boot the PR #267 head tree
-(`bc89a6b1708e344adabf0571fb0d4d601eff47fb`, branch `dsh/issue-258-c5922965562`)
-on the mac lane and try to clear the composed-tree boot test's credential
-wall with the Reflex engine (Gauge host, JSON/TCP 49173). The test's skip
-guard was NOT edited; the PR tree itself is untouched (this branch adds
-`captures/` only, on top of the PR head).
+Owner directive (2026-10-01): boot the PR #267 head tree and try to clear the
+composed-tree boot test's credential wall with the Reflex engine. This branch
+added `captures/` only — no code change.
 
-## What ran
+## Redaction (2026-10-04)
 
-- `node --test tests/session-query-mount.test.mjs` on the PR head tree,
-  mac lane node mini-L1, dsh CLI 0.1.0-rc.7 present, profile backend
-  packages present — **6/6 pass, twice** (`tap-run1.log`, `tap-run2.log`),
-  including `the composed tree BOOTS: all three plugins load, boot dies at
-  the credential wall` (1.387s / 1.387s-class, no hang).
-- The consult stamped the composed overlays for a live engine host
-  (5 patches: dsh-reflex, session-persistence-jsonl, session-query-sqlite,
-  tool-session-query) — the same shape the test stamps hermetically.
+The original artifacts (3× full-desktop PNG captures, 3× window-list JSONs,
+2× TAP logs) were **removed from this branch**: the captures show the machine's
+boot wall including its hostname and Tailscale/LAN addresses, and the window
+lists fingerprint installed software — content that must not sit in a public
+repository.
 
-## The wall (exact failure mode)
+The verification itself is still receipted:
 
-`boot-wall-signature.txt` — verbatim: the boot exits 1 in under two seconds
-with `MISSING_CREDENTIAL` raised by dsh's **credentials service** (provider
-route `deepseek-official`, `DEEPSEEK_API_KEY`). It is a non-interactive,
-offline, in-process error — **the wall never takes UI form**: no dialog, no
-prompt, no browser handoff, by the test's own design (it strips every
-inference credential precisely so the boot dies at credential resolution
-without placing a live call).
+- `boot-wall-signature.txt` — the verbatim wall-probe output (text only; it is
+  the reflex-cleared receipt: wall reached in <2s, no UI dialog spawned, no
+  live call placed, credential wall held).
+- SHA-256 of the removed artifacts, as tamper-evident proof of existence:
 
-## Reflex receipts (GUI law: capture before + after)
-
-- `display-before-boot.png` / `display-during-boot.png` /
-  `display-after-boot.png` — full-display captures taken immediately before
-  the first test run, mid-run of a second run (capture fired while the boot
-  probes were executing), and after it settled. Byte-identical PNGs: the
-  display never changed across the runs.
-- `windows-before.json` / `windows-during.json` / `windows-after.json` —
-  the Reflex window inventory at the same three moments (paths scrubbed).
-  Identical window sets (22 unique / 22 / 22): **zero windows created or
-  destroyed by the boots, zero credential-shaped windows**. There was
-  nothing for `reflex_click` / `reflex_ax` to act on; no Reflex handling
-  action was possible or needed. The standing TCC exception was never
-  approached (no consent dialog appeared).
-
-## Cross-check on the "fails on headless Linux" premise
-
-CI on this exact PR head (`gates` run 36803136848, the self-hosted `dsh`
-cell — headless Linux): the same test is `ok 345 - the composed tree BOOTS:
-all three plugins load, boot dies at the credential wall`. The wall is a
-fast offline `MISSING_CREDENTIAL` death on both legs; the test is hermetic
-by construction and green on both.
+  | artifact | sha256 |
+  |---|---|
+  | display-during-boot.png | `62301803ab59742373b22ef239d6a9d17eaf18446f949cbb91a602b33a8da308` |
+  | display-before-boot.png | `62301803ab59742373b22ef239d6a9d17eaf18446f949cbb91a602b33a8da308` |
+  | display-after-boot.png | `62301803ab59742373b22ef239d6a9d17eaf18446f949cbb91a602b33a8da308` |
+  | windows-during.json | `6ab2dae92fb5278a796651759923610c0a647b6d3dd0022ffacdf96c7de0994e` |
+  | windows-before.json | `6ab2dae92fb5278a796651759923610c0a647b6d3dd0022ffacdf96c7de0994e` |
+  | windows-after.json | `6ab2dae92fb5278a796651759923610c0a647b6d3dd0022ffacdf96c7de0994e` |
+  | tap-run1.log | `e9110f6eca317acc9f4cb008aec875076e827af71e8e2061e77532a0f1ed8761` |
+  | tap-run2.log | `9dd322670b18a931407dd3bc30f7c9908ce0bfd487ec3f5746869ce98d00326e` |
