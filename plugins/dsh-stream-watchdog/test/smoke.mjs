@@ -22,6 +22,32 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const libIndexUrl = new URL("../lib/index.js", import.meta.url).href;
+
+// #358 loud-skip guard: lib/index.js imports @deepseek-ai/* workspace deps a
+// bare clone has not installed, and that link-time red reads as plugin
+// breakage under the bare gate form. Probe BEFORE the import; skip loud
+// with the remedy when the tree is unconverged (CI converges first —
+// gates.yml runs scripts/install-plugin-smoke-deps.mjs before node --test).
+const SMOKE_DEPS = ["@deepseek-ai/schemastery"];
+const missingSmokeDeps = SMOKE_DEPS.filter((spec) => {
+	try {
+		import.meta.resolve(spec, libIndexUrl);
+		return false;
+	} catch {
+		return true;
+	}
+});
+if (missingSmokeDeps.length > 0) {
+	// write() with a callback: the banner is flushed to the OS before exit(0)
+	// — console.log + immediate exit can lose the line on a pipe.
+	await new Promise((resolve) => process.stdout.write(
+		`SKIP: dsh-stream-watchdog smoke — plugin deps not installed on this bare clone (missing: ${missingSmokeDeps.join(", ")}). Run: node scripts/install-plugin-smoke-deps.mjs — issue #358\n`,
+		"utf8",
+		resolve,
+	));
+	process.exit(0);
+}
 const nodeHalf = await import(join(pkgDir, "lib", "index.js"));
 const hotHalf = await import(join(pkgDir, "lib", "hot.js"));
 

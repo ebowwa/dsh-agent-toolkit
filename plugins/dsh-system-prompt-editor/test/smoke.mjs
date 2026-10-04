@@ -8,7 +8,32 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } from "../lib/index.js";
+
+// #358 loud-skip guard: lib/index.js imports @deepseek-ai/* workspace deps a
+// bare clone has not installed, and that link-time red reads as plugin
+// breakage under the bare gate form. Probe BEFORE the import; skip loud
+// with the remedy when the tree is unconverged (CI converges first —
+// gates.yml runs scripts/install-plugin-smoke-deps.mjs before node --test).
+const SMOKE_DEPS = ["@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-system-prompt"];
+const missingSmokeDeps = SMOKE_DEPS.filter((spec) => {
+	try {
+		import.meta.resolve(spec, new URL("../lib/index.js", import.meta.url).href);
+		return false;
+	} catch {
+		return true;
+	}
+});
+if (missingSmokeDeps.length > 0) {
+	// write() with a callback: the banner is flushed to the OS before exit(0)
+	// — console.log + immediate exit can lose the line on a pipe.
+	await new Promise((resolve) => process.stdout.write(
+		`SKIP: dsh-system-prompt-editor smoke — plugin deps not installed on this bare clone (missing: ${missingSmokeDeps.join(", ")}). Run: node scripts/install-plugin-smoke-deps.mjs — issue #358\n`,
+		"utf8",
+		resolve,
+	));
+	process.exit(0);
+}
+const { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } = await import("../lib/index.js");
 
 const dir = mkdtempSync(join(tmpdir(), "sp-editor-"));
 const file = join(dir, "system-prompt.md");
