@@ -19,15 +19,19 @@ run straight off the tree on Node.
      `node scripts/workflow-lint.mjs`, and no plain scalar with colon-space
      in a step name. An invalid workflow does not error — GitHub silently
      fails its registration and every dispatch 422s.
-  3. Unit tests: bare `node --test` in CI; locally use the glob form
-     `node --test tests/*.test.mjs`. Do NOT use the directory form
-     (`node --test tests/`) — under Node 26 it fails `MODULE_NOT_FOUND`
-     before running anything. The plugin smoke tests need the
-     `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
-     checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
-     converges the peer closure, installs once, and verifies the tree;
-     reruns are no-ops); without it those smokes fail environmentally,
-     not substantively.
+  3. Unit tests: run locally EXACTLY what CI runs — bare `node --test`
+     (the gates.yml "Unit tests" step). Do NOT substitute the glob form
+     (`node --test tests/*.test.mjs`): it silently skips the five plugin
+     smoke suites (`plugins/*/test/smoke.mjs`) that bare discovery also
+     runs — green locally while the suites CI grades never executed
+     (issue #301). Do NOT use the directory form (`node --test tests/`)
+     either — under Node 26 it fails `MODULE_NOT_FOUND` before running
+     anything. The plugin smoke tests need the `@deepseek-ai/*` /
+     `@local/*` dep install first — on a bare clean checkout run
+     `node scripts/install-plugin-smoke-deps.mjs` once (it converges the
+     peer closure, installs once, and verifies the tree; reruns are
+     no-ops); without it those smokes fail environmentally, not
+     substantively.
 - **Review findings cite rules.** `REVIEW.md` is this repo's review
   contract; the review stage reads it (and this file) as ground truth, and
   every finding must cite a rule from it. The review contract is

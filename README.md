@@ -66,14 +66,22 @@ Two execution modes:
 
 ## Testing
 
-Run the suite with the glob form:
+Run exactly what CI runs (the gates.yml "Unit tests" step):
 
 ```bash
-node --test tests/*.test.mjs
+node --test
 ```
 
-Do NOT use the directory form (`node --test tests/`) — under Node 26 it
-fails with `MODULE_NOT_FOUND` before running anything.
+Bare discovery also runs the five plugin smoke suites
+(`plugins/*/test/smoke.mjs`). Do NOT narrow to the glob form
+(`node --test tests/*.test.mjs`) — it silently skips those suites, so a
+plugin edit verifies green while the suite CI grades never ran
+(issue #301). Do NOT use the directory form (`node --test tests/`)
+either — under Node 26 it fails with `MODULE_NOT_FOUND` before running
+anything. The plugin smokes need their deps first: on a bare clean
+checkout run `node scripts/install-plugin-smoke-deps.mjs` once (reruns
+are no-ops; without it those smokes fail environmentally, not
+substantively).
 
 ## Adopting (consumer repo)
 
