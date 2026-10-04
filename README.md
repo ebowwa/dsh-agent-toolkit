@@ -75,6 +75,15 @@ node --test tests/*.test.mjs
 Do NOT use the directory form (`node --test tests/`) — under Node 26 it
 fails with `MODULE_NOT_FOUND` before running anything.
 
+The glob form skips the plugin smoke suites (`plugins/*/test/smoke.mjs`)
+that CI's bare `node --test` also runs — after touching `plugins/`, use
+the parity form instead (the smoke suites need their deps first:
+`node scripts/install-plugin-smoke-deps.mjs` once on a bare checkout):
+
+```bash
+node --test tests/*.test.mjs plugins/*/test/smoke.mjs
+```
+
 ## Adopting (consumer repo)
 
 **Decoupled (recommended):** copy `examples/dsh-agent-thin.yml` into

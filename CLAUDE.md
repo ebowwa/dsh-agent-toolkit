@@ -22,7 +22,12 @@ run straight off the tree on Node.
   3. Unit tests: bare `node --test` in CI; locally use the glob form
      `node --test tests/*.test.mjs`. Do NOT use the directory form
      (`node --test tests/`) — under Node 26 it fails `MODULE_NOT_FOUND`
-     before running anything. The plugin smoke tests need the
+     before running anything. The glob form also SKIPS the plugin
+     smoke suites — bare discovery runs every `test/` directory too,
+     a shell glob does not — so after touching `plugins/`, verify with
+     the parity form
+     `node --test tests/*.test.mjs plugins/*/test/smoke.mjs`, the
+     exact set CI grades (issue #301). The plugin smoke tests need the
      `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
      checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
      converges the peer closure, installs once, and verifies the tree;
