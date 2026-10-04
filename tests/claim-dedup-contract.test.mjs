@@ -12,8 +12,8 @@
 // found: ticket, #321 was tickets duplicating LANDED work; neither asks
 // "does an open carrier already hold the ticket I am about to work?".
 //
-// Two surfaces, one protocol — these fixtures pin BOTH and keep them in
-// agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
+// Three surfaces, one protocol — these fixtures pin ALL of them and keep
+// them in agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
 //
 //   behavioral — a stub agent booted on the no-arg DEFAULT_TASK path (the
 //   scheduled maintenance roam) captures the task it was launched with,
@@ -21,10 +21,13 @@
 //   the live-carrier semantics, the skip-to-next rule, and the declared
 //   skip line.
 //
-//   structural — the driver's DEFAULT_TASK string and the standing
-//   contract doc (.agents/README.md) each carry the rule with its
-//   operative phrases, and the two surfaces agree. A drift between them,
-//   or a revert of either, goes red here.
+//   structural — the driver's DEFAULT_TASK string, the standing
+//   contract doc (.agents/README.md), AND the decoupled dispatch
+//   fallback (.github/workflows/agent-dispatch-thin.yml — the empty-task
+//   scheduled/manual fire whose TASK text is the decoupled path's claim
+//   preamble) each carry the rule with its operative phrases, and the
+//   surfaces agree. A drift between them, or a revert of any one, goes
+//   red here.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -37,6 +40,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const CONTRACT_DOC = path.join(ROOT, ".agents", "README.md");
+const THIN_DISPATCH = path.join(ROOT, ".github", "workflows", "agent-dispatch-thin.yml");
 
 // --- behavioral: the scheduled roam's booted task carries the rules -------
 
@@ -118,7 +122,7 @@ test("issue #414: the DEFAULT_TASK maintenance roam boots with the claim-time ca
   rmSync(dir, { recursive: true, force: true });
 });
 
-// --- structural: driver string + contract doc carry the same rule ---------
+// --- structural: driver string + contract doc + dispatch fallback ---------
 
 test("issue #414: the driver's DEFAULT_TASK and the standing contract doc carry the carrier check and agree", () => {
   const src = readFileSync(SCRIPT, "utf8");
@@ -157,11 +161,57 @@ test("issue #414: the driver's DEFAULT_TASK and the standing contract doc carry 
   assert.match(doc, /SKIP AND DECLARE/);
   assert.match(doc, /skipped: #405 — live carrier #413/);
   assert.match(doc, /Acceptance — no duplicate carriers from this session:/);
+});
+
+// --- structural: the decoupled dispatch fallback carries the rule ---------
+
+test("issue #414: the thin-dispatch empty-task fallback (the decoupled claim preamble) carries the carrier check", () => {
+  const wf = readFileSync(THIN_DISPATCH, "utf8");
+
+  // The fallback is the TASK text minted when agent-dispatch-thin fires
+  // with an empty `task` input — the decoupled path's claim preamble
+  // ("pick the highest-priority one ... open a pull request"). It must
+  // live INSIDE the empty-input branch, and the check must ride it.
+  const branch = wf.indexOf('if [ -z "$TASK" ]; then');
+  assert.ok(branch > -1, "the empty-task fallback branch must exist");
+  const fallbackLine = wf.split("\n").find((l) => l.includes('TASK="Routine maintenance task: check this repository first'));
+  assert.ok(fallbackLine, "the fallback TASK string must exist");
+  assert.ok(wf.indexOf(fallbackLine) > branch,
+    "the fallback TASK text is the empty-input branch's body");
+
+  // The operative phrases, same shape the driver leg pins: in the YAML
+  // source the search quotes are backslash-escaped (the string is
+  // double-quoted shell inside a block scalar).
+  assert.match(fallbackLine, /claim-time carrier check \(issue #414\)/,
+    "the check is named and its issue cited");
+  assert.match(fallbackLine, /gh pr list --repo <repo> --state open --search \\"N in:title\\"/,
+    "the carrier-check command rides the fallback preamble");
+  assert.match(fallbackLine, /an open PR whose title or body carries the ticket ref is a live carrier/,
+    "the live-carrier definition rides the fallback preamble");
+  assert.match(fallbackLine, /the ticket is taken: skip to the next qualifying ticket by that same order/,
+    "the skip-to-next rule rides the fallback preamble");
+  assert.match(fallbackLine, /say so in the exit summary \(one line per skip: skipped: #N — live carrier #M\)/,
+    "the declared skip line rides the fallback preamble");
+
+  // Order pin: the check sits BEFORE the implement/open-a-PR step —
+  // claim-time means before work starts, not after.
+  const checkAt = fallbackLine.indexOf("claim-time carrier check");
+  const workAt = fallbackLine.indexOf("implement it, test it, and open a pull request");
+  assert.ok(checkAt > -1 && workAt > -1 && checkAt < workAt,
+    "the carrier check precedes the implement step in the fallback preamble");
+});
+
+// --- cross-surface agreement ----------------------------------------------
+
+test("issue #414: every claim-preamble surface carries the check command's shape and the skip-line label", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  const doc = readFileSync(CONTRACT_DOC, "utf8");
+  const wf = readFileSync(THIN_DISPATCH, "utf8");
 
   // Cross-surface agreement on the two phrases a reader must be able to
   // trust wherever they read the rule from: the check command's shape
   // (`gh pr list ... --state open --search`) and the skip-line label.
-  for (const surface of [["driver", src], ["contract doc", doc]]) {
+  for (const surface of [["driver", src], ["contract doc", doc], ["thin-dispatch fallback", wf]]) {
     const [name, text] = surface;
     assert.match(text, /gh pr list --repo .+ --state open --search/,
       `${name}: the check command's operative shape`);

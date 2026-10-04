@@ -49,6 +49,18 @@ run straight off the tree on Node.
   `agent-comment-thin.yml` + `scripts/dsh-worker.sh`) and legacy (the
   in-job `agent-comment.yml` family). Legacy removal is the next major's
   deliberate breaking change, not a drive-by cleanup.
+- **One open ticket, one live carrier (claim dedup, #414).** Never work a
+  ticket a live carrier PR already holds. The claim preambles live on
+  three surfaces — `DEFAULT_TASK` in `scripts/run-dsh-agent.sh`, the
+  empty-task fallback in `.github/workflows/agent-dispatch-thin.yml`,
+  and the standing contract in `.agents/README.md` — and all send the
+  claiming agent through a carrier-PR check
+  (`gh pr list --repo R --state open --search "N in:title"`) before work
+  starts: a live carrier (open, not closed-without-merge, not stale)
+  means skip to the next qualifying ticket and declare the skip in the
+  exit summary. The pin is `tests/claim-dedup-contract.test.mjs`.
+  Change one surface, change all three — a drift between them is a
+  defect.
 
 ## Where things live
 
