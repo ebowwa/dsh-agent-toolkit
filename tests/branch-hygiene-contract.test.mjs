@@ -1,5 +1,5 @@
 // branch-hygiene-contract.test.mjs — contract fixtures for the
-// branch-hygiene protocol (issue #127).
+// branch-hygiene protocol (issues #127, #327).
 //
 // Contract under test: zero orphan branches. A branch whose work outlives
 // the session without a PR is a lost thread — the exact mess HYGIENE.md
@@ -11,6 +11,13 @@
 //
 //   1. a pushed branch with no PR — SAME-SESSION PR PER BRANCH;
 //   2. a PR closed without merging — DELETE ON CLOSE WITHOUT MERGE.
+//
+// ...and (issue #327) guards the minted NAME itself: two agents claiming
+// one issue derive the same semantic slug, the second push is rejected,
+// and both reflex remedies are destructive (pull merges the sibling's
+// work in; force-push destroys it behind its open PR) — so every minted
+// name carries a unique disambiguator suffix behind an ls-remote
+// preflight, and a collision means re-mint, never pull/force.
 //
 // ...and gives the exit summary its machine-checkable receipt: ONE
 // `branches-left:` line, comma-space separated branch names, nothing else
@@ -151,17 +158,28 @@ test("issue #127: the prompt assembly appends the branch-hygiene contract to the
   assert.match(task, /zero orphan branches/);
   assert.match(task, /a branch whose work outlives the session without a PR is a lost thread/);
 
-  // Rule 1 — same-session PR per branch:
+  // Rule 1 — mint a name only you own (issue #327): the unique-suffix
+  // mandate, the ls-remote preflight, the destructive-remedy ban, and
+  // the collision exit (re-mint / yield).
+  assert.match(task, /MINT A NAME ONLY YOU OWN \(issue #327\) — every branch you create carries a unique disambiguator suffix/);
+  assert.match(task, /dsh\/issue-127-c5844082078, never the bare slug/);
+  assert.match(task, /Preflight before the FIRST push: git ls-remote origin <name>/);
+  assert.match(task, /re-mint with a fresh suffix and push that instead/);
+  assert.match(task, /never pull onto it \(that merges the sibling/);
+  assert.match(task, /never force-push over it \(that destroys the sibling/);
+  assert.match(task, /delete the local branch, re-mint/);
+
+  // Rule 2 — same-session PR per branch:
   assert.match(task, /SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/);
   assert.match(task, /A pushed branch with no PR is an orphan/);
 
-  // Rule 2 — delete on close without merge, with the exact commands:
+  // Rule 3 — delete on close without merge, with the exact commands:
   assert.match(task, /DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging \(superseded, wrong approach, duplicate\), delete its branch in the same breath/);
   assert.match(task, /gh pr close NUMBER --delete-branch/);
   assert.match(task, /git push origin --delete BRANCH/);
   assert.match(task, /Merged branches are auto-deleted by the repo setting — never restore one/);
 
-  // Rule 3 — the branches-left exit line, with its exact shape:
+  // Rule 4 — the branches-left exit line, with its exact shape:
   assert.match(task, /BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind \(open PRs waiting on review\) on ONE branches-left: line/);
   assert.match(task, /branches-left: dsh\/issue-127-c5844082078, dsh\/issue-128-nextticket/);
   assert.match(task, /never write branches-left: none/);
@@ -178,7 +196,7 @@ test("issue #127: the prompt assembly appends the branch-hygiene contract to the
 
 test("issue #127: the contract block sits in the driver between its markers, after scrub and after the relationships block, before launch", () => {
   const src = readFileSync(SCRIPT, "utf8");
-  const marker = "# --- standing agent contract: branch hygiene (issue #127)";
+  const marker = "# --- standing agent contract: branch hygiene (issues #127, #327)";
   const mi = src.indexOf(marker);
   assert.notEqual(mi, -1, "the branch-hygiene contract block must exist in the driver");
 
@@ -208,23 +226,28 @@ test("issue #127: the contract block sits in the driver between its markers, aft
 // word-for-word strings that appear identically on both.
 const HYGIENE_RULES = [
   [
+    "MINT A NAME ONLY YOU OWN",
+    /1\. MINT A NAME ONLY YOU OWN \(issue #327\) — every branch you create carries a unique disambiguator suffix/,
+    /\*\*MINT A NAME ONLY YOU OWN\*\* \(issue #327\)/,
+  ],
+  [
     "SAME-SESSION PR PER BRANCH",
-    /1\. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/,
+    /2\. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/,
     /\*\*SAME-SESSION PR PER BRANCH\*\*/,
   ],
   [
     "DELETE ON CLOSE WITHOUT MERGE",
-    /2\. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging/,
+    /3\. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging/,
     /\*\*DELETE ON CLOSE WITHOUT MERGE\*\*/,
   ],
   [
     "BRANCHES-LEFT EXIT LINE",
-    /3\. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind/,
+    /4\. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind/,
     /\*\*BRANCHES-LEFT EXIT LINE\*\*/,
   ],
 ];
 
-test("issue #127: driver and contract doc carry the two leak-path rules and the exit-line rule", () => {
+test("issue #127: driver and contract doc carry the mint rule, the two leak-path rules and the exit-line rule", () => {
   const src = readFileSync(SCRIPT, "utf8");
   const doc = readFileSync(CONTRACT_DOC, "utf8");
   for (const [name, driverRe, docRe] of HYGIENE_RULES) {
@@ -241,6 +264,13 @@ test("issue #127: driver and contract doc carry the two leak-path rules and the 
     /pushed branch with no PR is an orphan/,
     /gh pr close NUMBER --delete-branch/,
     /git push origin --delete BRANCH/,
+    // The issue #327 mint rule, word-for-word on both surfaces:
+    /dsh\/issue-127-c5844082078`?,\s+never the bare slug/,
+    /git ls-remote origin <name>/,
+    /re-mint with a fresh suffix/,
+    /never pull onto it/,
+    /never force-push over it/,
+    /delete the local branch, re-mint/,
   ]) {
     assert.match(src, re, "driver block drift");
     assert.match(doc, re, "contract doc drift");
