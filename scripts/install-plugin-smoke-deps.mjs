@@ -186,6 +186,35 @@ export function linkLocals(root) {
   }
 }
 
+// "Never installed" = the closure is absent from BOTH seams the installer
+// manages: the @deepseek-ai/* packages npm extracts, and the @local/* links
+// linkLocals() makes (issue #432). An EMPTY @deepseek-ai scope dir alone is
+// NOT a never-installed witness — npm creates the scope dir before
+// extraction, so a crashed mid-install leaves exactly that shape, while
+// linkLocals() from a prior run leaves the @local links behind: that tree
+// fails the verify (a genuinely broken install) and must stay red, not
+// skip. Only a tree with no witness on either seam is the pristine-clone
+// state a "was never installed" skip may claim.
+export function closureSeamsAbsent(root) {
+  const nm = path.join(root, "node_modules");
+  // Seam 1: the @deepseek-ai/* extraction target. The scope dir's EXISTENCE
+  // proves nothing (npm pre-creates it); only content does.
+  const dsai = path.join(nm, "@deepseek-ai");
+  if (fs.existsSync(dsai) && fs.readdirSync(dsai).length > 0) return false;
+  // Seam 2: the @local/* links. npm never creates these — a symlink here
+  // is proof the closure step ran on this tree.
+  const local = path.join(nm, "@local");
+  if (!fs.existsSync(local)) return true;
+  for (const d of fs.readdirSync(local)) {
+    try {
+      if (fs.lstatSync(path.join(local, d)).isSymbolicLink()) return false;
+    } catch {
+      // raced away mid-readdir — not a seam witness
+    }
+  }
+  return true;
+}
+
 // The verified-tree contract: every required package present, every peer
 // requirement of the installed @deepseek-ai/* / @local/* family met, and
 // every @local link intact (npm prunes foreign symlinks while reconciling).

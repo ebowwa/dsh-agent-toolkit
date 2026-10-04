@@ -11,7 +11,12 @@ run straight off the tree on Node.
 
 - **Work lands on `main` via reviewed PR.** `gates.yml` fires on every push
   to `main` and every PR (job `gates`, self-hosted `dsh` cell, 10-minute
-  timeout).
+  timeout). The main-side run fired by the merge push itself is the
+  authoritative grade (issue #431): a PR-level `gates` check still
+  pending at merge time is accepted, not an incident — the self-hosted
+  cell can lag for hours, and the merged tree is graded by the main-side
+  run either way. This classifies the merge-time signal only; the
+  run-them-before-pushing rule below is unchanged.
 - **The gates are the CI steps — run them before pushing:**
   1. Every script parses: `node --check` for `.mjs`/`.js`, `bash -n` for
      shell (gates runs both over `scripts/`).
