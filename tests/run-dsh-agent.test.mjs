@@ -407,6 +407,135 @@ test("a literal undefined/null task body dies classified before any launch; empt
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2e-wrapped. the nullish guard must see the WRAPPED shapes (issue #361
+// second receipt) --------------------------------------------------------
+//
+// The literal rarely arrives bare: the node-side composer (FleetTower
+// scripts/dsh-node.mjs agentEnvFor) brackets whatever DSH_TASK holds —
+// '[FLEET CONTEXT] …' prepended at the throttle arm, '\n\n[PROVENANCE] …'
+// appended at the provenance arm — so the stringified null reaches $1 as
+// the wrapped shapes below. Live receipts, both 2026-10-04:
+//   · claim-YZrTic (FleetTower#917's ps eww): `[FLEET CONTEXT] …\n\nundefined`
+//   · claim-pMZYr5 (this session's own spawn): `undefined\n\n[PROVENANCE] …`
+//     — burned WITH PR #370's bare-literal case already on main, which is
+//     the proof a whole-string `case` cannot close the class.
+// The guard strips the two known wrappers and judges the core; real task
+// text wrapped in the same boilerplate must still boot (the throttle
+// preamble rides every spawn during a wave — killing those would be an
+// outage, not a guard).
+test("a nullish task body wrapped in the node's [FLEET CONTEXT]/[PROVENANCE] boilerplate still dies classified; wrapped REAL tasks still boot (issue #361)", () => {
+  // Structural pins (test-2c posture): the wrapper-strip seam must live in
+  // the script — reverting to the bare whole-string case goes red here
+  // deterministically, no spawn needed.
+  const fn = extractFunction("nullish_task_body");
+  assert.ok(fn.includes("nullish_task_body()"), "guard function extracted from script");
+  assert.match(fn, /RS = ""/, "the probe must judge PARAGRAPHS — the composer joins its parts with blank lines (issue #361)");
+  assert.match(fn, /\[FLEET CONTEXT\] /, "the probe must strip the node's throttle-wave prepend");
+  assert.match(fn, /\[PROVENANCE\] /, "the probe must strip the node's provenance append");
+  assert.match(fn, /-e 'undefined' -e 'null'/, "the core test stays on both nullish literals");
+
+  const PREAMBLE = "[FLEET CONTEXT] Provider throttle wave active: recent agents died to 429s at their first API call. This node owns the retry — if your API calls fail fast, conclude immediately with what you verified and exit; do not loop on failing calls.";
+  const FOOTER = "[PROVENANCE] Every PR/issue comment you post ends with this exact footer:\n---\n_Agent provenance: model zai/glm-5.3 · machine mac · Hermes profile headless_\nFleet truth — machines, lanes, seats, instances, activity, runners, quota — is readable as JSON from $DSH_FLEET_API (GET / for the resource index).";
+
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-nullish-wrapped-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner");
+  const argsFile = path.join(dir, "dsh-args.txt");
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
+  // dsh stub: records its argv — the "session burned" observable.
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'printf "%s\\n" "$@" > "$STUB_ARGS_FILE"',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const baseEnv = () => {
+    const env = {
+      ...HERMETIC_ENV,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: dir,
+      RUNNER_TEMP: runnerTemp,
+      DOPPLER_SERVICE_TOKEN: "stub-token",
+      DSH_KEEP_SESSIONS: "",
+      DSH_RETRY_BACKOFF_S: "0", // tests-lint rule 2: every driver spawn pins the seam
+      STUB_ARGS_FILE: argsFile,
+      GH_BIN: path.join(bin, "gh"),
+      DOPPLER_BIN: path.join(bin, "doppler"),
+      CELL_PROBE_DIRS: "",
+    };
+    delete env.GH_TOKEN;
+    delete env.GITHUB_ENV;
+    delete env.DSH_HOME;
+    delete env.DSH_PERSISTENT_HOME;
+    delete env.DSH_SESSION_PATH_FILE;
+    delete env.DEFAULT_TASK;
+    return env;
+  };
+
+  // (a) the three nullish wrapper shapes — receipt-shaped — die classified.
+  const wrapped = {
+    "prefix (throttle arm, claim-YZrTic / FleetTower#917)": `${PREAMBLE}\n\nundefined`,
+    "suffix (provenance arm, claim-pMZYr5)": `undefined\n\n${FOOTER}`,
+    "both arms": `${PREAMBLE}\n\nundefined\n\n${FOOTER}`,
+    "suffix, null literal": `null\n\n${FOOTER}`,
+  };
+  for (const [shape, garbage] of Object.entries(wrapped)) {
+    if (existsSync(argsFile)) rmSync(argsFile);
+    const proc = spawnSync("bash", [SCRIPT, garbage], { encoding: "utf8", env: baseEnv(), timeout: 60_000 });
+    assert.equal(proc.status, 2, `wrapped nullish (${shape}) must exit 2, stderr: ${proc.stderr}`);
+    assert.match(
+      proc.stderr,
+      /class: task-body-stringified-nullish/,
+      `wrapped nullish (${shape}) must name its class`,
+    );
+    assert.match(
+      proc.stderr,
+      /\[FLEET CONTEXT\]\/\[PROVENANCE\]/,
+      `wrapped nullish (${shape}) must say it stripped the node boilerplate`,
+    );
+    assert.ok(
+      !existsSync(argsFile),
+      `wrapped nullish (${shape}) must NEVER launch dsh — PR #370's bare case passed exactly this shape (issue #361 second receipt)`,
+    );
+    assert.doesNotMatch(proc.stdout, /STUB-FINAL-ANSWER/, `wrapped nullish (${shape}): no agent ran`);
+  }
+
+  // (b) the converse: REAL task cores wearing the same boilerplate boot —
+  // the preamble rides every spawn during a throttle wave; a guard that
+  // killed those would be an outage, not a guard.
+  const real = {
+    "real core after the preamble": `${PREAMBLE}\n\nInvestigate the claims mint: the task body stringifies to undefined in agentEnvFor.`,
+    "real core before the footer": `Investigate the claims mint: the task body stringifies to undefined in agentEnvFor.\n\n${FOOTER}`,
+    "both arms around a real core": `${PREAMBLE}\n\nWork issue #361 per its acceptance criteria.\n\n${FOOTER}`,
+    "bare task mentioning both words": "Check whether null or undefined task bodies burn sessions, with receipts.",
+  };
+  for (const [shape, task] of Object.entries(real)) {
+    if (existsSync(argsFile)) rmSync(argsFile);
+    const proc = spawnSync("bash", [SCRIPT, task], { encoding: "utf8", env: baseEnv(), timeout: 60_000 });
+    assert.equal(proc.status, 0, `real task (${shape}) must still boot, stderr: ${proc.stderr}`);
+    assert.match(proc.stdout, /STUB-FINAL-ANSWER/, `real task (${shape}): the agent must run`);
+    const args = existsSync(argsFile) ? readFileSync(argsFile, "utf8") : "";
+    assert.match(
+      args,
+      /Investigate the claims mint|Work issue #361|Check whether null or undefined/,
+      `real task (${shape}): the booted argv carries the real core, got: ${args.slice(0, 200)}`,
+    );
+  }
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2d. the job-scoped home MINT: two concurrent runs get DISTINCT homes -
 //
 // dbdb720 (2026-08-24) published the job-scoped home via GITHUB_ENV and, in

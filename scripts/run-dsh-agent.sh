@@ -144,12 +144,32 @@ TASK="${1:-}"
 # mint that lost its task text must surface, not silently become a roam —
 # the boot tombstone's exit code plus the class token below make this
 # death greppable, the #360 corollary).
-case "$TASK" in
-  "undefined"|"null")
-    echo "::error::task argument is the literal string \"$TASK\" — the dispatch mint stringified a JS $TASK and the claim's task text never arrived (class: task-body-stringified-nullish, issue #361); refusing to launch a no-op session" >&2
-    exit 2
-    ;;
-esac
+#
+# WRAPPED shapes (2026-10-04 second receipt): the literal rarely arrives
+# bare. The node-side composer (FleetTower scripts/dsh-node.mjs
+# agentEnvFor) brackets whatever DSH_TASK holds with its own boilerplate —
+# the [FLEET CONTEXT] throttle-wave PREPEND (line 533) and the [PROVENANCE]
+# footer APPEND (line 686) — so the stringified null reaches $1 as
+# `[FLEET CONTEXT] …\n\nundefined` (claim-YZrTic, FleetTower#917's ps
+# receipt), `undefined\n\n[PROVENANCE] …` (claim-pMZYr5, a session burned
+# with the bare-literal case already on main — PR #370's guard passed it),
+# or both arms at once. A whole-string `case` cannot see those; strip the
+# two known wrappers and judge the CORE. The probe fails OPEN by design:
+# if awk/grep cannot run, real tasks must not die — the bare-literal arm
+# above still holds unconditionally.
+nullish_task_body() {
+  case "$1" in "undefined"|"null") return 0 ;; esac
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { RS = "" }                                    # paragraph mode
+    NR == 1 && index($0, "[FLEET CONTEXT] ") == 1 { next }  # node prepend
+    index($0, "[PROVENANCE] ") == 1 { exit }                # node append
+    { print }
+  ' | grep -qx -e 'undefined' -e 'null'
+}
+if nullish_task_body "$TASK"; then
+  echo "::error::task argument is the literal string \"undefined\" or \"null\" (bare, or the core left after stripping the node-side [FLEET CONTEXT]/[PROVENANCE] boilerplate) — the dispatch mint stringified a JS nullish and the claim's task text never arrived (class: task-body-stringified-nullish, issue #361); refusing to launch a no-op session" >&2
+  exit 2
+fi
 TASK="${TASK:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
