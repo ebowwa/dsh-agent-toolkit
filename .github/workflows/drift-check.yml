@@ -15,6 +15,11 @@
 # scrubbed review body to the run log (run 32568700263 blocked with the body
 # stranded in $RUNNER_TEMP, wiped with the runner: a human got one word) —
 # a human decides.
+# EMPTY RANGE: when BASE..HEAD carries no in-scope change (the #231 racing
+# shape — a concurrent run adopts the just-pushed tag as BASE), the scope
+# step flags `empty=true` and BOTH the agent review and the tag step skip:
+# zero agent passes, zero tags, zero fan-out, green run (issue #385 — the
+# review pass is the expensive half of the #231 residual).
 # Model: fleet default unless DSH_DRIFT_MODEL is set on this repo.
 
 name: drift-check
@@ -64,7 +69,17 @@ jobs:
           # pin @v1") — derived from the same MAJOR that builds NEXT, so a
           # future v2 release advances v2 automatically
           MOVING="v${MAJOR}"
+          # Empty-range fence (issue #385): a racing run whose BASE already
+          # names HEAD has nothing to review AND nothing to tag. `git diff
+          # --quiet` exits 0 exactly when the scoped diff is empty; the if
+          # context keeps set -e off its back. Empty costs zero agent passes
+          # — the review and tag steps both key off this output.
           {
+            if git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config; then
+              echo "empty=true"
+            else
+              echo "empty=false"
+            fi
             echo "base=$BASE"
             echo "latest=${LATEST:-none}"
             echo "next=$NEXT"
@@ -74,6 +89,10 @@ jobs:
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
 
       - name: Agent reviews its own diff (release gate)
+        # Empty range → zero agent passes (issue #385): an empty diff has
+        # nothing to review; the pass that replied TAG on nothing was the
+        # expensive half of the #231 residual.
+        if: steps.scope.outputs.empty != 'true'
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +161,11 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        # Empty range → skip green (no tag, no release, no fan-out). The
+        # review step above is skipped too, so VERDICT never gets set —
+        # without this guard an empty range would die red at the verdict
+        # case instead of costing zero passes (issues #231/#385).
+        if: steps.scope.outputs.empty != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
