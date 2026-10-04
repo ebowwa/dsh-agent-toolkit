@@ -104,13 +104,50 @@ const GIT_C_ARGV = /(?:^|\s)git(?:\s[^\n]*?)?\s-c\s*\S*extraheader/;
 // matched, and the `-H` even rode a `\`-continuation line of its own. So:
 // the flag is matched anywhere in the line (continuation-line forms are
 // caught), with Authorization/Token in the header value.
-const HEADER_H_ARGV = /(?:^|\s)(?:-H|--header)(?:=|\s+)[^\n]*(?:[Aa]uthorization|[Tt]oken)/;
+//
+// The flag/value separator also accepts an ATTACHED QUOTE (`-H"Auth…"`,
+// `-H'Auth…'` — issue #475): shell quote removal fuses the value onto the
+// flag word and short-option parsing reads the rest of the argv element as
+// the value, so it rides argv exactly like the spaced form. The old
+// curl-anchored CURL_H_ARGV caught it; the generalized pattern's bare
+// `=|\s+` requirement re-opened that shape. A zero-width quote lookahead
+// (`(?=["'])`) adds the form without loosening anything else — `-Hflag`
+// still does not match.
+const HEADER_H_ARGV = /(?:^|\s)(?:-H|--header)(?:=|\s+|(?=["']))[^\n]*(?:[Aa]uthorization|[Tt]oken)/;
+
+// A bare `-H` / `--header` with its VALUE on the NEXT line: flag and value
+// never share a line, so no single-line regex can join them (issue #475 —
+// the same known gap GIT_C_ARGV carries for a split `-c`). violations()
+// closes it with a one-line lookahead window over PHYSICALLY ADJACENT
+// lines of the same file: a line ending in the bare flag (optionally with
+// a trailing `\` continuation) plus a next line carrying
+// Authorization/Token is the argv shape — bash's `\`-continuation (or the
+// block scalar's literal newline) re-joins the lines before the binary
+// parses argv. Cross-file and cross-block joins are impossible: pushed
+// lines from different run blocks always have at least one unpushed
+// (dedented) line between them, and the adjacency check requires
+// `b.no === a.no + 1` within one file.
+const HEADER_H_EOL = /(?:^|\s)(?:-H|--header)\s*\\?\s*$/;
+const HEADER_VALUE_NEXT = /[Aa]uthorization|[Tt]oken/;
 
 function violations(lines) {
+  const argvCredential = lines.filter((l) => GIT_C_ARGV.test(l.text) || HEADER_H_ARGV.test(l.text));
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const a = lines[i];
+    const b = lines[i + 1];
+    if (
+      a.file === b.file &&
+      b.no === a.no + 1 &&
+      HEADER_H_EOL.test(a.text) &&
+      HEADER_VALUE_NEXT.test(b.text)
+    ) {
+      argvCredential.push(a);
+    }
+  }
   return {
     rawInterpolation: lines.filter((l) => l.text.includes("${{")),
     credentialUrl: lines.filter((l) => CRED_URL.test(l.text)),
-    argvCredential: lines.filter((l) => GIT_C_ARGV.test(l.text) || HEADER_H_ARGV.test(l.text)),
+    argvCredential,
   };
 }
 
@@ -207,6 +244,81 @@ test("credential-law checker: the sanctioned #472 seam passes (env-prefixed GH_T
     "            -f event_type=release",
   ].join("\n");
   const v = violations(runBlockLines(clean, "clean472.yml"));
+  assert.deepEqual(v, { rawInterpolation: [], credentialUrl: [], argvCredential: [] });
+});
+
+test("credential-law checker: flags the attached-quote -H form (issue #475 regression)", () => {
+  // `curl -H"Authorization: Bearer $T"` — no space before the quote. Valid
+  // shell (quote removal fuses the value onto the flag word) and valid
+  // curl (short-option parsing reads the rest of the argv element as the
+  // value), riding argv exactly like the #472 defect. The generalized
+  // HEADER_H_ARGV's bare `=|\s+` separator re-opened this shape the old
+  // curl-anchored CURL_H_ARGV caught; the separator also accepts the
+  // attached quote, both quote styles, plus the `--header=` form.
+  const evil = [
+    "jobs:",
+    "  release:",
+    "    steps:",
+    "      - name: attached-quote header",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: |",
+    "          curl -sS -H\"Authorization: Bearer $GH_TOKEN\" https://api.github.com/u",
+    "          curl -sS -H'Authorization: Bearer $GH_TOKEN' https://api.github.com/u",
+    "          gh api \"repos/$repo/dispatches\" --header=\"Authorization: Bearer $GH_TOKEN\"",
+  ].join("\n");
+  const v = violations(runBlockLines(evil, "evil475.yml"));
+  assert.equal(
+    v.argvCredential.length,
+    3,
+    "attached-quote -H (double AND single quote) plus --header= must all be flagged",
+  );
+  assert.match(v.argvCredential[0].text, /-H"Authorization: Bearer/);
+  assert.match(v.argvCredential[1].text, /-H'Authorization: Bearer/);
+});
+
+test("credential-law checker: joins a bare -H split across lines (issue #475 two-line window)", () => {
+  // Pre-existing gap the issue names: a bare `-H` on its own continuation
+  // line, the header value on the NEXT line — flag and value never share a
+  // line, so the single-line regex cannot see them together. The window
+  // over physically adjacent lines joins them the way bash does.
+  const evil = [
+    "jobs:",
+    "  release:",
+    "    steps:",
+    "      - name: value on the next line",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: |",
+    "          gh api \"repos/$repo/dispatches\" --method POST \\",
+    "            -H \\",
+    "            \"Authorization: Bearer $GH_TOKEN\" \\",
+    "            -f event_type=release",
+  ].join("\n");
+  const v = violations(runBlockLines(evil, "evil475window.yml"));
+  assert.equal(
+    v.argvCredential.length,
+    1,
+    "bare -H with the header value on the next line must be flagged by the two-line window",
+  );
+  assert.match(v.argvCredential[0].text, /-H \\$/);
+});
+
+test("credential-law checker: the two-line window does not overreach", () => {
+  const clean = [
+    "jobs:",
+    "  build:",
+    "    steps:",
+    "      - name: adjacent lines that are not a split header",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: |",
+    "          curl -sS https://api.github.com/u",
+    "          echo \"token inventory: none\"",
+    "          gh api \"repos/$repo/dispatches\" --method POST \\",
+    "            -f event_type=release",
+  ].join("\n");
+  const v = violations(runBlockLines(clean, "clean475window.yml"));
   assert.deepEqual(v, { rawInterpolation: [], credentialUrl: [], argvCredential: [] });
 });
 
