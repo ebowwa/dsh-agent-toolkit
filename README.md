@@ -69,11 +69,16 @@ Two execution modes:
 Run the suite with the glob form:
 
 ```bash
-node --test tests/*.test.mjs
+node --test tests/*.test.mjs plugins/*/test/smoke.mjs
 ```
 
-Do NOT use the directory form (`node --test tests/`) — under Node 26 it
-fails with `MODULE_NOT_FOUND` before running anything.
+The `tests/` glob alone silently skips the five plugin smoke suites under
+`plugins/*/test/` that CI's bare `node --test` discovery also runs — name
+them in the same invocation (issue #301). Do NOT use the directory form
+(`node --test tests/`) — under Node 26 it fails with `MODULE_NOT_FOUND`
+before running anything. The plugin smoke tests need the
+`@deepseek-ai/*` / `@local/*` dep install first — on a bare clean checkout
+run `node scripts/install-plugin-smoke-deps.mjs` once (reruns are no-ops).
 
 ## Adopting (consumer repo)
 

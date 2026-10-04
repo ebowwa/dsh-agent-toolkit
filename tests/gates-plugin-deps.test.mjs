@@ -76,3 +76,24 @@ test("the installer is the only place npm runs for the smoke deps", () => {
     "an already-converged tree skips npm entirely (install-once fast path)",
   );
 });
+
+test("the documented local recipes name the plugin smoke suites (issue #301)", () => {
+  // CLAUDE.md and README.md both teach a local glob-form run command. The
+  // tests/ glob alone silently skips the five plugins/*/test/smoke.mjs
+  // suites that CI's bare `node --test` discovery also runs: an agent who
+  // edits a plugin smoke, verifies with the glob-only form, and pushes
+  // sees green while the edited suite never ran (issue #301 receipt:
+  // glob form 441 vs bare 446 on pristine main). Pin the invocation
+  // itself — ONE `node --test` span carrying both globs in order — so the
+  // pin tolerates prose reflow and code-fence vs inline-span differences
+  // but fails the moment either doc drops the plugins glob again.
+  const recipe = /node --test tests\/\*\.test\.mjs plugins\/\*\/test\/smoke\.mjs/;
+  for (const name of ["CLAUDE.md", "README.md"]) {
+    const doc = readFileSync(path.join(ROOT, name), "utf8");
+    assert.match(
+      doc,
+      recipe,
+      `${name}: the local test recipe must name plugins/*/test/smoke.mjs in the same node --test invocation — the tests/ glob alone silently skips the five plugin smoke suites CI also runs (issue #301)`,
+    );
+  }
+});
