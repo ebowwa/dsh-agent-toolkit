@@ -25,6 +25,7 @@ import {
   walkToFixpoint,
   verify,
   linkLocals,
+  closureSeamsAbsent,
   testedPlugins,
   allPlugins,
 } from "../scripts/install-plugin-smoke-deps.mjs";
@@ -272,10 +273,12 @@ test("CLI --dry-run: green on a converged tree, red on bare", (t) => {
   // exists (the CI cell, any box that ran the installer) — and SKIPPED,
   // not failed, where the closure was never installed (issue #280: a
   // fresh clone reds here through no fault of the diff). The skip is
-  // narrow by construction: a node_modules WITHOUT any @deepseek-ai/*
-  // packages is a tree the closure step never ran on; a tree that
-  // carries SOME of the closure and still fails is a genuinely broken
-  // install and must stay red.
+  // narrow by construction (issue #432): "never installed" means the
+  // closure is absent from BOTH seams the installer manages — no
+  // @deepseek-ai/* packages under node_modules AND no @local/* links.
+  // An empty @deepseek-ai scope dir alone proves nothing (npm creates
+  // the scope dir before extraction); a tree carrying either seam and
+  // still failing is a genuinely broken install and must stay red.
   let repo;
   try {
     repo = execFileSync("node", [script, "--dry-run"], {
@@ -284,19 +287,114 @@ test("CLI --dry-run: green on a converged tree, red on bare", (t) => {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (e) {
-    const dsai = path.join(ROOT, "node_modules", "@deepseek-ai");
-    const neverInstalled =
-      !fs.existsSync(dsai) || fs.readdirSync(dsai).length === 0;
-    if (!neverInstalled) throw e;
+    if (!closureSeamsAbsent(ROOT)) throw e;
     t.skip(
-      `repo tree bare (no @deepseek-ai/* under node_modules — the closure ` +
-        `was never installed here; gates.yml installs it on the CI cell): ` +
+      `repo tree bare (no @deepseek-ai/* packages AND no @local/* links ` +
+        `under node_modules — the closure was never installed here; ` +
+        `gates.yml installs it on the CI cell): ` +
         `hermetic legs above carry the CLI contract (issue #280)`,
     );
     return;
   }
   assert.match(repo, /--dry-run: verified/, "converged checkout pre-flights green");
   assert.match(repo, /specs/, "the resolved union is printed");
+});
+
+test("the repo-leg skip key stays narrow on BOTH seams (issue #432)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+
+  // The crashed-mid-install shape (issue #432's masking window): npm
+  // created the @deepseek-ai scope dir before extraction and died;
+  // linkLocals() from a prior run left the @local link behind.
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), "psd-432-stale-"));
+  try {
+    fs.mkdirSync(path.join(stale, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(stale, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib1": "^1.0.0" },
+      }),
+    );
+    fs.mkdirSync(path.join(stale, "node_modules", "@deepseek-ai"), {
+      recursive: true,
+    });
+    linkLocals(stale);
+    const dsai = path.join(stale, "node_modules", "@deepseek-ai");
+    assert.equal(fs.readdirSync(dsai).length, 0, "fixture: scope dir exists EMPTY");
+    assert.ok(
+      fs.lstatSync(path.join(stale, "node_modules", "@local", "a")).isSymbolicLink(),
+      "fixture: a stale @local link survives",
+    );
+
+    // The tree IS a genuinely broken install — the dry-run is loud red
+    // naming both gaps.
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: stale,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(String(e.stderr), /tree NOT satisfied/);
+      assert.match(String(e.stderr), /missing: @deepseek-ai\/lib1/);
+      assert.match(String(e.stderr), /unresolved peer: @local\/a/);
+    }
+    assert.ok(failed, "the stale-link tree is a broken install: dry-run exits non-zero");
+
+    // …and the skip key must NOT classify it as never-installed: the
+    // repo-leg takes the throw branch and stays red. Keying the skip on
+    // the scope dir alone (the pre-#432 guard) flips this leg to skip.
+    assert.equal(
+      closureSeamsAbsent(stale),
+      false,
+      "a tree carrying the @local-link seam is NOT never-installed — it stays red",
+    );
+  } finally {
+    fs.rmSync(stale, { recursive: true, force: true });
+  }
+
+  // The pristine clone stays skip-eligible: absent from BOTH seams.
+  const pristine = fs.mkdtempSync(path.join(os.tmpdir(), "psd-432-pristine-"));
+  try {
+    fs.mkdirSync(path.join(pristine, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pristine, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib1": "^1.0.0" },
+      }),
+    );
+    assert.equal(
+      closureSeamsAbsent(pristine),
+      true,
+      "no node_modules at all → never-installed (skip stays)",
+    );
+    // An empty scope dir with no links left the tree with no seam
+    // witness — indistinguishable from pristine to the verifier, still
+    // skip-eligible.
+    fs.mkdirSync(path.join(pristine, "node_modules", "@deepseek-ai"), {
+      recursive: true,
+    });
+    assert.equal(
+      closureSeamsAbsent(pristine),
+      true,
+      "empty scope dir, no @local links → never-installed (skip stays)",
+    );
+    // Any populated @deepseek-ai/* package is a seam witness → red.
+    fs.mkdirSync(path.join(pristine, "node_modules", "@deepseek-ai", "lib1"), {
+      recursive: true,
+    });
+    assert.equal(
+      closureSeamsAbsent(pristine),
+      false,
+      "populated @deepseek-ai scope → NOT never-installed (broken install stays red)",
+    );
+  } finally {
+    fs.rmSync(pristine, { recursive: true, force: true });
+  }
 });
 
 test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
