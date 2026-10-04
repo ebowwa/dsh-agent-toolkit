@@ -314,16 +314,24 @@ test("gh shim: scrubber failure aborts --notes= (release notes equals-form)", (t
 function runShimWithStdin(t, shim, scrubBody, argv, stdin) {
   const { dir, scrub, capture, real } = stage(t, scrubBody);
   const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
+  const env = {
+    ...process.env,
+    [envKey]: real,
+    SCRUB_SCRIPT: scrub,
+    SHIM_TEST_CAPTURE: capture,
+    TMPDIR: dir,
+  };
+  // Same hermeticity as runShim above (issue #483, the residual #479
+  // carrier): every current argv through this helper is a non-merge verb so
+  // an ambient GH_MERGE_GUARD=on is inert — but one future `pr merge` test
+  // routed through here would arm the merge-guard hook through the
+  // process.env spread and re-open the #479 red-on-armed-lane class. "Unset"
+  // must mean unset on every machine.
+  delete env.GH_MERGE_GUARD;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     input: stdin,
-    env: {
-      ...process.env,
-      [envKey]: real,
-      SCRUB_SCRIPT: scrub,
-      SHIM_TEST_CAPTURE: capture,
-      TMPDIR: dir,
-    },
+    env,
   });
   return { res, capture, dir };
 }
@@ -421,6 +429,29 @@ test("gh shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issu
     assert.equal(
       fs.readFileSync(capture, "utf8").trim().split("\n").pop(), "-m",
       "-m reaches gh verbatim under the harness env too",
+    );
+  } finally {
+    delete process.env.GH_MERGE_GUARD;
+  }
+});
+
+test("gh shim: ambient GH_MERGE_GUARD=on cannot arm the stdin-form helper either (issue #483 pin)", (t) => {
+  // The #483 residual: runShimWithStdin carries no delete, so one future
+  // `pr merge` test routed through the stdin form re-opens the #479
+  // red-on-armed-lane class. This pin routes the merge verb through that
+  // helper under an in-process armed lane, so the helper's env hermeticity
+  // is graded today — without the delete in runShimWithStdin this leg takes
+  // the armed branch and refuses, on any machine.
+  process.env.GH_MERGE_GUARD = "on";
+  try {
+    const { res, capture } = runShimWithStdin(
+      t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+      ["pr", "merge", "12", "-m"], "",
+    );
+    assert.equal(res.status, 0, `stdin-form helper env must stay unarmed too (stderr: ${res.stderr})`);
+    assert.equal(
+      fs.readFileSync(capture, "utf8").trim().split("\n").pop(), "-m",
+      "the merge argv reaches gh verbatim through the stdin-form helper",
     );
   } finally {
     delete process.env.GH_MERGE_GUARD;
