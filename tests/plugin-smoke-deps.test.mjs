@@ -152,27 +152,67 @@ test("verify is fail-closed: missing package, unresolved peer, pruned link", () 
   }
 });
 
-test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
+// The green leg must be HERMETIC: it pins the CLI's green path on a
+// synthetic converged tree in a temp prefix, never on the repo's own
+// node_modules. A pristine `origin/main` checkout carries no converged
+// tree (gates.yml converges it in CI via install-plugin-smoke-deps.mjs
+// BEFORE node --test), so a repo-root green leg is 1 guaranteed red for
+// every fresh clone gating locally — box-state noise, not a contract
+// failure (issue #280). The real repo closure stays pinned by the gates
+// step itself, which runs the installer's verify before the suite.
+test("CLI --dry-run: green on a converged tree (hermetic), red on bare (#280)", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const green = execFileSync("node", [script, "--dry-run"], {
-    encoding: "utf8",
-    cwd: ROOT,
-  });
-  assert.match(green, /--dry-run: verified/, "converged checkout pre-flights green");
-  assert.match(green, /specs/, "the resolved union is printed");
 
-  // bare fixture with an unmaterializable peer: red naming the gap,
-  // without npm ever installing anything
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-"));
-  try {
-    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+  // shared fixture shape: one tested @local plugin with an
+  // unmaterializable peer (the registry walk resolves it to no further
+  // peers, so the union is exactly the seed)
+  const fixture = (root) => {
+    fs.mkdirSync(path.join(root, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
-      path.join(tmp, "plugins", "a", "package.json"),
+      path.join(root, "plugins", "a", "package.json"),
       JSON.stringify({
         name: "@local/a",
         peerDependencies: { "@deepseek-ai/definitely-not-a-real-pkg-xyz": "^1.0.0" },
       }),
     );
+  };
+
+  // GREEN: the same fixture, converged — the peer materialized under
+  // node_modules and the @local link intact (exactly what
+  // install-plugin-smoke-deps.mjs leaves behind on a warm cell)
+  const green = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-green-"));
+  try {
+    fixture(green);
+    fs.mkdirSync(
+      path.join(green, "node_modules", "@deepseek-ai", "definitely-not-a-real-pkg-xyz"),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(
+        green, "node_modules", "@deepseek-ai", "definitely-not-a-real-pkg-xyz",
+        "package.json",
+      ),
+      JSON.stringify({
+        name: "@deepseek-ai/definitely-not-a-real-pkg-xyz",
+        peerDependencies: {},
+      }),
+    );
+    linkLocals(green);
+    const out = execFileSync("node", [script, "--dry-run"], {
+      encoding: "utf8",
+      cwd: green,
+    });
+    assert.match(out, /--dry-run: verified/, "converged tree pre-flights green");
+    assert.match(out, /definitely-not-a-real-pkg-xyz/, "the resolved union is printed");
+  } finally {
+    fs.rmSync(green, { recursive: true, force: true });
+  }
+
+  // RED: bare fixture — red naming the gap, without npm ever installing
+  // anything
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-"));
+  try {
+    fixture(tmp);
     let failed = false;
     try {
       execFileSync("node", [script, "--dry-run"], { cwd: tmp, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
