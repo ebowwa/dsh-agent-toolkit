@@ -8,7 +8,11 @@ data and never baked into this file). This file is authoritative over the
 inline summary the driver carries; owner-edit it when the pool changes.
 
 Last aligned with the tower registry (FleetTower `fleet.manifest.json`)
-and the factory#60 receipts: 2026-09-26.
+and the factory#60 receipts: 2026-10-04 (the air machines, issue #397).
+`scripts/fleet-manifest-drift.mjs` (CI:
+`.github/workflows/fleet-manifest-drift.yml`) diffs the node table below
+against the live tower registry — a stale copy fails loud instead of
+mis-placing work.
 
 ## The placement law (factory#60 — the agent-side mirror)
 
@@ -36,9 +40,20 @@ node. A dispatch/placement that cannot name its node + reason
 | mini-L3 | macOS | open (cheap cells) | a mac box that is never NAMED linux — lane name is not OS (the factory#60 receipt) |
 | mini-L4 | macOS | open (default) | neutral/default parts on mac |
 | seed-L3 | Linux | linux (cheap cells) | the only Linux node today — the only legal target for linux-native parts |
+| air16-native-open | macOS | open | MacBook Air m1 16gb — pull-only (no ssh route from seed; heartbeat truth) |
+| air8-native-open | macOS | open | MacBook Air m1 8gb — fresh enrollment 2026-10-01 |
+| m1-8gb-air-open | macOS | open | MacBook Air m1 8gb — MLX-capable; enrolled via Gauge Fleet Control per gauge#47 |
 
 All four mini lane homes live on one macOS box (m1mini16gb), so a
 linux-lane whole-claim could land on macOS with no legal node to run it —
 that is the factory#60 receipt this law closes. macOS nodes never run
 linux-native parts, and Linux nodes never run mac-native parts — a lane
 filter alone does not make a placement legal.
+
+The three air nodes live on two further macOS boxes:
+`air16-native-open` on macos-m1-16gb-air.local, and `air8-native-open` +
+`m1-8gb-air-open` (the MLX-capable trait node) on macos-m1-8gb-air.local.
+Both machines enrolled pull-only (no ssh route from seed; heartbeat
+truth), so their live seat/disk picture reaches a dispatch only through
+the `DSH_FLEET_MANIFEST` snapshot — plan against this file for the
+placement law, never for live seat counts.
