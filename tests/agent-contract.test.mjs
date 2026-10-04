@@ -15,6 +15,9 @@
 //      separated issue refs, nothing else on the line; filed nothing — the
 //      line is omitted entirely (`filed-followups: none` is a violation,
 //      not an absence).
+//   4. the pre-file dedup check (issue #320): before minting a `found:`
+//      ticket the protocol asks for a search of the open pile, with the
+//      comment-on-existing alternative — pinned on all three carriers.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -310,4 +313,36 @@ test("skill-candidate grammar: multiple blocks in one summary each parse", () =>
     "open-sibling-pr-hunk-exclusion",
   ]);
   for (const b of blocks) assert.equal(b.error, undefined);
+});
+
+// --- 5. the pre-file dedup check (issue #320) ------------------------------
+
+// Sibling agents working sibling PRs of one root issue each filed the same
+// defect 95 seconds apart (#309/#311) — nothing in the protocol asked them
+// to search the open pile first, so the pile grew two copies of one work
+// item and every downstream agent re-derived the cross-reference. The
+// dedup step is pinned on ALL THREE carriers: the stamped contract is the
+// only text a dispatched agent is guaranteed to read, so a docs-only fix
+// would leave the actual failure path (dispatched siblings) unfixed.
+test("the discovery protocol carries the pre-file dedup check (issue #320)", () => {
+  for (const [name, text] of [["the driver", driverSrc], [".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, /gh search issues --repo/, `${name}: the pre-file search command`);
+    assert.match(text, /--label agent-todo --state open/, `${name}: the search covers the OPEN todo pile`);
+    assert.match(text, /comment on THAT ticket/, `${name}: the comment-on-existing alternative to filing`);
+    assert.match(text, /#320/, `${name}: cites the receipt chain`);
+  }
+});
+
+test("the dedup step sits FIRST in the discovery checklist, before the file step", () => {
+  // the check must precede filing to prevent the duplicate, not follow it
+  for (const [name, text] of [["the driver", driverSrc], [".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    const search = text.indexOf("gh search issues --repo");
+    const file = text.search(/\*{0,2}File an issue\*{0,2} in the repo/);
+    assert.ok(search > -1, `${name}: the dedup search exists`);
+    assert.ok(file > -1, `${name}: the file step exists`);
+    assert.ok(
+      search < file,
+      `${name}: the dedup search precedes the file step`,
+    );
+  }
 });

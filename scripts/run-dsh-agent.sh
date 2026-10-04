@@ -178,17 +178,23 @@ STANDING_CONTRACT='Standing contract — every dsh lane agent inherits this.
 
 DISCOVERY — file what you notice, never silently scope-creep. While working
 this claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
-1. File an issue in the repo where you observed it. Title starts with
+1. Search before you file (issue #320): run gh search issues --repo <repo>
+   --label agent-todo --state open (or the repo todo label) for the
+   file/line you are about to cite; when an open ticket already carries it,
+   add your receipts as a comment on THAT ticket — do not mint a duplicate
+   (receipt: two sibling agents filed the same defect twice 95s apart,
+   #309/#311).
+2. File an issue in the repo where you observed it. Title starts with
    "found:". The body carries receipts: file:line, command output, and the
    claim you were working (gh issue create --title "found: ..." --body "...").
-2. Label it with the todo label this repo uses (agent-todo where it
+3. Label it with the todo label this repo uses (agent-todo where it
    exists; the closest todo label otherwise — say which you used).
-3. Reference every filed issue in your final summary on ONE
+4. Reference every filed issue in your final summary on ONE
    filed-followups: line — exact shape:
      filed-followups: #114, #115
    comma-space separated issue refs, nothing else on the line. Filed
    nothing: omit the line entirely — never write filed-followups: none.
-4. Do NOT fix it in the current claim — that is scope-creep — unless the
+5. Do NOT fix it in the current claim — that is scope-creep — unless the
    fix is trivial AND in-scope. The claim diff stays on-task; PRs are task
    work-products, not discoveries.
 
