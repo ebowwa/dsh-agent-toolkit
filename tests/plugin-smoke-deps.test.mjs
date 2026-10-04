@@ -189,15 +189,43 @@ test("a root with NO plugins/ dir reads as no plugins — not a raw ENOENT (issu
   }
 });
 
-test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
+// The green half pins the CLI against the repo's OWN tree. That tree is
+// converged only where scripts/install-plugin-smoke-deps.mjs has run (the
+// self-hosted CI cell, a developer box); a pristine clone is bare and the
+// leg reds environmentally — a guaranteed red no PR can fix, which burned
+// a pristine-worktree bisect round to classify (issue #280). So the green
+// half skips — loudly, with the remediation — ONLY on the exact
+// environmental signature (the CLI ran fine and reported a not-converged
+// tree); any other failure still fails the leg. The red half below runs
+// everywhere: a bare clone loses no coverage.
+test("CLI --dry-run: green on the repo's converged tree (skips on a bare checkout — issue #280)", (t) => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const green = execFileSync("node", [script, "--dry-run"], {
-    encoding: "utf8",
-    cwd: ROOT,
-  });
+  let green;
+  try {
+    green = execFileSync("node", [script, "--dry-run"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    const err = String(e.stderr ?? "");
+    assert.match(
+      err,
+      /--dry-run: tree NOT satisfied/,
+      "non-green dry-run must be the script's own not-converged report, not a crash",
+    );
+    t.skip(
+      "repo tree not converged (bare checkout) — run " +
+        "scripts/install-plugin-smoke-deps.mjs once; green half skipped per #280",
+    );
+    return;
+  }
   assert.match(green, /--dry-run: verified/, "converged checkout pre-flights green");
   assert.match(green, /specs/, "the resolved union is printed");
+});
 
+test("CLI --dry-run: red on bare — the missing package is named, npm never runs", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
   // bare fixture with an unmaterializable peer: red naming the gap,
   // without npm ever installing anything
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-"));
