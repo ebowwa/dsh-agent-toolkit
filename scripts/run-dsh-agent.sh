@@ -127,6 +127,24 @@ if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
 fi
+# A tower-minted claim can arrive with the literal token "undefined"/"null" —
+# a JS undefined/null stringified somewhere in the mint path (observed
+# 2026-10-04, issue #361: claim rows minted with empty task fields, DSH_TASK
+# rendered as the bare 9-char string, and whole sessions burned concluding
+# "there is no task"). ${1:-$DEFAULT_TASK} above only guards unset/empty, so
+# this non-empty garbage passed through verbatim and the entire contract/fleet
+# apparatus was appended to it. Refuse to boot — fail fast, NOT a DEFAULT_TASK
+# fallback: a mint that lost its task text must surface, and silently turning
+# it into another maintenance roam feeds the concurrent-roam stampede class
+# (factory#869). Exact-match only — a real task may legitimately contain the
+# WORD "undefined"; same stringification guard class as
+# install-plugin-smoke-deps.mjs's raw === "undefined" check.
+case "$TASK" in
+  "undefined"|"null")
+    echo "error: task body is the literal string \"$TASK\" — the claim mint stringified a JS $TASK and lost the real task text; refusing to boot a no-op session (issue #361)" >&2
+    exit 2
+    ;;
+esac
 
 # The agent always launches via `doppler run` with the service token passed
 # through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.

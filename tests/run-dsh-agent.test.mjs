@@ -412,6 +412,101 @@ test("the job-scoped home mint is per-run: two concurrent drivers on one shared 
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2e. the task-argument boot guard: literal "undefined"/"null" refuse to
+// boot (issue #361).
+//
+// A tower-side mint stringified a JS undefined into the claim body, and
+// `${1:-$DEFAULT_TASK}` only guards unset/empty — the bare 9-char string
+// "undefined" passed through as a REAL task, the entire contract/fleet
+// apparatus was appended to it, and a full API session burned to conclude
+// "there is no task" (during a provider throttle wave, exactly when retry
+// slots are precious). The guard must fail FAST (exit 2, typed error,
+// before any launch) rather than fall back to DEFAULT_TASK: a mint that
+// lost its task text must surface, not silently become another maintenance
+// roam (the factory#869 concurrent-roam stampede class). Exact-match only —
+// a task that merely CONTAINS the word is legitimate and must still boot.
+
+test("the literal strings \"undefined\"/\"null\" as the whole task refuse to boot before any launch (issue #361)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-undefguard-"));
+  const bin = path.join(dir, "bin");
+  const home = path.join(dir, "home");
+  const runnerTemp = path.join(dir, "runner");
+  mkdirSync(bin);
+  mkdirSync(home);
+  mkdirSync(runnerTemp);
+
+  // Same hermetic harness shape as tests 2/2c: doppler exec stub, succeeding
+  // dsh stub (a REFUSED boot must never reach it — the final answer is the
+  // canary), zstd/gh stubs, no cell probing, no network.
+  writeFileSync(
+    path.join(bin, "doppler"),
+    "#!/bin/sh\nshift; shift\nexec \"$@\"\n",  // `doppler run -- <cmd...>`: token rides env since the issue-#95 argv fix
+  );
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const env = {
+    ...HERMETIC_ENV,
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: home,
+    RUNNER_TEMP: runnerTemp,
+    DOPPLER_SERVICE_TOKEN: "stub-token",
+    DSH_RETRY_BACKOFF_S: "0",
+    GH_BIN: path.join(bin, "gh"),
+    DOPPLER_BIN: path.join(bin, "doppler"),
+    CELL_PROBE_DIRS: "",
+  };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_ENV;
+  delete env.GITHUB_PATH;
+
+  // The garbage tokens: refused with exit 2, the typed error, and NO launch.
+  for (const garbage of ["undefined", "null"]) {
+    const proc = spawnSync("bash", [SCRIPT, garbage], { encoding: "utf8", env, timeout: 60_000 });
+    assert.equal(
+      proc.status,
+      2,
+      `task ${JSON.stringify(garbage)} must be refused with exit 2, stderr: ${proc.stderr}`,
+    );
+    assert.match(
+      proc.stderr,
+      new RegExp(`error: task body is the literal string "${garbage}"`),
+      `task ${JSON.stringify(garbage)} must fail with the typed stringification error`,
+    );
+    assert.doesNotMatch(
+      proc.stdout,
+      /STUB-FINAL-ANSWER/,
+      `task ${JSON.stringify(garbage)} must never reach an agent launch`,
+    );
+  }
+
+  // Exact-match pin: a task that CONTAINS the word "undefined" is a real
+  // task and must still boot through to the agent.
+  const legit = spawnSync(
+    "bash",
+    [SCRIPT, "a real task that discusses the undefined stringification class"],
+    { encoding: "utf8", env: { ...env, DSH_HOME: home, DSH_PERSISTENT_HOME: "1", DSH_RETRY_BACKOFF_S: "0" }, timeout: 60_000 },
+  );
+  assert.equal(
+    legit.status,
+    0,
+    `a task merely containing the word must boot, stderr: ${legit.stderr.split("\n").slice(-6).join("\n")}`,
+  );
+  assert.match(legit.stdout, /STUB-FINAL-ANSWER/, "the containing-word task must reach the agent launch");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2b. soft gh end-to-end: the WHOLE driver must survive a failed gh
 // bootstrap and still launch the agent (review r2 finding 2's
 // integration half). The extracted-function pins in cell-tools.test.mjs
