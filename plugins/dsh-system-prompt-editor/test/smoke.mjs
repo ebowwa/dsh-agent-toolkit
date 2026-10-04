@@ -8,7 +8,22 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } from "../lib/index.js";
+
+// #358: lib/index.js resolves @deepseek-ai/dsh-{tools,agent,system-prompt}
+// through an installed tree (the dsh runtime's flat node_modules, or a
+// checkout converged by scripts/install-plugin-smoke-deps.mjs). A bare
+// fresh clone has neither: the suite must SKIP LOUD — naming the missing
+// package and the convergence fix — not redden the default gate with an
+// ERR_MODULE_NOT_FOUND stack. ONLY a missing package skips; a missing
+// relative module (the "Cannot find module <path>" signature) is a real
+// defect and keeps failing.
+const lib = await import("../lib/index.js").catch((error) => {
+	const missing = error?.code === "ERR_MODULE_NOT_FOUND" && error.message.match(/Cannot find package '([^']+)'/);
+	if (!missing) throw error;
+	console.log(`SKIP system-prompt-editor smoke — workspace dep '${missing[1]}' not installed on this checkout; converge with: node scripts/install-plugin-smoke-deps.mjs (issue #358)`);
+	process.exit(0);
+});
+const { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } = lib;
 
 const dir = mkdtempSync(join(tmpdir(), "sp-editor-"));
 const file = join(dir, "system-prompt.md");

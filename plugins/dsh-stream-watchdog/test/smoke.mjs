@@ -22,8 +22,23 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const nodeHalf = await import(join(pkgDir, "lib", "index.js"));
-const hotHalf = await import(join(pkgDir, "lib", "hot.js"));
+
+// #358: lib/index.js and lib/hot.js resolve @deepseek-ai/schemastery
+// through an installed tree (the dsh runtime's flat node_modules, or a
+// checkout converged by scripts/install-plugin-smoke-deps.mjs). A bare
+// fresh clone has neither: the suite must SKIP LOUD — naming the missing
+// package and the convergence fix — not redden the default gate with an
+// ERR_MODULE_NOT_FOUND stack. ONLY a missing package skips; a missing
+// relative module (the "Cannot find module <path>" signature) is a real
+// defect and keeps failing.
+const loadLib = (url) => import(url).catch((error) => {
+	const missing = error?.code === "ERR_MODULE_NOT_FOUND" && error.message.match(/Cannot find package '([^']+)'/);
+	if (!missing) throw error;
+	console.log(`SKIP stream-watchdog smoke — workspace dep '${missing[1]}' not installed on this checkout; converge with: node scripts/install-plugin-smoke-deps.mjs (issue #358)`);
+	process.exit(0);
+});
+const nodeHalf = await loadLib(join(pkgDir, "lib", "index.js"));
+const hotHalf = await loadLib(join(pkgDir, "lib", "hot.js"));
 
 let pass = 0;
 let fail = 0;
