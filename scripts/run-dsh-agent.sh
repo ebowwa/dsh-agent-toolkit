@@ -270,7 +270,14 @@ reference doc pins):
 
 SKILL CANDIDATE: merge-adjacency-conflict-dissolve
 WHEN TO USE: the branch conflicts with main only because a sibling PR landed adjacent hunks in the same files, with no semantic overlap
-THE PROCEDURE: 1. git fetch origin main && git merge-base HEAD origin/main. 2. git rebase origin/main and list the conflicted files. 3. For each, git diff --name-only of the sibling PR (gh pr view N --json files) — if your changed lines are disjoint from its changed lines, take theirs wholesale: git checkout --theirs <file> is WRONG for a rebase; instead git checkout origin/main -- <file>, then re-apply only your disjoint hunks with git apply of a hand-built diff. 4. Run the targeted tests for the touched modules before the full gate. 5. Push with --force-with-lease.'
+THE PROCEDURE: 1. git fetch origin main && git merge-base HEAD origin/main. 2. git rebase origin/main and list the conflicted files. 3. For each, git diff --name-only of the sibling PR (gh pr view N --json files) — if your changed lines are disjoint from its changed lines, take theirs wholesale: git checkout --theirs <file> is WRONG for a rebase; instead git checkout origin/main -- <file>, then re-apply only your disjoint hunks with git apply of a hand-built diff. 4. Run the targeted tests for the touched modules before the full gate. 5. Push with --force-with-lease.
+
+LIVE CHECKOUTS — never work in-place in a shared lane checkout (issue #276).
+The shared toolkit checkout on a lane node ($DSH_AGENT_TOOLKIT_DIR, the
+~/dsh-bot-class dirs) is re-pinned to the moving v1 tag by a per-minute
+keepalive; in-place edits there can be destroyed when the tag advances.
+Do claim work in a private clone or worktree of the target repo, never
+in-place in the shared checkout.'
 TASK="${TASK}
 
 ${STANDING_CONTRACT}"

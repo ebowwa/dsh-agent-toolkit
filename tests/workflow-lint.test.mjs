@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -588,4 +588,52 @@ test("explicit-arg invocation keeps its old contract", () => {
   const missing = runTool(["/nonexistent/wf.yml"]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /cannot read/);
+});
+
+test("CLI arm runs through a symlinked tool path (#302): the lint executes, never a silent 0", () => {
+  // Regression: the CLI guard compared import.meta.url (always the REAL
+  // path — Node resolves module symlinks at load) against
+  // `file://${process.argv[1]}` (as-invoked). Spawn the tool through a
+  // symlink and the compare never matched: the whole CLI block silently
+  // skipped and a BROKEN workflow exited 0 with zero output — the linter
+  // false-greened itself (found while pinning #291; macOS /tmp →
+  // /private/tmp makes any wrapper in a symlinked dir hit this).
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-symlink-"));
+  try {
+    const linkedTool = path.join(dir, "workflow-lint-link.mjs");
+    symlinkSync(TOOL, linkedTool); // argv[1] ≠ realpath — the #302 shape
+    withFile(BROKEN, (f) => {
+      const bad = spawnSync(process.execPath, [linkedTool, f], { encoding: "utf8" });
+      assert.equal(bad.status, 1,
+        "a broken workflow through a symlinked tool must be a LINT failure, not a false-green 0");
+      assert.match(bad.stderr, /dedents onto a mapping level/,
+        "the lint must have actually run and reported the defect");
+    });
+    withFile(FIXED, (f) => {
+      const good = spawnSync(process.execPath, [linkedTool, f], { encoding: "utf8" });
+      assert.equal(good.status, 0);
+      assert.equal(good.stderr, "", "clean file through the symlink: green and quiet");
+    });
+    // bare invocation through the symlink must still arm the CLI block.
+    // With issue #291's default-args contract the bare form lints the
+    // script's OWN repo workflows (green here), so arming is proven the
+    // other way: a script COPY with no .github/workflows beside it must
+    // die loud (exit 2, usage) — through the symlink — never a silent 0.
+    const noWfDir = mkdtempSync(path.join(tmpdir(), "workflow-lint-arm-"));
+    try {
+      mkdirSync(path.join(noWfDir, "scripts"), { recursive: true });
+      const copied = path.join(noWfDir, "scripts", "workflow-lint.mjs");
+      writeFileSync(copied, readFileSync(TOOL, "utf8"));
+      const linkedCopy = path.join(noWfDir, "workflow-lint-link.mjs");
+      symlinkSync(copied, linkedCopy);
+      const usage = spawnSync(process.execPath, [linkedCopy], { encoding: "utf8" });
+      assert.equal(usage.status, 2,
+        "bare through the symlink on a workflow-less tree dies loud (arm matched, not skipped)");
+      assert.match(usage.stderr, /usage:/);
+    } finally {
+      rmSync(noWfDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

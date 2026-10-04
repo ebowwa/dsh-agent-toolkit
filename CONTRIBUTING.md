@@ -8,6 +8,13 @@ lifecycle pings only — measured 2026-09-22). This copy is this repo's
 single source for agent communication conduct; the fleet-wide upstream
 lives in ebowwa/factory's CONTRIBUTING.md.
 
+**These conduct sections are load-bearing for CI** (issue #270): the
+rules below are pinned by tests — `tests/milestone-contract.test.mjs`,
+`tests/agent-contract.test.mjs`, `tests/branch-hygiene-contract.test.mjs`,
+`tests/relationships-contract.test.mjs`, `tests/decompose-contract.test.mjs`.
+The pins grade the rule, not the sentence shape, but the rule must
+survive your edit: run `node --test tests/*.test.mjs` after any edit here.
+
 ## Communication during work (the thread is a message board)
 
 An agent working on a ticket is **not a black box**.
