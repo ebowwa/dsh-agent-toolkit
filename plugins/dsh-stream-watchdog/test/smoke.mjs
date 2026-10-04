@@ -22,8 +22,27 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const nodeHalf = await import(join(pkgDir, "lib", "index.js"));
-const hotHalf = await import(join(pkgDir, "lib", "hot.js"));
+
+// Loud-skip on an un-installed checkout (toolkit #358): a bare `node --test`
+// on a fresh clone has no @deepseek-ai/* runtime deps yet, so importing the
+// lib half dies ERR_MODULE_NOT_FOUND — a guaranteed red that masquerades as
+// plugin breakage. Absence of a BARE package is environmental: skip loud and
+// exit 0. Anything else (broken relative import, real code defect) rethrows.
+async function importLibHalf(specifier) {
+	try {
+		return await import(specifier);
+	} catch (e) {
+		if (e?.code === "ERR_MODULE_NOT_FOUND" && /Cannot find package '/.test(e?.message ?? "")) {
+			console.log(`SKIP dsh-stream-watchdog smoke — plugin smoke deps not installed on this checkout (environmental, not a plugin defect; toolkit #358)`);
+			console.log(`      ${e.message.split("\n")[0]}`);
+			console.log("      fix: node scripts/install-plugin-smoke-deps.mjs — CI runs this before node --test");
+			process.exit(0);
+		}
+		throw e;
+	}
+}
+const nodeHalf = await importLibHalf(join(pkgDir, "lib", "index.js"));
+const hotHalf = await importLibHalf(join(pkgDir, "lib", "hot.js"));
 
 let pass = 0;
 let fail = 0;

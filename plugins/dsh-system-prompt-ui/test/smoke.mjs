@@ -11,7 +11,27 @@ import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { apply as nodeApply, BLOCK_ROUTE } from "../lib/index.js";
+
+// Loud-skip on an un-installed checkout (toolkit #358): a bare `node --test`
+// on a fresh clone has no @local/* / @deepseek-ai/* runtime deps yet, so
+// importing the lib dies ERR_MODULE_NOT_FOUND — a guaranteed red that
+// masquerades as plugin breakage. Absence of a BARE package (including the
+// @local symlink the installer converges) is environmental: skip loud and
+// exit 0. Anything else (broken relative import, real code defect) rethrows.
+async function importPluginLib(specifier) {
+	try {
+		return await import(specifier);
+	} catch (e) {
+		if (e?.code === "ERR_MODULE_NOT_FOUND" && /Cannot find package '/.test(e?.message ?? "")) {
+			console.log(`SKIP dsh-system-prompt-ui smoke — plugin smoke deps not installed on this checkout (environmental, not a plugin defect; toolkit #358)`);
+			console.log(`      ${e.message.split("\n")[0]}`);
+			console.log("      fix: node scripts/install-plugin-smoke-deps.mjs — CI runs this before node --test");
+			process.exit(0);
+		}
+		throw e;
+	}
+}
+const { apply: nodeApply, BLOCK_ROUTE } = await importPluginLib("../lib/index.js");
 
 const dir = mkdtempSync(join(tmpdir(), "sp-ui-"));
 const file = join(dir, "system-prompt.md");
