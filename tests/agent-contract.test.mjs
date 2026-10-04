@@ -109,6 +109,33 @@ test("no-scope-creep is stated as a refusal with the trivial AND in-scope carve-
   }
 });
 
+test("the discovery protocol carries the pre-file dedup search (issue #320)", () => {
+  // Sibling agents working sibling PRs of ONE root issue each discovered
+  // the same follow-on defect and each minted a found: ticket (#309/#311,
+  // 95s apart), because the protocol had no search-before-file step — the
+  // next agent then re-derives the cross-reference and the pile carries N
+  // copies of one work item. The rule must reach EVERY carrier; the
+  // stamped contract above all, since a dispatched agent reads the driver
+  // text, never the docs.
+  for (const [name, text] of [["the driver", driverSrc], [".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, /Search before you file/, `${name}: the dedup step is named`);
+    assert.match(text, /gh search issues --repo/, `${name}: the pre-file search command`);
+    assert.match(text, /agent-todo/, `${name}: the search covers the todo label`);
+    assert.match(text, /--state open/, `${name}: the search is scoped to the OPEN pile`);
+    assert.match(text, /comment on\s+THAT\s+ticket/, `${name}: the comment-on-existing alternative`);
+    assert.match(text, /minting a duplicate/, `${name}: the duplicate is the failure mode`);
+  }
+  // The check must PRECEDE the file step — a dedup sentence after the
+  // file instruction fires too late to stop the duplicate mint.
+  for (const [name, text] of [["the driver", driverSrc], [".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    const search = text.indexOf("Search before you file");
+    const file = text.indexOf("File an issue");
+    assert.ok(search > -1, `${name}: the dedup step exists`);
+    assert.ok(file > -1, `${name}: the file step exists`);
+    assert.ok(search < file, `${name}: the dedup search precedes the file step`);
+  }
+});
+
 test("the docs point at the enforcement seam (the driver stamps every task)", () => {
   assert.match(agentsReadme, /run-dsh-agent\.sh/);
   assert.match(contributing, /run-dsh-agent\.sh/);

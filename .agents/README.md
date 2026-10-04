@@ -12,12 +12,17 @@ without reading it. This file is the reference text; the skills in
 **File what you notice, never silently scope-creep.** While working a
 claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
 
-1. **File an issue** in the repo where you observed it — title prefix
+1. **Search before you file (dedup, issue #320)** — check the open todo
+   pile for the defect first: `gh search issues --repo <repo> --label
+   agent-todo --state open`; if an open ticket already carries the
+   file/line you were about to cite, add your receipts as a comment on
+   THAT ticket instead of minting a duplicate.
+2. **File an issue** in the repo where you observed it — title prefix
    `found:`, body carrying receipts: file:line, command output, and the
    claim you were working.
-2. **Label it** with the todo label that repo uses (`agent-todo` where it
+3. **Label it** with the todo label that repo uses (`agent-todo` where it
    exists; the closest todo label otherwise — say which you used).
-3. **Reference it in the exit summary.** Every filed issue number goes on
+4. **Reference it in the exit summary.** Every filed issue number goes on
    ONE `filed-followups:` line, exact shape:
 
    ```
@@ -28,10 +33,10 @@ claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    nothing: omit the line entirely — never write `filed-followups: none`;
    absence is the machine-checkable signal that the diff carries no
    followups.
-4. **Never fix it in the current claim** — that is scope-creep — unless
+5. **Never fix it in the current claim** — that is scope-creep — unless
    the fix is trivial AND in-scope. The claim diff stays on-task; PRs are
    task work-products, not discoveries.
-5. **Stamp the chain/sweep milestone** (issue #185): when the `found:`
+6. **Stamp the chain/sweep milestone** (issue #185): when the `found:`
    ticket belongs to a chain or sweep, the FILER sets that chain's
    milestone on it — creating the milestone if absent (name = the chain's
    anchor, e.g. `citation-sweep` or the root defect key). One call, part
@@ -53,7 +58,7 @@ chain or sweep files under a GitHub **milestone** named for its anchor
 1. **Filer stamps** — a newly filed ticket that belongs to a chain/sweep
    carries that milestone; absent, the filer creates it (same anchor
    name). One `gh issue edit N --repo R --milestone "anchor"` call, part
-   of the file step (checklist item 5 of the discovery protocol above).
+   of the file step (checklist item 6 of the discovery protocol above).
 2. **Ship carries** — a shipped PR carries the closing ticket's
    milestone (`gh pr edit N --repo R --milestone "anchor"`), so the PR
    list renders chain progress and the milestone closes out with the
