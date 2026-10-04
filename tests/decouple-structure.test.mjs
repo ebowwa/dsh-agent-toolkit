@@ -146,6 +146,21 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
 });
+
+test("docs 3a systemd unit exec rides /bin/bash — a 644 script cannot direct-exec (#305)", () => {
+  const doc = read("docs/decoupled-worker.md");
+  // scripts/dsh-worker.sh is mode 644 in the repo (git ls-files -s), so a
+  // unit's `exec <script>` dies "Permission denied" (exit 126) on every
+  // start — live-proven class in install-worker.sh's cron line, which
+  // ALWAYS invokes the sweep via `bash <script>`. The manual 3a unit must
+  // teach the same discipline. The pin matches the carrier, not the
+  // checkout path (the path moved once already; the discipline is the law).
+  assert.match(doc, /exec \/bin\/bash \$HOME\/[^\s'"]*\/scripts\/dsh-worker\.sh --loop/,
+    "the 3a unit's exec must ride a /bin/bash carrier");
+  assert.ok(!/exec \$HOME\/[^\s'"]*\/scripts\/dsh-worker\.sh/.test(doc),
+    "no direct exec of the 644-mode worker script in the docs (Permission denied, exit 126)");
+});
+
 test("review queue: worker claims dsh/review items and runs review-pr.sh on them", () => {
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /REVIEW_LABEL="\$\{DSH_WORKER_REVIEW_LABEL:-dsh\/review\}"/);

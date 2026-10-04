@@ -79,7 +79,11 @@ chmod 600 "$HOME/.dsh-worker/env"
 # 3a. systemd (the box has passwordless sudo — the issue #6 path):
 #     sudo ~/factory-runner/svc.sh install && sudo ~/factory-runner/svc.sh start
 #     (or a unit running: bash -c 'set -a; . $HOME/.dsh-worker/env; set +a; \
-#      exec $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
+#      exec /bin/bash $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
+#      ^ /bin/bash carrier, NEVER a direct exec — the repo ships scripts
+#        mode 644, so `exec <script>` dies "Permission denied" (exit 126)
+#        on every unit start (the same discipline the installer's cron
+#        line carries)
 
 # 3b. cron keepalive, one line — starts within 60s, self-heals after
 #     reboots and job-cleanup kills (the pattern factory-runner proves):
