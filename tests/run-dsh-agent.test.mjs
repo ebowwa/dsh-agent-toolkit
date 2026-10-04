@@ -1592,3 +1592,113 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
   );
 });
+
+// --- issue #361: a literal-stringification task body fails fast -----------
+
+// A tower mint that lost its task text stringifies a JS undefined/null into
+// $1 — non-empty, so the ${1:-$DEFAULT_TASK} seam passed it through verbatim
+// and a full API session burned itself on a no-op claim (observed
+// 2026-10-04: claim session-d9a4b953 spawned with DSH_TASK=undefined, 185
+// such rows that day). The guard must (a) reject EXACTLY the garbage
+// strings, (b) fire BEFORE any launch attempt — no doppler call, no retry
+// ladder — and (c) leave real tasks that merely CONTAIN the word untouched.
+
+const undefinedTaskHarness = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-undef-task-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner");
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+  // doppler stub: records its own invocation, then `doppler run -- <cmd...>`
+  // -> exec <cmd...>. If the driver ever regresses to launching on a
+  // garbage task body, LAUNCH_LOG appears and the red names the regression.
+  const launchLog = path.join(dir, "launch.log");
+  writeFileSync(
+    path.join(bin, "doppler"),
+    `#!/bin/sh\necho launched >> "${launchLog}"\nshift; shift\nexec "$@"\n`,
+  );
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+  const env = {
+    ...HERMETIC_ENV,
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: dir,
+    RUNNER_TEMP: runnerTemp,
+    DOPPLER_SERVICE_TOKEN: "stub-token",
+    // Budget lint contract: EVERY driver spawn pins the retry backoff off —
+    // these spawns can never reach the ladder (the guard dies pre-launch;
+    // the positive control succeeds), but the blanket pin is what keeps a
+    // future edit of these tests from wedging the suite.
+    DSH_RETRY_BACKOFF_S: "0",
+    GH_BIN: path.join(bin, "gh"),
+    DOPPLER_BIN: path.join(bin, "doppler"),
+    CELL_PROBE_DIRS: "",
+  };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_ENV;
+  delete env.DSH_HOME;
+  delete env.DSH_PERSISTENT_HOME;
+  delete env.DSH_SESSION_PATH_FILE;
+  return { dir, launchLog, env, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+};
+
+test("a task body that is the literal string \"undefined\"/\"null\" fails fast: exit 2, greppable error, and the launch never happens (issue #361)", () => {
+  for (const garbage of ["undefined", "null"]) {
+    const { dir, launchLog, env, cleanup } = undefinedTaskHarness();
+    try {
+      const proc = spawnSync("bash", [SCRIPT, garbage], { encoding: "utf8", env, timeout: 60_000 });
+      assert.equal(proc.status, 2, `garbage task ${JSON.stringify(garbage)} must exit 2, got ${proc.status} (stderr: ${proc.stderr})`);
+      assert.match(
+        proc.stderr,
+        new RegExp(`task body is the literal string "${garbage}"`),
+        "the error must name the literal garbage body (greppable signature for the tower-side accounting)",
+      );
+      assert.match(proc.stderr, /issue #361/, "the error must reference the issue (receipt trail)");
+      assert.ok(!existsSync(launchLog), "the driver must fail BEFORE the launch line — no doppler call, no session burned, no retry ladder");
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+test("a real task merely CONTAINING the word still launches — the guard is exact-match only (issue #361)", () => {
+  const { dir, launchLog, env, cleanup } = undefinedTaskHarness();
+  try {
+    const proc = spawnSync(
+      "bash",
+      [SCRIPT, "fix the undefined variable crash in the mint path"],
+      { encoding: "utf8", env, timeout: 60_000 },
+    );
+    assert.equal(proc.status, 0, `a legitimate task must run to success, got ${proc.status} (stderr: ${proc.stderr})`);
+    assert.match(proc.stdout, /STUB-FINAL-ANSWER/, "the agent's final answer must still be relayed");
+    assert.ok(existsSync(launchLog), "positive control: the stub doppler must have been invoked for a real task");
+  } finally {
+    cleanup();
+  }
+});
+
+test("issue #361 structural pin: the garbage-body guard sits with the empty-task guard, before the token check and the retry loop", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  const guardIdx = src.indexOf('case "$TASK" in');
+  const guardBodyIdx = src.indexOf('"undefined"|"null"');
+  const tokenIdx = src.indexOf("if [ -z \"${DOPPLER_SERVICE_TOKEN:-}\" ]");
+  const loopIdx = src.indexOf("while :; do");
+  assert.ok(guardIdx !== -1 && guardBodyIdx !== -1, "the literal-stringification case guard must exist in the driver");
+  assert.ok(tokenIdx !== -1 && guardIdx < tokenIdx,
+    "the guard must fire before the token check — a garbage task is cheaper to refuse than a missing token");
+  assert.ok(loopIdx !== -1 && guardIdx < loopIdx,
+    "the guard must sit before the throttle-wave retry loop — a no-op claim must never walk the ladder");
+  // the exact-match shape itself: alternating branches, no unbounded glob
+  assert.match(src, /case "\$TASK" in\n\s+"undefined"\|"null"\)/,
+    "the guard must be an exact-match case with exactly the two stringification artifacts");
+});

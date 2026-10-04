@@ -127,6 +127,27 @@ if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
 fi
+# Literal-stringification guard (issue #361): a mint that lost its task
+# text stringifies a JS undefined/null into $1 — NON-empty, so the :- 
+# fallback above never fires and the seam passed it through verbatim: the
+# standing-contract/fleet apparatus got appended to the garbage and a full
+# API-powered session burned itself concluding "there is no task"
+# (observed 2026-10-04 09:59Z, claim session-d9a4b953: DSH_TASK arrived
+# as the literal 9-char string "undefined"; 185 such rows that day).
+# Fail FAST and LOUD — this sits BEFORE the launch line and before the
+# retry loop, so the throttle-wave ladder never re-runs it and no retry
+# slot is spent — with a greppable signature. Deliberately NOT a
+# DEFAULT_TASK fallback: a dispatched claim that lost its task text must
+# SURFACE at the mint, not silently become a maintenance roam. Exact-match
+# only: a real task merely CONTAINING the word (e.g. "fix the undefined
+# variable crash") must pass. Same stringification class the repo already
+# guards in scripts/install-plugin-smoke-deps.mjs (raw === "undefined").
+case "$TASK" in
+  "undefined"|"null")
+    echo "error: task body is the literal string \"$TASK\" — the mint stringified a JS undefined/null and lost the real task text (issue #361); failing fast instead of burning a session on a no-op claim" >&2
+    exit 2
+    ;;
+esac
 
 # The agent always launches via `doppler run` with the service token passed
 # through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.
