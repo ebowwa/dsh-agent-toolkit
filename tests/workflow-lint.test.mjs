@@ -93,14 +93,14 @@ const STEP_KEY_FIXED = PREFIX + `      - name: Upload session transcript (flight
 `;
 
 test("the run-32705244305 defect is rejected: step item dedented onto the mapping level", () => {
-  const errors = lintWorkflow(BROKEN, "agent-dispatch.yml");
+  const errors = lintWorkflow(BROKEN, "fixture.yml");
   assert.ok(errors.length > 0, "the broken indentation must not lint clean");
   assert.match(errors[0].message, /dedents onto a mapping level/);
   assert.equal(errors[0].line, 12); // the '- name: Upload' line itself
 });
 
 test("the fixed six-space indentation lints clean", () => {
-  assert.deepEqual(lintWorkflow(FIXED, "agent-dispatch.yml"), []);
+  assert.deepEqual(lintWorkflow(FIXED, "fixture.yml"), []);
 });
 
 test("CLI exits 1 on the broken file, 0 on the fixed one", () => {
@@ -359,7 +359,7 @@ jobs:
 });
 
 test("the run-32719897425 defect is rejected: with: input dedented onto the step level", () => {
-  const errors = lintWorkflow(STEP_KEY_BROKEN, "agent-dispatch.yml");
+  const errors = lintWorkflow(STEP_KEY_BROKEN, "fixture.yml");
   assert.ok(errors.length > 0, "a with: input at step level must not lint clean");
   assert.match(errors[0].message, /step key 'if-no-files-found'/);
   assert.equal(errors[0].line, 18); // the dedented 'if-no-files-found: warn' line
@@ -370,7 +370,7 @@ test("the run-32719897425 defect is rejected: with: input dedented onto the step
 });
 
 test("the PR #17 fix lints clean: if-no-files-found inside with:", () => {
-  assert.deepEqual(lintWorkflow(STEP_KEY_FIXED, "agent-dispatch.yml"), []);
+  assert.deepEqual(lintWorkflow(STEP_KEY_FIXED, "fixture.yml"), []);
 });
 
 test("the pre-fix structural lint was blind to the run-32719897425 defect (regression proof)", () => {

@@ -301,7 +301,10 @@ test("driver: the cell-bin probe default still probes the LEGACY prefix (same du
 });
 
 test("workflows: dsh-bot-ref stays a declared alias and every checkout resolves it", () => {
-  for (const wf of ["agent-comment.yml", "agent-dispatch.yml", "agent-review.yml"]) {
+  // agent-comment.yml / agent-dispatch.yml carried the alias too; both are
+  // removed (issue #264) — agent-review.yml is the remaining checkout that
+  // must keep resolving the retired input name.
+  for (const wf of ["agent-review.yml"]) {
     const text = read(".github", "workflows", wf);
     assert.match(text, /^\s{6}dsh-bot-ref:\s*$/m, `${wf} must still declare the retired input name`);
     assert.match(text, /inputs\.dsh-agent-toolkit-ref \|\| inputs\.dsh-bot-ref \|\|/,

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # dsh-worker.sh — the out-of-band worker for the DECOUPLED dsh-agent-toolkit mode.
 #
-# The decouple: the comment-triggered loop no longer executes the agent
-# inside the Actions job that holds a self-hosted runner for up to 120
-# minutes. Instead:
+# The decouple: the agent does not execute inside an Actions job (the old
+# in-job mode — a runner held for up to 120 minutes — is removed,
+# issue #264). Instead:
 #   - a thin ~20s trigger (agent-comment-thin.yml, self-hosted `dsh`
 #     lane — owner directive: nothing on github-hosted) posts the ack
 #     comment and adds the queue label;
@@ -58,8 +58,9 @@
 #                       dsh/running)
 #   DSH_WORKER_TASK_LABEL   dispatched-task label (default dsh/task) —
 #                       task issues created by agent-dispatch-thin.yml;
-#                       claimed and run through the agent (the legacy
-#                       runner-holding agent-dispatch.yml path, retired)
+#                       claimed and run through the agent (replaces the
+#                       runner-holding agent-dispatch.yml path, removed
+#                       in issue #264)
 #   DSH_WORKER_REVIEW_LABEL  review-queue label (default dsh/review) —
 #                       review-only items claimed and run through
 #                       review-pr.sh (the decoupled review stage)

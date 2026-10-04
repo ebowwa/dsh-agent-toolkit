@@ -1,8 +1,7 @@
 # Decoupled mode — thin trigger + out-of-band worker
 
-The comment-triggered agent loop no longer needs to execute inside the
-Actions job that holds a self-hosted runner for up to 120 minutes. In
-decoupled mode the **trigger** is a ~20-second job on the self-hosted
+The comment-triggered agent loop does not execute inside an Actions job.
+In decoupled mode the **trigger** is a ~20-second job on the self-hosted
 `dsh` lane (owner directive: nothing on github-hosted) and the
 **agent actually runs on an always-on worker process** on the factory pool
 boxes. Consumers keep only a ~15-line shell; the worker runs the headless
@@ -41,7 +40,7 @@ anymore.
 | `dsh/queued` | added by the trigger; pending |
 | `dsh/running` | claimed — the worker DELETE-removed `queued` (a second worker racing the same item gets a 404 on the DELETE and skips it) |
 | `dsh/review` | a REVIEW-ONLY item — added by `agent-review-thin.yml` (a `/review` comment or `workflow_dispatch`); the worker claims it the same way and runs `review-pr.sh` on that PR. **The decoupled review stage: reviews of ANY PR run on the worker — no Actions job holds a runner for a review, ever.** |
-| `dsh/task` | a DISPATCHED TASK — `agent-dispatch-thin.yml` (manual `workflow_dispatch` or a consumer's `schedule`) creates an issue whose body carries the task plus options (model, subagent model, base ref) in a `<!-- dsh:task -->` marker block; the worker claims the label and runs the agent with dispatch semantics (the agent pushes/opens PRs itself; the answer is posted on the task issue, which is closed). **Retires the legacy runner-holding `agent-dispatch.yml` path.** The marker is required: a user-labeled issue is not a task. |
+| `dsh/task` | a DISPATCHED TASK — `agent-dispatch-thin.yml` (manual `workflow_dispatch` or a consumer's `schedule`) creates an issue whose body carries the task plus options (model, subagent model, base ref) in a `<!-- dsh:task -->` marker block; the worker claims the label and runs the agent with dispatch semantics (the agent pushes/opens PRs itself; the answer is posted on the task issue, which is closed). **Replaces the runner-holding `agent-dispatch.yml` path (removed, issue #264).** The marker is required: a user-labeled issue is not a task. |
 | (removed at completion) | `running` is removed; a fresher `queued` from a newer trigger comment stays queued for the next sweep |
 
 The queue list is read with the issues REST API (`gh api repos/R/issues?labels=...`)
@@ -159,18 +158,21 @@ blast radius:
   guards the reply/PR/review surfaces; a scrubber failure withholds output.
 
 Known weaker spot (accepted): reviewer and shipper run on the same worker
-host — adversarial separation is process-level, not machine-level as in the
-CI flow's separate workflow runs. Consumers who need hard isolation keep the
-legacy `agent-review.yml`/`dsh-review.yml` path.
+host — adversarial separation is process-level, not machine-level as in an
+in-job CI flow's separate workflow runs. Consumers who need hard isolation
+keep the in-job `agent-review.yml` stage (the one workflow_call surface the
+issue-#264 agent-mode removal intentionally left in tree).
 
-## Migration window
+## The legacy in-job agent mode is removed
 
-`agent-comment.yml`, `agent-dispatch.yml`, `agent-review.yml` and the old
-example shells stay in tree, marked LEGACY, fully functional. Consumers
-flip by adopting the thin shell (drift-check bump PRs carry the change).
-The legacy path is removed at the next major version bump. Workers upstream
-to consumers through the same `@v1` moving tag + drift gates as everything
-else here.
+`agent-comment.yml`, `agent-dispatch.yml`, and their example shells
+(`examples/dsh-agent-comment.yml`, `examples/dsh-agent.yml`) are REMOVED
+(issue #264) — the thin triggers + this worker are the only agent
+execution path, and consumers adopt by copying the thin shell (drift-check
+bump PRs carry the change). `agent-review.yml` stays in tree: it is the
+review stage, not an agent path, and a consumer still pins it for the
+hard-isolation escape hatch above. Workflows upstream to consumers through
+the same `@v1` moving tag + drift gates as everything else here.
 
 ## Operational notes
 

@@ -103,12 +103,13 @@ test("worker-authored GitHub-bound surfaces select their scrub mode by taxonomy 
     );
   }
 
-  // The legacy YAML tees stay default too — their stdout IS the Actions
-  // log (an output surface), so their tee'd record keeps minting the
-  // placeholder into legacy PR bodies: a documented residual, legacy
-  // removal is the planned next major.
+  // The in-job YAML tee stays default too — its stdout IS the Actions log
+  // (an output surface), so its tee'd record keeps minting the placeholder
+  // into review bodies: a documented residual. agent-comment.yml /
+  // agent-dispatch.yml rode the same rule and are removed with the in-job
+  // agent mode (issue #264); agent-review.yml is the remaining in-job surface.
   const wfDir = path.join(root, "..", ".github", "workflows");
-  for (const wf of ["agent-comment.yml", "agent-dispatch.yml", "agent-review.yml"]) {
+  for (const wf of ["agent-review.yml"]) {
     const src = fs.readFileSync(path.join(wfDir, wf), "utf8");
     assert.ok(
       !src.includes("DSH_SCRUB_KEEP_DATES"),

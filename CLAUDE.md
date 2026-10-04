@@ -50,10 +50,12 @@ run straight off the tree on Node.
   lint patterns (`scripts/tests-lint.mjs` rejects PATH assignments that
   hard-code system dirs and spawns of the driver without a pinned retry
   backoff). A behavior change without a pin is an unowned change.
-- **Two execution modes, kept in step.** Decoupled (recommended:
-  `agent-comment-thin.yml` + `scripts/dsh-worker.sh`) and legacy (the
-  in-job `agent-comment.yml` family). Legacy removal is the next major's
-  deliberate breaking change, not a drive-by cleanup.
+- **One execution mode: decoupled.** The trigger workflows
+  (`agent-comment-thin.yml` + friends) ack + enqueue; the agent, shipper,
+  reply, and review run on the out-of-band worker (`scripts/dsh-worker.sh`).
+  The legacy in-job agent mode (`agent-comment.yml` / `agent-dispatch.yml`,
+  the 120-min runner-holding job) is removed (issue #264); the thin
+  triggers + the worker are the only agent execution path.
 
 ## Where things live
 

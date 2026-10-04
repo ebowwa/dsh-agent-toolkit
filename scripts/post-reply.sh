@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # post-reply.sh — post (or PATCH) the agent's final answer on the thread,
-# shared by the comment workflow (agent-comment.yml) and the out-of-band
-# worker (dsh-worker.sh).
+# called by the out-of-band worker (dsh-worker.sh); the in-job comment
+# workflow that also called it (agent-comment.yml) is removed (issue #264).
 #
 # Composes the reply (header + scrubbed agent output + ship note), then:
 #   - if ACK_COMMENT_ID is set: PATCH that comment in place (the

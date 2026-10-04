@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# ship-changes.sh — the deterministic shipper, shared by the comment workflow
-# (agent-comment.yml) and the out-of-band worker (dsh-worker.sh).
+# ship-changes.sh — the deterministic shipper, called by the out-of-band
+# worker (dsh-worker.sh); the in-job comment workflow that also called it
+# (agent-comment.yml) is removed (issue #264).
 #
 # "Deterministic shipping (never trust the model to push)": after an agent
 # run, diff the repo state the agent worked on vs. the state captured before

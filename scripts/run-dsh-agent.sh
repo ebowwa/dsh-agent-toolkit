@@ -84,7 +84,8 @@
 #                       is NOT a hard driver requirement (soft: warn and
 #                       run — the workflows own gh absence); doppler is.
 #
-# Comment-agent-toolkit reply wiring (used by dsh-agent-comment.yml):
+# Comment-agent-toolkit reply wiring (the worker sets these; the in-job
+# comment workflow that also set them is removed — issue #264):
 #   REPLY_TARGET    human label of the thread to answer, e.g. "PR #123"
 #   TARGET_KIND     "pr" | "issue" — which `gh ... comment` subcommand to use
 #   TARGET_NUM      the number the agent should reply to

@@ -6,18 +6,14 @@ stage, deterministic shipper, and enforced output/input scrubbing — as
 **reusable workflows** (`workflow_call`) that consumer repos adopt with
 ~15-line event shells.
 
-Two execution modes:
-
-- **Decoupled (recommended)** — `agent-comment-thin.yml` + `scripts/dsh-worker.sh`.
-  The trigger is a ~20s job on the self-hosted `dsh` lane (owner directive:
-  nothing on github-hosted; ack + enqueue via the `dsh/queued` label); the
-  agent, shipper, reply, and adversarial review run out-of-band
-  on the always-on worker (factory pool boxes). Consumers need **no
-  extra secrets**. See `docs/decoupled-worker.md`.
-- **Legacy execution** — the old mode: the agent runs inside the Actions
-  job that holds a `dsh` self-hosted runner for up to 120 min
-  (`agent-comment.yml`, `agent-dispatch.yml`). Kept for the migration
-  window; removed at the next major version.
+One execution mode — **decoupled** — `agent-comment-thin.yml` +
+`scripts/dsh-worker.sh`. The trigger is a ~20s job on the self-hosted `dsh`
+lane (owner directive: nothing on github-hosted; ack + enqueue via the
+`dsh/queued` label); the agent, shipper, reply, and adversarial review run
+out-of-band on the always-on worker (factory pool boxes). Consumers need
+**no extra secrets**. See `docs/decoupled-worker.md`. (The old in-job mode —
+the agent inside a 120-min Actions job, `agent-comment.yml` +
+`agent-dispatch.yml` — is removed; issue #264.)
 
 ## What's shared here
 
@@ -26,9 +22,7 @@ Two execution modes:
 | `.github/workflows/agent-comment-thin.yml` | DECOUPLED trigger: ack (dsh:ack marker) + enqueue (dsh/queued label); self-hosted `dsh` lane, ~20s |
 | `.github/workflows/agent-review-thin.yml` | DECOUPLED review trigger: enqueue a review (dsh/review label) on any PR — self-hosted `dsh` lane, ~15s; the worker runs the review |
 | `.github/workflows/agent-dispatch-thin.yml` | DECOUPLED task trigger: creates a task issue (dsh/task label, options in a marker block) — legacy input surface kept for programmatic callers; the worker runs the task |
-| `.github/workflows/agent-comment.yml` | LEGACY comment loop: context fetch → scrub → agent → ship → reply → review dispatch |
-| `.github/workflows/agent-review.yml` | LEGACY adversarial review stage (rules + gates + verdict + labels) |
-| `.github/workflows/agent-dispatch.yml` | LEGACY manual/scheduled task entry |
+| `.github/workflows/agent-review.yml` | the in-job adversarial review stage (rules + gates + verdict + labels), usable as a reusable workflow — kept only for consumers who run the review inside their own Actions for hard machine-level isolation; this repo's own reviews ride the decoupled `dsh-review.yml` path, and the in-job AGENT mode (`agent-comment.yml` / `agent-dispatch.yml`) is removed (issue #264) |
 | `.github/workflows/drift-check.yml` | self-reviewing release agent: reviews its own main-branch diff, tags + releases only on an approved verdict (TAG / TAG-WITH-FINDINGS), advances the moving `@v1` pin, then notifies `DSH_BOT_CONSUMERS` (repo variable: comma/space-separated `owner/repo` list) via `repository_dispatch` — each consumer opens its own bump PR. An EMPTY watched-path diff skips both the review and the tag green — zero agent passes (issues #231, #385); pinned by `tests/drift-empty-range.test.mjs` |
 | `.github/workflows/dsh-review.yml` | DECOUPLED review enqueue for THIS repo (dogfooding the decouple it ships): workflow_dispatch (`pr` input) or issue_comment enqueues the review; the out-of-band worker (`dsh/review` label) runs `scripts/review-pr.sh` — the legacy `agent-review.yml` path (a held self-hosted runner for up to 45 min per review) is retired here; `cancel-in-progress: false` is load-bearing (the tower re-fires reviews on unreviewed PRs every tick) |
 | `.github/workflows/fleet-manifest-drift.yml` | the standing registry's alignment fence (issue #397): runs `scripts/fleet-manifest-drift.mjs` against the live tower registry — on PRs touching the fence's own files (toolkit-side alignment breaks go red pre-merge) and on a daily schedule (the drift that matters is TOWER-side: only a clock catches a pool that moved without the manifest) |
@@ -42,8 +36,8 @@ Two execution modes:
 | `scripts/dep-cache.sh` | per-repo node_modules cache keyed on the lockfile hash, restored into the claim checkout after the worker's checkout (best-effort; issue #189) |
 | `scripts/fleet-manifest-drift.mjs` | the standing registry's drift fence (issue #397): compares the injected `config/fleet-manifest.md` standing fleet context against the LIVE tower registry (FleetTower `fleet.manifest.json`); a node/OS that moved or vanished without the manifest stranding agents on a stale pool fails LOUD (exit 1, aligned-diff receipt) — never a silent map; invoked by the `fleet-manifest-drift.yml` workflow on fence-file PRs and on a daily schedule; pinned by `tests/fleet-manifest-drift.test.mjs` |
 | `scripts/install-plugin-smoke-deps.mjs` | the plugin smoke-test dependency installer, called by gates.yml: computes the peer closure IN PROCESS against registry metadata and installs the resolved union ONCE (`--no-save --no-package-lock`), then verifies the tree — packages present, peers resolved, `@local` links intact — failing loudly before the suite; an already-converged tree skips npm entirely. Replaces the old per-round npm loop that oscillated on bare checkouts (issue #161); pinned by `tests/plugin-smoke-deps.test.mjs` + `tests/gates-plugin-deps.test.mjs` |
-| `scripts/ship-changes.sh` | deterministic shipper, shared by the legacy workflow AND the worker (never trust the model to push) |
-| `scripts/post-reply.sh` | thread reply (ack-comment edit or fresh comment), shared by both modes |
+| `scripts/ship-changes.sh` | deterministic shipper, called by the worker at ship time (never trust the model to push) |
+| `scripts/post-reply.sh` | thread reply (ack-comment edit or fresh comment), called by the worker |
 | `scripts/review-pr.sh` | worker-side adversarial review (REVIEW.md from the PR base; verdict → labels); prior `gate-verify` markers surface to the reviewer as claims to check (issue #326) |
 | `scripts/merge-guard.sh` | the merge-time gates guard (issue #434): ONE snapshot of the PR's check runs — merges pass only when the check (`MERGE_GUARD_CHECK`, default `gates`) is `completed`/`success` ON THE PR'S HEAD SHA; queued / in_progress / cancelled / failed / absent / wrong-SHA all refuse, and the guard never polls until green. Modes: `check [pr]` (exit 0 iff green) and `merge [gh pr merge args...]` (check, then exec). Fail-closed: unresolvable state refuses. OPT-IN independent-verification arm (issue #326): `MERGE_GUARD_VERIFY=on` additionally requires a passing `gate-verify` comment (a fail marker or a silent channel refuses); default OFF — gates-only. The gh-scrub-shim gates `gh pr merge` through it when the driver arms `GH_MERGE_GUARD=on`; pinned by `tests/merge-guard.test.mjs` |
 | `scripts/gate-verify.mjs` | line-strict `gate-verify: pass|fail` marker extraction from a PR comment — the independent-verification channel (issue #326): the shared-account fleet cannot post approving reviews, so the verifying agent's marker line IS the verification; label REQUIRED (a bare `pass` in prose never qualifies), last marker wins, comment bodies never pass through; pinned by `tests/gate-verify.test.mjs` |
@@ -70,7 +64,7 @@ Two execution modes:
 | `scripts/workflow-lint.mjs` | structural workflow-YAML lint (block-indent consistency; gates runs it — run 32705244305 regression) |
 | `scripts/tests-lint.mjs` | structural test-source lint: (1) rejects PATH assignments that hard-code system dirs without the ambient PATH — they cannot construct a lane-installed CLI's absence (run 32933615526 regression); (2) rejects a spawn of `run-dsh-agent.sh` whose env does not pin `DSH_RETRY_BACKOFF_S` — the driver's failure path walks the production retry backoff (180s+600s), so an unpinned failing stub wedges the suite past any spawn budget until `status` comes back `null` (runs 34748403843/34788769043/34795917609/34803136058; the corpus test rides `node --test`) |
 | `scripts/drift-verdict.mjs` | line-strict verdict extraction for drift-check (TAG / TAG-WITH-FINDINGS / BLOCK; fail-closed on absence) + scrubbed review-body surfacing to the run log |
-| `scripts/resolve-push-token.sh` | Doppler-first git push credential for agent jobs, shared by the legacy workflows and the worker (the checkout's ephemeral token cannot push workflows) |
+| `scripts/resolve-push-token.sh` | Doppler-first git push credential for agent jobs, called by the worker (the checkout's ephemeral token cannot push workflows) |
 | `config/settings.zai.yaml` | DSH settings template (zai provider, glm-5.3) |
 | `config/fleet-manifest.md` | standing fleet context (issue #114): node registry (OS + lanes served, aligned with the tower's `fleet.manifest.json`) + the placement law (factory#60); injected into every dispatched task by the driver, overridable/extendable per launch with a live `DSH_FLEET_MANIFEST` snapshot |
 | `config/fleet-priority.md` | the AUTHORITATIVE fleet repo-priority order the maintenance lanes pick issues by: tier 1 fleet-infra (dsh-agent-toolkit → FleetTower → factory → github-activity-tracker → GitActionsRunner → deepseek-harness) → tier 2 products → tier 3 owner-named only; also carries the sanctioned upstream-contribution table (ebowwa forks whose upstreams may receive PRs — cordis, bun, deepseek-harness) and the hard boundary: never work another account's repo on a label alone |
@@ -104,16 +98,16 @@ node --test tests/*.test.mjs plugins/*/test/smoke.mjs
 
 ## Adopting (consumer repo)
 
-**Decoupled (recommended):** copy `examples/dsh-agent-thin.yml` into
+**Decoupled:** copy `examples/dsh-agent-thin.yml` into
 `.github/workflows/` — that is the entire consumer side (trust gate +
 ~20s trigger). Nothing else, no secrets. (The worker must be deployed and
-list your repo in its `DSH_WORKER_REPOS`.)
+list your repo in its `DSH_WORKER_REPOS`.) There is no other adoption path
+for the agent loop: the legacy in-job mode (`agent-comment.yml` /
+`agent-dispatch.yml` + their example shells) is removed (issue #264).
 
-**Legacy:** 1. Runners labeled `dsh` (optionally `big`), secret
-`DOPPLER_SERVICE_TOKEN` (Doppler config holding `ZAI_API_KEY`), runner PATH
-with `node gh doppler`. 2. Three thin shells in `.github/workflows/` — see
-`examples/` for copy-paste versions. 3. Write your own `REVIEW.md` (the
-review contract is repo-specific).
+Runners labeled `dsh` (optionally `big`), runner PATH with
+`node gh doppler` on the lane; write your own `REVIEW.md` (the review
+contract is repo-specific).
 
 ## Versioning
 
