@@ -25,12 +25,11 @@
 // of only the minted path.
 //
 // Per-skill by design, same as tests/tmp-staging-hygiene.test.mjs
-// (PR #363): the corpus-wide scan stays reserved until every filed
-// surface lands — gates-step-verbatim-repro /tmp/step.sh (#355) and
-// the three #346 skills (in-flight PRs #359/#362/#363) would go red
-// by design. This file is named distinctly (not folded into
-// tmp-staging-hygiene.test.mjs) because #363 was still open when this
-// pin was written — fold at review if #363 lands first.
+// (PR #363): the corpus-wide scan this file reserved now RUNS there
+// (issue #353's second acceptance criterion — every filed surface of the
+// class landed fixed: the three #346 skills, gates-step-verbatim-repro
+// #355, this skill #364). This file stays for the #364-specific teeth;
+// its scanner shapes must stay in step with the corpus scan's.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

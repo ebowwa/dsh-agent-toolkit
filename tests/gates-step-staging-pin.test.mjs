@@ -32,11 +32,15 @@
 //      byte extraction slice (s[i+7:j]) unchanged. A revert that swaps
 //      the fences back goes red on layer 1 AND here.
 //
-// Scope note: this pin is deliberately skill-scoped, not corpus-wide —
-// the corpus-wide scan (with its own grandfather list) rides the #346
-// sibling pins; #355's skill drops off that grandfather list when this
-// lands. A NEW fixed-/tmp path in a DIFFERENT skill is the corpus pin's
-// business, not this file's.
+// Scope note: this pin is deliberately skill-scoped. The corpus-wide
+// scan it reserved now RUNS — tests/tmp-staging-hygiene.test.mjs sweeps
+// every skill corpus-wide since issue #353's acceptance landed (every
+// filed surface of the class — #346 x3, #355, #364 — fixed and per-skill
+// pinned; #355's receipt shapes ride that scanner too). A NEW fixed-/tmp
+// path in a DIFFERENT skill is the corpus scan's business; THIS file
+// stays for the #355-specific depth the corpus sweep does not carry:
+// the argv extraction, the byte-for-byte slice, and the whole-chain
+// revert guard.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
