@@ -602,14 +602,19 @@ export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 # propagation, so step 50 self-identifies as the face-lock holder).
 # Derivation, in spec order: an existing value wins (the node minted
 # one in agentEnvFor); else the harness session id when one exists;
-# else `user-p<pid of the driver>` — the launcher's PPID is fresh per
-# session and stable for its lifetime, the same fallback shape
-# bin/face-lock's defaultFace mints for bare shells.
+# else `user-p<pid of the driver>` — the driver's OWN pid ($$), fresh
+# per launch by construction and stable for the session's lifetime.
+# PPID is per-PARENT, not per-session: two drivers launched as
+# concurrent siblings of one shell mint the same face and each reads
+# as the holder of the other's claims (#278). Same `<user>-p<holder>`
+# shape bin/face-lock's defaultFace mints for bare shells — face-lock
+# walks up to the session-lived driver, and here the driver IS that
+# process, so its own pid is the anchor.
 if [ -z "${DSH_FACE_ID:-}" ]; then
   if [ -n "${DSH_SESSION_ID:-}" ]; then
     DSH_FACE_ID="$DSH_SESSION_ID"
   else
-    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p${PPID}"
+    DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p$$"
   fi
   export DSH_FACE_ID
 fi

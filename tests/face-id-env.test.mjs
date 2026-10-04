@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,9 @@ test("the driver exports DSH_FACE_ID when absent, never overrides a minted one",
 
 test("derivation order: session id first, user-p<driver pid> fallback", () => {
   assert.match(SRC, /DSH_FACE_ID="\$DSH_SESSION_ID"/);
-  assert.match(SRC, /DSH_FACE_ID="\$\{DSH_USER:-\$\{USER:-user\}\}-p\$\{PPID\}"/);
+  // the driver's OWN pid ($$), never its launcher's PPID — #278
+  assert.match(SRC, /DSH_FACE_ID="\$\{DSH_USER:-\$\{USER:-user\}\}-p\$\$"/);
+  assert.doesNotMatch(SRC, /DSH_FACE_ID="[^"]*\$\{PPID\}"/);
 });
 
 test("the header env doc names DSH_FACE_ID with the issue citation", () => {
@@ -48,9 +50,9 @@ test("the header env doc names DSH_FACE_ID with the issue citation", () => {
 // the derivation order or the guard ever changes in the script.
 test("the seam mints user-p<driver pid> and never overrides an existing face", () => {
   const block = SRC.slice(SRC.indexOf('if [ -z "${DSH_FACE_ID:-}" ]'), SRC.indexOf("DSH_VERSION="))
-    // bash owns PPID — pin it for the extraction run so the assertion is
+    // bash owns $$ — pin it for the extraction run so the assertion is
     // deterministic (the seam itself is unchanged in the driver source).
-    .replace(/\$\{PPID\}/, "85681");
+    .replace(/-p\$\$/, "-p85681");
   assert.ok(block.includes("export DSH_FACE_ID"));
   const run = (env) =>
     spawnSync("bash", ["-c", `${block}\nprintf "%s" "$DSH_FACE_ID"`], { env, encoding: "utf8" }).stdout;
@@ -58,7 +60,7 @@ test("the seam mints user-p<driver pid> and never overrides an existing face", (
   assert.match(run({ PATH: process.env.PATH, DSH_USER: "ebowwa" }), /^ebowwa-p85681$/);
   // session id wins over the fallback
   assert.equal(
-    run({ PATH: process.env.PATH, DSH_SESSION_ID: "session-abc", PPID: "85681" }),
+    run({ PATH: process.env.PATH, DSH_SESSION_ID: "session-abc" }),
     "session-abc",
   );
   // a minted face (the node's agentEnvFor) is never overridden
@@ -66,4 +68,31 @@ test("the seam mints user-p<driver pid> and never overrides an existing face", (
     run({ PATH: process.env.PATH, DSH_FACE_ID: "sess-node-minted", DSH_SESSION_ID: "session-abc" }),
     "sess-node-minted",
   );
+});
+
+// The #278 regression: PPID is per-PARENT, not per-session — two drivers
+// launched as concurrent siblings of one parent (this test process) minted
+// the SAME face, so each read as the holder of the other's claims. The
+// driver's own pid ($$) is fresh per launch by construction. Both shells
+// run CONCURRENTLY (provably distinct pids while both are alive — no
+// pid-reuse flake); under the old `-p${PPID}` mint this reds because both
+// children see this test process as their shared parent.
+test("concurrent sibling sessions of one parent mint DISTINCT faces (#278)", async () => {
+  const block = SRC.slice(SRC.indexOf('if [ -z "${DSH_FACE_ID:-}" ]'), SRC.indexOf("DSH_VERSION="));
+  const mint = () =>
+    new Promise((resolve, reject) => {
+      const child = spawn("bash", ["-c", `${block}\nprintf "%s" "$DSH_FACE_ID"`], {
+        env: { PATH: process.env.PATH, DSH_USER: "ebowwa" },
+      });
+      let out = "";
+      child.stdout.on("data", (d) => (out += d));
+      child.on("error", reject);
+      child.on("close", (code) =>
+        code === 0 ? resolve(out) : reject(new Error(`bash exited ${code}: ${out}`)),
+      );
+    });
+  const [faceA, faceB] = await Promise.all([mint(), mint()]);
+  assert.match(faceA, /^ebowwa-p\d+$/, "sibling A keeps the user-p<pid> shape");
+  assert.match(faceB, /^ebowwa-p\d+$/, "sibling B keeps the user-p<pid> shape");
+  assert.notEqual(faceA, faceB, "two drivers under one parent must never share a face (#278)");
 });
