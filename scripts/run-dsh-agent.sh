@@ -122,7 +122,29 @@ fi
 # config/fleet-priority.md is the authoritative tier file.
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
-TASK="${1:-$DEFAULT_TASK}"
+# A dispatched claim's task body arrives as $1. ${1:-$DEFAULT_TASK} guards
+# only unset/empty — the mint side can stringify a JS undefined/null into
+# the literal strings "undefined"/"null" (issue #361: the 2026-10-04 wave
+# minted 185 task-less claim rows; claim-YZrTic's agent/inbox/spliced
+# carried `undefined` verbatim in the task slot), and the junk rode
+# through as a "valid" task: a full API-powered session burned to conclude
+# "there is no task", eating a retry slot the throttle wave reserves for
+# real 429 deaths. The artifacts DIE LOUD and classified — a mint that
+# lost its task text must surface, not silently become a DEFAULT_TASK
+# maintenance roam (the roam is the scheduled-run fallback for spawns
+# that pass no $1 at all). Whitespace-only $1 folds to empty and keeps
+# the fallback: same no-op class, scheduled-run contract unchanged. The
+# repo already knows this stringification class —
+# install-plugin-smoke-deps.mjs guards raw === "undefined" on the JS
+# side; this is the shell-side twin at the spawn seam.
+ARG_TASK="${1:-}"
+case "${ARG_TASK//[[:space:]]/}" in '') ARG_TASK="" ;; esac
+case "$ARG_TASK" in
+  undefined|null)
+    echo "::error::task body is the literal string \"${ARG_TASK}\" — the dispatch mint stringified a JS ${ARG_TASK} into the task slot (issue #361). Refusing to boot a no-op claim: invalid-task environmental boot death, not throttle-wave — the retry ladder would re-receive identical junk. Fix the mint (the claim lost its task text before spawn)." >&2
+    exit 2 ;;
+esac
+TASK="${ARG_TASK:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2

@@ -1592,3 +1592,120 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
   );
 });
+
+// --- 13. issue #361: a stringified task body dies loud, never boots -------
+
+// The dispatch mint can stringify a JS undefined/null into the $1 task
+// slot (2026-10-04 wave: 185 task-less claim rows; claim-YZrTic's inbox
+// carried `undefined` verbatim). ${1:-$DEFAULT_TASK} only guarded
+// unset/empty, so the junk booted a full no-op session. The guard under
+// test refuses the artifacts BEFORE the token check — so a spawn with no
+// DOPPLER_SERVICE_TOKEN that dies with the TOKEN error has, by
+// construction, PASSED the task guard (that is the pass-oracle used
+// below for the fallback/no-false-positive cases).
+// DSH_RETRY_BACKOFF_S: "0" per the tests-lint driver-spawn rule (a failing
+// stub must never wedge the suite on the production 180s+600s backoff) —
+// the guard deaths here precede the loop entirely; the pin is the
+// belt-and-braces every SCRIPT spawn must carry.
+const GUARD_ENV = (home) => ({ ...HERMETIC_ENV, HOME: home, DSH_RETRY_BACKOFF_S: "0" });
+
+test("issue #361: the literal string \"undefined\" as the task body dies loud and classified, never boots (run-dsh-agent.sh task guard)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-task-guard-"));
+  const proc = spawnSync(
+    "bash",
+    [SCRIPT, "undefined"],
+    { encoding: "utf8", env: GUARD_ENV(dir), cwd: dir, timeout: 30_000 },
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  assert.equal(proc.status, 2, `the stringification artifact must exit 2 (usage-error class), got ${proc.status}`);
+  assert.match(
+    proc.stderr,
+    /::error::task body is the literal string "undefined"/,
+    "the death must carry the ::error:: workflow surface naming the artifact",
+  );
+  assert.match(
+    proc.stderr,
+    /invalid-task environmental boot death, not throttle-wave/,
+    "the death must be CLASSIFIED — a re-drive must not walk the throttle ladder against it",
+  );
+  assert.match(proc.stderr, /issue #361/, "the death cites its receipt issue");
+  assert.doesNotMatch(
+    proc.stderr,
+    /DOPPLER_SERVICE_TOKEN/,
+    "the death happens at the task guard, before the token check — junk never reaches the launch apparatus",
+  );
+});
+
+test("issue #361: the literal string \"null\" as the task body dies the same classified death", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-task-guard-"));
+  const proc = spawnSync(
+    "bash",
+    [SCRIPT, "null"],
+    { encoding: "utf8", env: GUARD_ENV(dir), cwd: dir, timeout: 30_000 },
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  assert.equal(proc.status, 2, `the null artifact must exit 2, got ${proc.status}`);
+  assert.match(proc.stderr, /::error::task body is the literal string "null"/);
+  assert.match(proc.stderr, /invalid-task environmental boot death, not throttle-wave/);
+});
+
+test("issue #361: unset, empty, and whitespace-only $1 keep the scheduled-run DEFAULT_TASK fallback (no silent roam change)", () => {
+  for (const args of [[], [""], ["   "]]) {
+    const dir = mkdtempSync(path.join(tmpdir(), "dsh-task-guard-"));
+    const proc = spawnSync(
+      "bash",
+      [SCRIPT, ...args],
+      { encoding: "utf8", env: GUARD_ENV(dir), cwd: dir, timeout: 30_000 },
+    );
+    rmSync(dir, { recursive: true, force: true });
+
+    // Passed the task guard (fell back to DEFAULT_TASK), then died at the
+    // next early check for want of a token — the oracle that the fallback
+    // engaged instead of the artifact death.
+    assert.equal(proc.status, 2, `spawn ${JSON.stringify(args)} must exit 2 at the token check, got ${proc.status}`);
+    assert.match(
+      proc.stderr,
+      /DOPPLER_SERVICE_TOKEN unset/,
+      `spawn ${JSON.stringify(args)} must reach the token check — the DEFAULT_TASK fallback engaged`,
+    );
+    assert.doesNotMatch(
+      proc.stderr,
+      /invalid-task/,
+      `spawn ${JSON.stringify(args)} is the scheduled-run class, never the artifact death`,
+    );
+  }
+});
+
+test("issue #361: a REAL task that merely contains the word \"undefined\" passes the guard (no false positives)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-task-guard-"));
+  const proc = spawnSync(
+    "bash",
+    [SCRIPT, "fix the undefined-variable crash in scripts/foo.mjs and pin it"],
+    { encoding: "utf8", env: GUARD_ENV(dir), cwd: dir, timeout: 30_000 },
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  assert.equal(proc.status, 2, "reaches the token check (guard passed), exits 2 there");
+  assert.match(proc.stderr, /DOPPLER_SERVICE_TOKEN unset/);
+  assert.doesNotMatch(proc.stderr, /invalid-task/);
+});
+
+test("issue #361: structural pin — the artifact case precedes the DEFAULT_TASK fallback, and the whitespace fold exists", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  const caseIdx = src.indexOf('case "$ARG_TASK" in');
+  const artifactIdx = src.indexOf("undefined|null)");
+  const foldIdx = src.indexOf("case \"${ARG_TASK//[[:space:]]/}\" in");
+  const fallbackIdx = src.indexOf('TASK="${ARG_TASK:-$DEFAULT_TASK}"');
+  assert.ok(artifactIdx !== -1, "the undefined|null artifact arm exists");
+  assert.ok(foldIdx !== -1, "the whitespace-only fold exists");
+  assert.ok(
+    caseIdx !== -1 && fallbackIdx !== -1 && caseIdx < fallbackIdx,
+    "the artifact death is evaluated BEFORE the DEFAULT_TASK fallback — the artifact must die, never roam",
+  );
+  assert.ok(
+    foldIdx < caseIdx,
+    "the whitespace fold runs before the artifact match (padding cannot smuggle an empty body past the empty guard)",
+  );
+});
