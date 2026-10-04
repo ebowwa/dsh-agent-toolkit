@@ -3,7 +3,9 @@
 # When scripts or reusable workflows change on main, this agent:
 #   1. computes the next minor tag,
 #   2. REVIEWS its own diff (agent pass): what changed, is any consumer's
-#      shell input broken, is the change safe to auto-propagate,
+#      shell input broken, is the change safe to auto-propagate — an
+#      EMPTY watched-path diff skips both the review and the tag green,
+#      zero agent passes (issues #231, #385),
 #   3. tags ONLY if the review approves (TAG or TAG-WITH-FINDINGS; findings
 #      ride along as release notes),
 #   4. writes a release on the tag with the agent's review as notes, and
@@ -72,8 +74,28 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "--- diff scope $BASE..HEAD ---"
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
+          # Empty-range flag (issue #385, the #231 residual): the review
+          # step below reviews exactly this watched-path diff. When it is
+          # empty there is NOTHING to review — a full agent pass that
+          # reads a zero-file diff and replies TAG is pure waste — so the
+          # flag is computed here, ONCE, before any agent boots, and both
+          # the review step and the tag step key off it. `git diff
+          # --quiet` exits 1 on a NON-empty diff: it must ride the if,
+          # never run bare, or every normal release reds the scope step.
+          if git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "empty range: no watched-path changes in $BASE..HEAD — skipping the agent review and the tag"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Agent reviews its own diff (release gate)
+        # Zero agent passes on an empty range (issue #385): the scope step
+        # already proved the watched-path diff is empty — no diff to
+        # review, no verdict to extract, no release to mint. Skipped, not
+        # failed: an empty range is not a defect (the #231 racing shape
+        # adopted a just-pushed tag as BASE and reviewed nothing).
+        if: steps.scope.outputs.empty != 'true'
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +164,14 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        # The same empty-range gate as the review step (issue #385): a
+        # skipped review sets no VERDICT, and an unset VERDICT would red
+        # this step's case — an empty range skips green, it is not a
+        # failure. Complements (does not replace) the tag-boundary
+        # commit-equality guard of #231/#384: that one pins "a release
+        # tag always names a NEW commit" at the last moment; this one
+        # never lets the run spend an agent pass to get there.
+        if: steps.scope.outputs.empty != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
