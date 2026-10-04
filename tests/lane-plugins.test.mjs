@@ -38,6 +38,7 @@ test("manifest: parses, required fields per seam, external refs pinned", () => {
       }
       if (e.seam === "native-web") assert.equal(e.require_browser, true, `${e.id}: native-web gates on a browser`);
       if (e.probe_port) assert.equal(e.require_probe, true, `${e.id}: probe_port implies require_probe`);
+      if (e.require_probe) assert.ok(e.probe_port, `${e.id}: require_probe declares probe_port (issue #256 — the consult gate cannot verify an unnamed port; before the fail-safe it raised KeyError and killed the consult mid-loop)`);
       if (e.seam === "profile-config") {
         assert.ok(e.package, `${e.id}: profile-config names the profile-tree package it restates`);
         assert.ok(!e.source, `${e.id}: profile-config copies nothing`);
@@ -178,6 +179,37 @@ test("consult: node glob gate — a node outside the pattern SKIPs", () => {
   writeFileSync(manifest, JSON.stringify({ macos: [{ id: "x", seam: "plugin", nodes: ["mini-native-*"], source: { path: "p" } }] }));
   const lines = consult(["--platform", "Darwin", "--node", "hetzner-shell", "--home", d, manifest]);
   assert.ok(lines.some((l) => l.startsWith("SKIP\tx\tnode")), "glob mismatch skips loud");
+});
+
+// --- issue #256: the probe gate must fail SAFE, never kill the loop -------
+
+test("consult: require_probe without probe_port — loud SKIP on both seams, later entries still mount (issue #256: no mid-loop death)", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const manifest = join(d, "m.json");
+  const root = join(d, "tk");
+  makePkg(join(root, "plugins", "dsh-reflex"), "@local/dsh-reflex");
+  const neverWritten = join(d, "never-written.md");
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      macos: [
+        // the defect rows: require_probe with NO probe_port used to raise
+        // KeyError mid-loop — every later entry silently never mounted
+        { id: "bad-plugin-probe", seam: "plugin", nodes: ["*"], source: { path: "plugins/dsh-reflex" }, require_probe: true },
+        { id: "bad-prompt-probe", seam: "system-prompt", nodes: ["*"], source: { path: "config/system-prompts/never-read.md" }, target_file: neverWritten, require_probe: true },
+        { id: "good-later", seam: "plugin", nodes: ["*"], source: { path: "plugins/dsh-reflex" } },
+      ],
+    })
+  );
+  // consult() is execFileSync: a traceback (exit != 0) throws here, so this
+  // line alone proves the consult survived both bad rows.
+  const lines = consult(["--platform", "Darwin", "--node", "mini-native-open", "--home", d, "--root", root, manifest]);
+  const skipPlugin = lines.find((l) => l.startsWith("SKIP\tbad-plugin-probe"));
+  assert.ok(skipPlugin && /probe_port missing/.test(skipPlugin), `plugin seam skips loud with reason, got: ${skipPlugin}`);
+  const skipPrompt = lines.find((l) => l.startsWith("SKIP\tbad-prompt-probe"));
+  assert.ok(skipPrompt && /probe_port missing/.test(skipPrompt), `system-prompt seam skips loud with reason, got: ${skipPrompt}`);
+  assert.ok(!existsSync(neverWritten), "gated prompt row writes nothing");
+  assert.ok(lines.some((l) => l.startsWith("MOUNTED\tgood-later")), "a LATER entry still mounts — the consult survives the bad rows (the mid-loop death was the defect)");
 });
 
 // --- profile-config seam + require_profile_packages gate (issue #110) ------

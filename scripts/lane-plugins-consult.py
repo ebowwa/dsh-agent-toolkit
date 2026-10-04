@@ -64,6 +64,24 @@ def port_answers(port, host="127.0.0.1", timeout=1.0):
         return False
 
 
+def probe_gate_skips(entry, pid):
+    """The require_probe gate, failing SAFE (issue #256). A require_probe
+    entry with no probe_port used to raise KeyError OUTSIDE any try block —
+    the traceback killed the consult MID-LOOP and every later entry
+    silently never mounted, the exact crash class the copy guard below
+    documents. Degrade to a LOUD skip for THIS entry, keep consulting."""
+    if not entry.get("require_probe"):
+        return False
+    port = entry.get("probe_port")
+    if port is None:
+        print(f"SKIP\t{pid}\trequire_probe set but probe_port missing — cannot verify the engine, gated out (manifest contract: require_probe declares probe_port)")
+        return True
+    if not port_answers(port):
+        print(f"SKIP\t{pid}\t127.0.0.1:{port} not answering (engine down here)")
+        return True
+    return False
+
+
 def yaml_scalar(v):
     return json.dumps(v)  # JSON scalars/arrays are valid YAML flow scalars
 
@@ -252,8 +270,7 @@ def main():
             src = os.path.join(root, entry.get("source", {}).get("path", ""))
             begin = f"<!-- dsh:{pid} -->"
             end = f"<!-- /dsh:{pid} -->"
-            if entry.get("require_probe") and not port_answers(entry["probe_port"]):
-                print(f"SKIP\t{pid}\t127.0.0.1:{entry['probe_port']} not answering (engine down here)")
+            if probe_gate_skips(entry, pid):
                 continue
             try:
                 block = open(src).read().strip()
@@ -301,8 +318,7 @@ def main():
             continue
         src = entry.get("source", {}).get("path", "")
         pkg_dir = os.path.join(root, src) if src else ""
-        if entry.get("require_probe") and not port_answers(entry["probe_port"]):
-            print(f"SKIP\t{pid}\t127.0.0.1:{entry['probe_port']} not answering (engine down here)")
+        if probe_gate_skips(entry, pid):
             continue
         if not package_complete(pkg_dir):
             print(f"SKIP\t{pid}\tpackage missing/incomplete at {pkg_dir} (need package.json + lib/)")
