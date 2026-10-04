@@ -109,6 +109,30 @@ test("no-scope-creep is stated as a refusal with the trivial AND in-scope carve-
   }
 });
 
+test("the discovery protocol carries the pre-file dedup check (issue #320)", () => {
+  // Sibling agents working sibling PRs of one root issue each discovered
+  // the SAME follow-on defect and each minted a found: ticket — #309 and
+  // #311, 95 seconds apart, same files, same lines — and every downstream
+  // agent re-derives the cross-reference. The protocol now carries a
+  // search-before-you-file step, and it must live in ALL THREE carriers:
+  // the docs alone do not reach a dispatched agent — the stamped standing
+  // contract does. Pins are reflow-tolerant (the #270 lesson): the step is
+  // pinned by its clauses, not its line wrapping.
+  for (const [name, text] of [["the driver", driverSrc], [".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, /Search before you file/, `${name}: the step name`);
+    assert.match(text, /gh search issues\s+--repo/, `${name}: the search command`);
+    assert.match(text, /--label\s+agent-todo\s+--state\s+open/, `${name}: the search scopes the open todo pile`);
+    assert.match(text, /receipts as a comment\s+on\s+THAT\s+ticket/, `${name}: receipts go to the existing ticket, not a new one`);
+    assert.match(text, /never\s+mint\s+a\s+duplicate/, `${name}: the no-duplicate rule`);
+    const dedupAt = text.search(/Search before you file/);
+    const fileAt = text.search(/File an issue/);
+    assert.ok(
+      dedupAt > -1 && fileAt > -1 && dedupAt < fileAt,
+      `${name}: the search step precedes the file step (it guards the mint)`,
+    );
+  }
+});
+
 test("the docs point at the enforcement seam (the driver stamps every task)", () => {
   assert.match(agentsReadme, /run-dsh-agent\.sh/);
   assert.match(contributing, /run-dsh-agent\.sh/);
