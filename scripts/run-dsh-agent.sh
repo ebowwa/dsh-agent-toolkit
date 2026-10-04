@@ -359,7 +359,9 @@ Resolve an id first: gh api graphql -f query='query(\$o:String!,\$r:String!,\$n:
 # orphan branches. The consumer repos run auto-delete-on-merge (verified
 # live on this repo: delete_branch_on_merge=true), so a MERGED branch cleans
 # itself up — the leak paths are a pushed branch with no PR and a PR closed
-# without merging. Static repo-controlled prose, appended after the input
+# without merging — plus the same-claim collision landmine: two concurrent
+# agents on one issue minting the identical branch name (#327). Static
+# repo-controlled prose, appended after the input
 # scrub pass and before the launch line below. Long-form reference:
 # .agents/README.md; fixtures: tests/branch-hygiene-contract.test.mjs.
 TASK="${TASK}
@@ -370,6 +372,7 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
 3. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind (open PRs waiting on review) on ONE branches-left: line — exact shape:
      branches-left: dsh/issue-127-c5844082078, dsh/issue-128-nextticket
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
+4. UNIQUE NAME + PUSH PREFLIGHT — a minted branch name is collision-proofed twice. It carries a unique suffix (pid, claim id, or timestamp): dsh/issue-127-c5844082078, never the bare dsh/issue-N-slug two agents racing one issue derive identically (#327). And before the FIRST push of a minted name, run git ls-remote origin <name>: a non-empty answer means a sibling already owns the name — delete your unpushed local branch, re-mint with a fresh suffix, push that. NEVER git pull onto the collided name (it merges the sibling's work into yours) and NEVER git push --force-with-lease over it (it overwrites the sibling's pushed work behind an open PR); both reflexes destroy a racing claim.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
