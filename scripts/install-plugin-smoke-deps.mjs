@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 const WALK_CAP = 50;
 
@@ -282,6 +282,20 @@ export async function main(argv = process.argv.slice(2)) {
   );
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) await main();
+// The main arm must survive a symlinked entry (#311): pathToFileURL
+// repairs the URL encoding but not symlinks — import.meta.url resolves
+// the entry link while argv[1] stays as invoked, so main() silently
+// never ran through a link (bare symlink invocation exited 0 with no
+// output — the #302 false-green class). Same shape as settings-write.mjs:
+// href fast path, realpath fallback.
+const THIS_FILE = fileURLToPath(import.meta.url);
+function isMain() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(THIS_FILE);
+  } catch {
+    return false;
+  }
+}
+if (isMain()) await main();

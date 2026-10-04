@@ -32,7 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,4 +308,26 @@ test("unusable invocation is a loud usage error", () => {
   const r = runTool([]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: tests-lint\.mjs/);
+});
+
+test("a symlinked entry still arms the CLI (#311): bare → usage 2, violations → 1", () => {
+  // Node resolves the entry's symlinks for import.meta.url while argv[1]
+  // stays as invoked — the raw compare disarmed the CLI block through a
+  // link and a bare symlink invocation exited 0 having linted nothing.
+  // The guard must hold through ANY alias of the tool path.
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-lint-link-"));
+  try {
+    const link = path.join(dir, "tests-lint-link.mjs");
+    symlinkSync(TOOL, link);
+    const bare = spawnSync(process.execPath, [link], { encoding: "utf8" });
+    assert.equal(bare.status, 2, `stderr: ${bare.stderr}`);
+    assert.match(bare.stderr, /usage: tests-lint\.mjs/);
+    const broken = path.join(dir, "broken.test.mjs");
+    writeFileSync(broken, DEFECT_SOURCE);
+    const bad = spawnSync(process.execPath, [link, broken], { encoding: "utf8" });
+    assert.equal(bad.status, 1, `stderr: ${bad.stderr}`);
+    assert.match(bad.stderr, /broken\.test\.mjs:/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

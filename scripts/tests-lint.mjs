@@ -63,7 +63,8 @@
 // continuation line is out of scope for the same reason every lint
 // here is line-based.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Ambient-PATH re-inclusion: the assignment composes with the runner's
  * PATH instead of pretending to replace it — sound on every machine. */
@@ -294,8 +295,24 @@ export const lintTests = (text, name) => {
   return errors;
 };
 
-/** CLI: one or more test files; exit 1 with per-line errors if any fail. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+/** CLI: one or more test files; exit 1 with per-line errors if any fail.
+ * The main-arm guard must survive a symlinked entry (#311): Node resolves
+ * the entry's symlinks for import.meta.url while argv[1] stays as invoked,
+ * so the raw `file://${argv[1]}` compare silently disarmed the whole CLI
+ * block through a link — a bare symlink invocation exited 0 having linted
+ * nothing (the #302 false-green class). Same shape as settings-write.mjs:
+ * href fast path, realpath fallback. */
+const THIS_FILE = fileURLToPath(import.meta.url);
+function isMain() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(THIS_FILE);
+  } catch {
+    return false;
+  }
+}
+if (isMain()) {
   const files = process.argv.slice(2);
   if (!files.length) {
     console.error("usage: tests-lint.mjs <test.mjs> [more.test.mjs ...]");

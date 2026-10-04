@@ -186,3 +186,44 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("a symlinked entry still runs main (--dry-run parity with direct, #311)", () => {
+  // pathToFileURL repairs URL encoding but not symlinks: import.meta.url
+  // resolves the entry link while argv[1] stays as invoked, so the isMain
+  // compare silently skipped main() through a link — bare symlink
+  // invocation exited 0 with NO output (the #302 false-green class, on
+  // the installer the smoke gates depend on).
+  // Hermetic fixture: dep-free, peer-free, non-@local plugin — the union
+  // is empty, the walk converges round 0 (no registry peers to query),
+  // verify is green. No npm, no network, no tree state.
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-link-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({ name: "psd-link-fixture", dependencies: {} }),
+    );
+    const direct = execFileSync("node", [script, "--dry-run"], {
+      cwd: tmp,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    assert.match(direct, /--dry-run: verified/, "direct control runs main");
+
+    const link = path.join(tmp, "ipsd-link.mjs");
+    fs.symlinkSync(script, link);
+    const viaLink = execFileSync("node", [link, "--dry-run"], {
+      cwd: tmp,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    assert.match(
+      viaLink,
+      /--dry-run: verified/,
+      "a symlinked entry runs main too — the guard must not silently skip it",
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
