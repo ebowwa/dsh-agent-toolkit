@@ -454,53 +454,9 @@ test("long token lands single-line (BSD base64 76-col wrap must not break the he
   } finally { cleanup(); }
 }));
 
-// Class guards on the WIRING: the resolver alone fixes nothing — both
-// entry points must stop persisting the ephemeral credential and run the
-// resolver between the toolkits fetch and the first thing that pushes.
-test("agent-dispatch.yml: persist-credentials false + resolver wired before the agent", () => {
-  const wf = readFileSync(path.join(ROOT, ".github", "workflows", "agent-dispatch.yml"), "utf8");
-  assert.ok(wf.includes("persist-credentials: false"), "main checkout must not persist the ephemeral token");
-  assert.ok(wf.includes("resolve-push-token.sh"), "resolver must be invoked");
-  const resolveIdx = wf.indexOf("Push credential (Doppler-first)");
-  const checkoutIdx = wf.indexOf("persist-credentials: false");
-  const runIdx = wf.indexOf("- name: Run agent");
-  assert.ok(checkoutIdx !== -1 && resolveIdx !== -1 && runIdx !== -1);
-  assert.ok(checkoutIdx < resolveIdx && resolveIdx < runIdx, "resolver must run after checkout, before the agent");
-});
-
-// Regression pin: the flight-recorder step used to embed GH_TOKEN in the
-// `git remote add` URL — the credential rode argv (bash-expanded, so the
-// full token URL was ps-readable to same-user processes) and persisted in
-// the temp clone's .git/config remote URL. It also interpolated
-// ${{ github.repository }} / ${{ github.run_id }} raw into the run block
-// (the injection seam the env-routing rule closes). Both must stay fixed.
-test("agent-dispatch.yml: flight recorder keeps the token off argv and ${{ }} out of the run block", () => {
-  const wf = readFileSync(path.join(ROOT, ".github", "workflows", "agent-dispatch.yml"), "utf8");
-  const start = wf.indexOf("Archive session transcript (flight recorder)");
-  assert.ok(start !== -1, "flight recorder step must exist");
-  const end = wf.indexOf("\n      - name:", start);
-  const step = end === -1 ? wf.slice(start) : wf.slice(start, end);
-  const remoteAdd = step.split("\n").find((l) => l.includes("git remote add")) ?? "";
-  assert.ok(!remoteAdd.includes("x-access-token:"), "remote URL must not embed the token (argv + .git/config leak)");
-  assert.ok(step.includes("GIT_CONFIG_COUNT"), "credential must flow via env-fed git config (sanctioned seam)");
-  const runBlock = step.slice(step.indexOf("run: |"));
-  assert.ok(!runBlock.includes("github.repository }}"), "run block must route github.repository through step env");
-  assert.ok(!runBlock.includes("github.run_id }}"), "run block must route github.run_id through step env");
-  assert.ok(step.includes("REPO_FULL_NAME:") && step.includes("FLIGHT_RUN_ID:"), "env-fed context vars must be declared");
-});
-
-test("agent-comment.yml: persist-credentials false + resolver wired before agent AND shipper", () => {
-  const wf = readFileSync(path.join(ROOT, ".github", "workflows", "agent-comment.yml"), "utf8");
-  assert.ok(wf.includes("persist-credentials: false"), "main checkout must not persist the ephemeral token");
-  assert.ok(wf.includes("resolve-push-token.sh"), "resolver must be invoked");
-  const checkoutIdx = wf.indexOf("persist-credentials: false");
-  const resolveIdx = wf.indexOf("Push credential (Doppler-first)");
-  // The comment-loop step was renamed when the shipper was extracted to
-  // scripts/ship-changes.sh ("Run agent (captures the before-state for the
-  // shipper)") — the ordering assertion below is unchanged in intent.
-  const runIdx = wf.indexOf("- name: Run agent");
-  const shipIdx = wf.indexOf("- name: Ship any code changes as a PR");
-  assert.ok([checkoutIdx, resolveIdx, runIdx, shipIdx].every((i) => i !== -1));
-  assert.ok(checkoutIdx < resolveIdx && resolveIdx < runIdx && runIdx < shipIdx,
-    "resolver must precede both push surfaces");
-});
+// The in-job entry-point wiring guards (persist-credentials false +
+// resolver-before-agent on agent-comment.yml / agent-dispatch.yml) retired
+// WITH their surfaces: both workflows are removed (issue #264) and the
+// removal itself is pinned in tests/decouple-structure.test.mjs. The
+// worker-side guard (abort_item on a failed push-credential write) is
+// pinned there too — the worker is the only pusher left.

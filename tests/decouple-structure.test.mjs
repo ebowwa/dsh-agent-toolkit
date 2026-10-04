@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,12 +23,26 @@ const assertSelfHostedThin = (wf, name) => {
   assert.ok(!wf.includes("ubuntu-latest"), `${name}: nothing on github-hosted (owner directive, PR #83)`);
 };
 
-test("legacy comment workflow calls the shared shipper + reply scripts (not inline copies)", () => {
-  const wf = read(".github/workflows/agent-comment.yml");
-  assert.match(wf, /ship-changes\.sh/);
-  assert.match(wf, /post-reply\.sh/);
-  // the old inline shipper/reply bodies are gone
-  assert.ok(!wf.includes("dsh/auto-r${GITHUB_RUN_ID}"));
+test("the legacy in-job agent mode stays removed (issue #264)", () => {
+  // The old in-job mode — the agent inside a 120-min runner-holding job —
+  // is deleted; the thin trigger + the worker are the only agent execution
+  // path. A reintroduction of the files (or a `uses:` pin on them from any
+  // workflow or example shell) goes red here.
+  for (const f of [
+    ".github/workflows/agent-comment.yml",
+    ".github/workflows/agent-dispatch.yml",
+    "examples/dsh-agent-comment.yml",
+    "examples/dsh-agent.yml",
+  ]) {
+    assert.ok(!existsSync(path.join(ROOT, f)), `${f} must stay removed (the in-job agent mode, issue #264)`);
+  }
+  const pinOnRemoved = /\/workflows\/agent-(comment|dispatch)\.yml@/;
+  for (const dir of [".github/workflows", "examples"]) {
+    for (const n of readdirSync(path.join(ROOT, dir)).filter((x) => x.endsWith(".yml"))) {
+      const text = read(path.join(dir, n));
+      assert.doesNotMatch(text, pinOnRemoved, `${dir}/${n} must not pin the removed in-job agent workflows`);
+    }
+  }
 });
 
 test("thin trigger: self-hosted dsh lane, acks with the marker, enqueues with the label", () => {

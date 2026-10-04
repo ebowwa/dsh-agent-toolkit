@@ -23,7 +23,9 @@ and captured output.
    `queued-claim-ttl`, `ram-probe`, `review-claims-native`,
    `self-hosted-only`) — rebase or drop; two reference open issues (#447, #680).
 3. dsh-bot legacy workflow mode removal (next major) — deliberate, needs
-   sign-off.
+   sign-off. **Update (issue #264, 2026-10-04): the agent-mode half is
+   executed** (`agent-comment.yml`, `agent-dispatch.yml`, their example
+   shells); `agent-review.yml` stays (a live consumer pins it).
 4. cordis-plugin greenfield (gat as a dsh plugin) — never started; a new
    project, not a cleanup.
 5. The dbg-sweep merge exists on LOCAL main only — pushing is the user's call.
@@ -80,7 +82,9 @@ invocation. Minor footgun, not a product bug.)
 6. **Legacy mode is scheduled removal, not rot**: `agent-comment.yml`,
    `agent-dispatch.yml`, `agent-review.yml` (and matching `examples/`) are
    documented as "removed at the next major version" (README). That is a
-   planned cleanup item, not accidental mess.
+   planned cleanup item, not accidental mess. **Executed in part (issue
+   #264, 2026-10-04): the two agent-mode workflows + their examples are
+   removed; `agent-review.yml` remains for its live consumer.**
 
 ### Prioritized cleanup plan (each ≈ one commit)
 
@@ -89,7 +93,7 @@ invocation. Minor footgun, not a product bug.)
 | 1 | Remove the stale `gat2/` line from `.gitignore` | 2 min |
 | 2 | Document in README that tests are invoked as `node --test tests/*.test.mjs` (or add a tiny runner script) so the directory-form failure doesn't bite | 10 min |
 | 3 | Sweep the 8 TODO/FIXME hits: convert real ones to issues, delete stale ones | 30 min |
-| 4 | Execute the planned legacy-mode removal (`agent-comment.yml`, `agent-dispatch.yml`, `agent-review.yml` + legacy examples + README rows) at next major | half a day |
+| 4 | Execute the planned legacy-mode removal (`agent-comment.yml`, `agent-dispatch.yml`, `agent-review.yml` + legacy examples + README rows) at next major | half a day — agent-mode half DONE via issue #264 (agent-review.yml kept: live consumer) |
 
 **Overall: this repo is NOT messy.** Tests green, tree clean, structure
 intentional. The user's "got a bit messy" impression most likely attaches
@@ -206,6 +210,6 @@ consistent with the user's impression.
 |---|---|---|
 | Working tree | clean | clean |
 | Tests | 190/190 pass | 1640 + 548 + 31, all pass |
-| Biggest issue | legacy-mode removal is pending (planned) | 16 stale `dsh/*` branches + 1 unmerged branch |
+| Biggest issue | legacy agent-mode removal executed (issue #264); agent-review.yml kept for its live consumer | 16 stale `dsh/*` branches + 1 unmerged branch |
 | Cordis plugin | n/a | never started; only doc mentions |
 | Est. total cleanup | ~1 h (excluding major-version legacy removal) | ~2–3 h |

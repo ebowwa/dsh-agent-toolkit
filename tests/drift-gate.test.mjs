@@ -195,8 +195,10 @@ test("every consumer-adoptable workflow is inside the release gate's review surf
     .filter((n) => n.endsWith(".yml"))
     .filter((n) => /^\s+workflow_call:\s*$/m.test(read(".github", "workflows", n)));
   assert.ok(
-    adoptable.length >= 6,
-    `the repo must still expose its reusable-workflow adoption surface (found ${adoptable.length})`,
+    adoptable.length >= 4,
+    `the repo must still expose its reusable-workflow adoption surface (found ${adoptable.length})` +
+      ` — the floor dropped 6→4 when the in-job agent pair was removed (issue #264): the surface is now` +
+      ` the three thin triggers + agent-review.yml`,
   );
   for (const w of adoptable) {
     const p = `.github/workflows/${w}`;

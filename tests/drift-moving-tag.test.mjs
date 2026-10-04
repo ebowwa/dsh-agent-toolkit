@@ -41,7 +41,11 @@ const readmePin = () => {
 
 test("examples pin one moving major tag and the README documents the same pin", () => {
   const pins = examplePins();
-  assert.ok(pins.length >= 3, `all example shells must pin a dsh-agent-toolkit workflow (found ${pins.length})`);
+  // Floor 3→2: the two legacy example shells (dsh-agent-comment.yml /
+  // dsh-agent.yml, each a pin) are removed with the in-job agent mode
+  // (issue #264) — the remaining pair dsh-agent-thin.yml / dsh-review.yml
+  // must keep pinning one moving major.
+  assert.ok(pins.length >= 2, `all example shells must pin a dsh-agent-toolkit workflow (found ${pins.length})`);
   const tags = [...new Set(pins.map((p) => p.tag))];
   assert.equal(tags.length, 1, `examples must agree on one pin, found: ${tags.join(", ")}`);
   assert.match(tags[0], /^v\d+$/, "the pin must be a moving major tag (v<digits>), not a frozen release");
