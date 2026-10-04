@@ -372,6 +372,20 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workspace (issue #276) ------------------------
+# Appended to EVERY task after the branch-hygiene block (contracts append
+# in issue order: discovery → relationships → hygiene → workspace).
+# Shared lane checkouts are RUNTIME, not workspaces: the worker keepalive
+# re-pins the live toolkit checkout to the moving v1 tag every minute
+# (checkout --force), and unconditional --force was measured destroying
+# an agent's in-flight work twice in ~10 minutes on seed-L3 (2026-10-03,
+# issue #276). scripts/pin-toolkit.sh now refuses to re-pin a dirty or
+# on-branch tree, but the durable rule is behavioral — agents work in
+# their own clones, never in-place in a shared checkout.
+TASK="${TASK}
+
+AGENT CONTRACT — workspace (issue #276): a shared lane checkout (~/dsh-agent-toolkit, ~/dsh-bot, any checkout the worker keepalive re-pins to the moving v1 tag) is RUNTIME, not a workspace — it force-checks-out the tag every minute, and in-place edits can be discarded without notice. Do task work in YOUR OWN clone (a private path — mktemp -d or your session workdir), and push branches / open PRs from there. If you must touch a shared checkout, leave it clean and detached (no working branch, no tracked modifications) before you exit so the re-pin resumes."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).

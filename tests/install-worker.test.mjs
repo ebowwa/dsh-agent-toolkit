@@ -84,7 +84,15 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
     // live twice). flock is the canonical cron mutual exclusion.
     assert.match(cron, /flock -n .*sweep\.lock/, "flock-overlapped, no pgrep self-match possible");
     assert.ok(!cron.includes("pgrep"), "no pgrep guard may ship in the keepalive");
-    assert.match(cron, /checkout -q --force v1/, "re-pins to the moving v1 tag each sweep (--force: dirty trees must never shadow the tag — 2026-09-21 incident)");
+    // issue #276: the re-pin is GUARDED — the line prefers
+    // pin-toolkit.sh (refuses to force-check-out a dirty or on-branch
+    // checkout, notes to worker.log) and keeps the legacy inline
+    // force-pin ONLY as the arm for checkouts pinned before the script
+    // existed (dropping it would wedge the release gate on every
+    // existing box until the next v1 release).
+    assert.match(cron, /\[ -f [^\]]+\/scripts\/pin-toolkit\.sh \]/, "guard arm: pin-toolkit.sh invoked only when the checkout carries it");
+    assert.match(cron, /bash [^;]+pin-toolkit\.sh [^;]+>> [^;]+worker\.log/, "guarded re-pin logs its notes to worker.log");
+    assert.match(cron, /checkout -q --force v1/, "LEGACY arm retained: bare force re-pin for pre-script pins (the moving-tag gate must never wedge)");
     assert.match(cron, /fetch --tags --force/, "force-moves the moving tag (plain fetch clobbers: \"would clobber existing tag\")");
     assert.ok(!cron.includes(GH_CRED), "NO credential in the cron line");
     assert.ok(!cron.includes(DOPPLER_CRED), "NO doppler credential in the cron line");
@@ -110,7 +118,7 @@ test("idempotent: a second run does not duplicate the cron line", () => {
   }
 });
 
-test("always refreshes the toolkit pin to v1 (with safe.directory; no silent failures)", () => {
+test("issue #276 (legacy arm): no pin-toolkit.sh in the target checkout → inline force-pin (old pins keep updating)", () => {
   const f = fixture();
   try {
     const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
@@ -120,6 +128,43 @@ test("always refreshes the toolkit pin to v1 (with safe.directory; no silent fai
     assert.match(git, /fetch --tags/, "fetches tags every install");
     assert.match(git, /checkout --force v1/, "checks out the moving v1 pin (--force — local edits never shadow tags)");
     assert.match(git, /safe\.directory=/, "ownership guard explicitly satisfied");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #276 (guarded arm): pin-toolkit.sh present → the installer routes the re-pin through it, no bare force checkout", () => {
+  const f = fixture();
+  try {
+    // the target checkout carries the guarded pin script (a stub — the
+    // real one is covered hermetically by tests/pin-toolkit.test.mjs)
+    mkdirSync(path.join(f.botDir, "scripts"), { recursive: true });
+    writeFileSync(path.join(f.botDir, "scripts", "pin-toolkit.sh"),
+      '#!/usr/bin/env bash\necho "pin-toolkit: pinned at v1-stub"\nexit 0\n');
+    const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /pinned at v1-stub/, "the guarded pin script ran");
+    assert.match(res.stdout, /toolkit pinned at/);
+    const git = readFileSync(f.gitLog, "utf8");
+    assert.ok(!/checkout --force v1/.test(git), "the installer itself never force-checks-out when the guard script is available");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #276 (refusal): pin-toolkit.sh exit 2 (in-flight work) leaves the deploy green and says so", () => {
+  const f = fixture();
+  try {
+    mkdirSync(path.join(f.botDir, "scripts"), { recursive: true });
+    writeFileSync(path.join(f.botDir, "scripts", "pin-toolkit.sh"),
+      '#!/usr/bin/env bash\necho "pin-toolkit: REFUSING re-pin: tracked modifications (issue #276)"\nexit 2\n');
+    const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, "a refused pin must not fail the deploy (the box keeps its previous pin; cron retries each sweep)");
+    assert.match(res.stdout + res.stderr, /pin REFUSED — in-flight work/);
+    assert.ok(!/toolkit pinned at/.test(res.stdout), "no false 'pinned' claim on refusal");
+    // the rest of the install still lands
+    assert.match(res.stdout, /install-worker: OK/);
+    assert.match(readFileSync(f.store, "utf8"), /dsh-worker\.sh --once/, "keepalive still installed");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }

@@ -52,17 +52,38 @@ WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 #    bug). safe.directory is set explicitly: the Actions runner's per-job
 #    HOME/gitconfig handling can trip git's ownership guard silently.
 #    No -q: nothing in this installer may fail quietly.
+#    GUARDED (issue #276): the refresh goes through pin-toolkit.sh when
+#    the target checkout carries it — a deploy, like the keepalive, must
+#    not DESTROY in-flight work in a live checkout. The script refuses
+#    to re-pin a dirty or on-a-branch tree (note out, box keeps its
+#    previous pin); the legacy inline path below covers a checkout whose
+#    pin predates the script (until the v1 release carries it, the tag
+#    itself is the rollout).
 PIN_OK=0
+PIN_REFUSED=0
 if [ ! -d "$DSH_AGENT_TOOLKIT_DIR/.git" ]; then
   git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_AGENT_TOOLKIT_DIR" \
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
-if git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
+if [ -f "$DSH_AGENT_TOOLKIT_DIR/scripts/pin-toolkit.sh" ]; then
+  rc=0
+  bash "$DSH_AGENT_TOOLKIT_DIR/scripts/pin-toolkit.sh" "$DSH_AGENT_TOOLKIT_DIR" || rc=$?
+  case "$rc" in
+    0) PIN_OK=1 ;;
+    2) PIN_REFUSED=1 ;;
+    *) echo "install-worker: WARNING — pin-toolkit failed (rc=$rc); the toolkit runs its previous checkout (cron retries each sweep)" >&2 ;;
+  esac
+elif git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
    && git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" checkout --force v1; then
   PIN_OK=1
-  echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
 else
   echo "install-worker: WARNING — could not refresh the pin to v1; the toolkit runs its previous checkout (cron retries each sweep)" >&2
+fi
+if [ "$PIN_OK" = 1 ]; then
+  echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
+fi
+if [ "$PIN_REFUSED" = 1 ]; then
+  echo "install-worker: pin REFUSED — in-flight work in $DSH_AGENT_TOOLKIT_DIR left intact (issue #276); the box keeps its previous pin; re-run the deploy once the checkout is quiescent"
 fi
 
 # 2. env file — umask 177 so the file is born 0600; values never echoed
@@ -88,6 +109,17 @@ touch "$WORKER_HOME/worker.log" 2>/dev/null || true
 #    shadowed v1.73.0→v1.74.0 for hours while agent homes regenerated from
 #    the stale template. --force discards stray local edits; the template
 #    channel is tag-only by design.
+#    GUARDED --force (issue #276): unconditional --force is the mirror
+#    hazard — it discards an agent's in-flight work in the shared
+#    checkout (seed-L3, 2026-10-03: twice in ~10 minutes). The line
+#    below re-pins via scripts/pin-toolkit.sh when the checkout carries
+#    it: the script force-checks-out the tag ONLY on a quiescent tree
+#    (no tracked modifications, HEAD detached) and REFUSES with a note
+#    to worker.log otherwise, so the sweep runs the previously pinned
+#    release instead of destroying work. The legacy inline arm covers a
+#    checkout pinned before the script existed (until the v1 release
+#    carries it, the tag itself is the rollout) — dropping it would
+#    wedge the release gate on every existing box.
 #    `checkout v1` failing degrades to running the previously pinned
 #    release (the fetch error lands in worker.log) — never a broken sweep.
 # Overlap guard = flock, NOT pgrep. Every pgrep form self-matches here:
@@ -103,7 +135,7 @@ command -v flock >/dev/null 2>&1 \
 # ships scripts mode 644 — a direct invocation is "Permission denied"
 # (live-proven: the keepalive fired every minute from 17:52 and died at
 # exactly this word until fixed).
-LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q --force v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
+LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'if [ -f ${DSH_AGENT_TOOLKIT_DIR}/scripts/pin-toolkit.sh ]; then bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/pin-toolkit.sh ${DSH_AGENT_TOOLKIT_DIR} >> ${WORKER_HOME}/worker.log 2>&1; else git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q --force v1 || true; fi; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
 # The canonical-line rule: ALWAYS drop any existing dsh-worker line and
 # install the current one. Append-only idempotence ships upgrades never
 # (the box keeps its first, buggier line forever); rewrite-always is the
@@ -121,6 +153,6 @@ fi
 echo "install-worker: OK"
 echo "  toolkit : $DSH_AGENT_TOOLKIT_DIR (pinned to the moving v1 tag per sweep)"
 echo "  env     : $WORKER_HOME/env (mode 600) — the only credential resting place"
-echo "  cron    : keepalive armed (pgrep-guarded, once per minute)"
+echo "  cron    : keepalive armed (flock-guarded, once per minute; guarded v1 re-pin — issue #276)"
 echo "  repos   : $WORKER_REPOS"
 echo "  watch   : $WORKER_HOME/worker.log"

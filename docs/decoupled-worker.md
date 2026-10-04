@@ -59,7 +59,12 @@ pattern — and installs everything below idempotently: credentials from the
 repo's `TOWER_PROBE_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
 env file, and the cron line re-pins the toolkit to the moving `v1` tag
 every sweep, so the worker's code updates exclusively through
-drift-check's audited releases.
+drift-check's audited releases. The re-pin is GUARDED (issue #276):
+`scripts/pin-toolkit.sh` force-checks-out the tag only on a quiescent
+checkout (no tracked modifications, HEAD detached) and refuses with a
+note to worker.log otherwise — an agent's in-flight work in the shared
+checkout survives, and the sweep runs the previously pinned release
+until the tree is clean again.
 
 The manual equivalent (what the installer automates; cron keepalive needs
 no sudo, `svc.sh`/systemd when sudo exists — issue #6):
