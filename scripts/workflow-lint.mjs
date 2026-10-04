@@ -41,7 +41,8 @@
 // Plain multi-line scalars (key: value folded across deeper non-key
 // lines) are accepted.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** Split a raw line into (indent, body); body is the line minus leading spaces. */
 const splitIndent = (raw) => {
@@ -397,8 +398,26 @@ export function lintWorkflow(text, name = "workflow") {
   return errors;
 }
 
+/** CLI guard — compare REALPATHS on both sides (issue #302). Node
+ * resolves the main entry's symlinks for import.meta.url, while
+ * process.argv[1] stays exactly as invoked: through a symlink (or a
+ * /tmp → /private/tmp-style alias) the raw `import.meta.url ===
+ * \`file://${process.argv[1]}\`` comparison never matched, the CLI block
+ * silently never ran, and the tool exited 0 without linting anything —
+ * a false green on the linter itself, the class #139/#183 close on the
+ * gates. realpathSync on both sides makes the comparison symlink-proof;
+ * an unresolvable argv[1] (module imported under test, piped stdin)
+ * means "not the CLI" and is caught, not crashed. */
+const invokedAsMain = (() => {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
 /** CLI: one or more workflow files; exit 1 with per-line errors if any fail. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedAsMain) {
   const files = process.argv.slice(2);
   if (!files.length) {
     console.error("usage: workflow-lint.mjs <workflow.yml> [more.yml ...]");

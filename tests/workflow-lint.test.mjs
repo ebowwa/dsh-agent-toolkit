@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -552,4 +552,61 @@ test("unusable invocation is a loud usage error", () => {
   const missing = runTool(["/nonexistent/wf.yml"]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /cannot read/);
+});
+
+test("the CLI still lints through a symlinked argv (issue #302)", () => {
+  // Node resolves the main entry's symlinks for import.meta.url, but
+  // process.argv[1] stays as invoked. The pre-#302 guard compared the two
+  // raw (`import.meta.url === \`file://${process.argv[1]}\``), so spawning
+  // the tool through a symlink — or any aliased path, e.g. macOS
+  // /tmp → /private/tmp (the live repro in the issue) — made the CLI block
+  // never run: broken workflow, exit 0, zero output. A false green on the
+  // linter itself, the same class #139/#183 close on the gates. Revert the
+  // realpath guard and every leg below goes red.
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-symlink-"));
+  try {
+    const link = path.join(dir, "workflow-lint-link.mjs");
+    symlinkSync(TOOL, link);
+    const runViaLink = (args) =>
+      spawnSync(process.execPath, [link, ...args], { encoding: "utf8" });
+
+    // broken file THROUGH the symlinked entry: the lint must RUN (exit 1
+    // with the error) — pre-fix this was the silent exit 0
+    withFile(BROKEN, (f) => {
+      const r = runViaLink([f]);
+      assert.equal(r.status, 1, "a broken workflow through a symlinked entry must exit 1, not false-green 0");
+      assert.match(r.stderr, /dedents onto a mapping level/);
+    });
+    // clean file through the symlink: exit 0 WITH the lint having run
+    withFile(FIXED, (f) => {
+      const r = runViaLink([f]);
+      assert.equal(r.status, 0);
+      assert.equal(r.stderr, "");
+    });
+    // bare invocation through the symlink reaches the CLI block too — the
+    // usage error (exit 2) is proof the guard matched, not a silent skip
+    // (pre-fix even this leg false-greened as 0)
+    assert.equal(runViaLink([]).status, 2,
+      "bare invocation through a symlink must stay a loud usage error");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked workflow-file ARG still lints (argv[1] guard does not leak onto args)", () => {
+  // The #302 guard covers the ENTRY path; file args containing symlinks
+  // must keep working too — readFileSync follows them, and the reported
+  // path stays the invoked one so errors point at what the user typed.
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-arglink-"));
+  try {
+    const real = path.join(dir, "real.yml");
+    writeFileSync(real, BROKEN);
+    const link = path.join(dir, "link.yml");
+    symlinkSync(real, link);
+    const r = runTool([link]);
+    assert.equal(r.status, 1, "a broken workflow behind a symlinked arg must exit 1");
+    assert.match(r.stderr, /dedents onto a mapping level/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
