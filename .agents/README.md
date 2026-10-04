@@ -307,9 +307,13 @@ this session works had zero live carrier PRs at claim time, and every
 carrier-caused skip is declared in the exit summary.
 
 The driver's claim preamble (the DEFAULT_TASK lane-pass text in
-`scripts/run-dsh-agent.sh`) carries this rule into every scheduled roam;
-`tests/claim-dedup-contract.test.mjs` pins both surfaces (structural +
-behavioral) the way `tests/branch-hygiene-contract.test.mjs` pins #127.
+`scripts/run-dsh-agent.sh`) carries this rule into every scheduled roam,
+and the decoupled trigger's fallback TASK
+(`.github/workflows/agent-dispatch-thin.yml`, the empty-input copy of the
+same preamble) carries it into every maintenance dispatch — the two modes
+stay in step (issue #449). `tests/claim-dedup-contract.test.mjs` pins all
+three surfaces (driver + doc + fallback; structural + behavioral) the way
+`tests/branch-hygiene-contract.test.mjs` pins #127.
 
 ## Standing contract: workdir hygiene (issues #333, #374)
 
