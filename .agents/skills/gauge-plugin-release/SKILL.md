@@ -32,14 +32,16 @@ https://secondsee.com/downloads/gauge/plugins/GaugeAISessionsPlugin.gaugeplugin.
 - The plugin bundle installs at `~/Library/Application Support/Gauge/plugins/<Name>.gaugeplugin` — THIS is what the Gauge.app menu bar actually loads.
 - **Updating one and not the other leaves the other burning the old code.** Install BOTH every time:
 ```bash
-curl -sL "<app.zip URL>" -o /tmp/app.zip && unzip -oq /tmp/app.zip -d /tmp/app
+stage="$(mktemp -d "${TMPDIR:-/tmp}/dsh-gauge-plugin-release-XXXXXX")"   # per-run staging (issue #346) — a fixed /tmp/app is clobbered by a same-box sibling running this same fence
+curl -sL "<app.zip URL>" -o "$stage/app.zip" && unzip -oq "$stage/app.zip" -d "$stage/app"
 killall <App> 2>/dev/null; sleep 2
-rm -rf /Applications/<App>.app && cp -R /tmp/app/<App>.app /Applications/
+rm -rf /Applications/<App>.app && cp -R "$stage/app/<App>.app" /Applications/
 xattr -dr com.apple.quarantine /Applications/<App>.app
-curl -sL "<plugin.zip URL>" -o /tmp/plug.zip && unzip -oq /tmp/plug.zip -d /tmp/plug
+curl -sL "<plugin.zip URL>" -o "$stage/plug.zip" && unzip -oq "$stage/plug.zip" -d "$stage/plug"
 rm -rf ~/Library/Application\ Support/Gauge/plugins/<Name>.gaugeplugin
-cp -R /tmp/plug/<Name>.gaugeplugin ~/Library/Application\ Support/Gauge/plugins/
+cp -R "$stage/plug/<Name>.gaugeplugin" ~/Library/Application\ Support/Gauge/plugins/
 open -a <App>; open -a Gauge
+rm -rf "$stage"   # cleanup rule: only the path this session minted
 ```
 
 **5. Verify the versions AND the cost, sustained:**
