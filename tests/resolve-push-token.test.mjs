@@ -186,14 +186,29 @@ test("hung doppler fetch is watchdog-bounded (falls back, does not hold the job)
   // watchdog must cut it at DOPPLER_FETCH_TIMEOUT_S and take the typed
   // fallback — the fetch-side twin of the --max-time 15 curl pin below
   // (review round-1 finding 4: the fetch was the one unbounded call).
+  //
+  // Load-proof fence (#389): the old ABSOLUTE bound (elapsed < 10_000ms)
+  // raced the box, not the code — a legitimate watchdog cut at 1s plus
+  // ~9.7s of child-spawn overhead under a concurrent full-suite run took
+  // 10717ms in-gate while the SAME tree greened in isolation at 5699ms.
+  // The fence is now the HANG duration itself: a working watchdog fires
+  // at DOPPLER_FETCH_TIMEOUT_S=1s, so the HANG_S=30s sleep can never
+  // COMPLETE (elapsed ≪ 30s however loaded the cell — a false red would
+  // need ≥29s of pure overhead, triple the worst ever observed on this
+  // box class); a missing/broken watchdog lets the full hang finish
+  // (elapsed ≥ 30s) AND the doppler token then wins, so the
+  // fallback-header pin below reds too. Boundedness stays pinned; box
+  // load cannot mint a red. Deterministic substance stays in the typed
+  // fallback assertions (log line + header), which never touch a clock.
+  const HANG_S = 30;
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "30", DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_HANG_S: String(HANG_S), DOPPLER_FETCH_TIMEOUT_S: "1",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 10_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.ok(Date.now() - t0 < HANG_S * 1000, `resolver ran ${Date.now() - t0}ms — the hang completed, the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
@@ -290,17 +305,26 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // NON-NUMERIC one: `sleep "abc"` fails instantly, the watchdog
   // subshell dies silently, and a hung fetch is unbounded again. So the
   // pin rides "abc" — the case `:-` alone lets through — and asserts
-  // the guard's 20s default still fires: the doppler shim sleeps 25s,
+  // the guard's 20s default still fires: the doppler shim sleeps 60s,
   // comfortably past 20, so the ONLY bounded outcome is the watchdog
   // kill + typed fallback.
+  //
+  // Load-proof fence (#389, same class as the leg above): the fence is
+  // the HANG duration, not an absolute wall-clock bound. A working 20s
+  // watchdog cut plus observed worst-case ~10s of full-suite spawn
+  // overhead lands ~30s — well under 60s; a dead watchdog lets the full
+  // 60s hang complete and the doppler token win, redding both this
+  // fence and the fallback-header pin. (The pre-#389 shape — 25s hang /
+  // <30s fence — sat 0.3s from a load red.)
+  const HANG_S = 60;
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "25", DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_HANG_S: String(HANG_S), DOPPLER_FETCH_TIMEOUT_S: "abc",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 30_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.ok(Date.now() - t0 < HANG_S * 1000, `resolver ran ${Date.now() - t0}ms — the hang completed, the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
