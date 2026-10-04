@@ -148,6 +148,7 @@ jobs:
           # is repo-scoped); falls back gracefully for public-mode consumers.
           PAT_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN }}
           DSH_AGENT_TOOLKIT_CONSUMERS: ${{ vars.DSH_AGENT_TOOLKIT_CONSUMERS }}
+          BASE: ${{ steps.scope.outputs.base }}
           NEXT: ${{ steps.scope.outputs.next }}
           MOVING: ${{ steps.scope.outputs.moving }}
           VERDICT: ${{ env.VERDICT }}
@@ -159,6 +160,21 @@ jobs:
           esac
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Empty-range guard (issue #231): v1.97.0 and v1.98.0 both named
+          # 47a4f683 — a racing run adopted the just-pushed v1.97.0 as its
+          # BASE while its checkout HEAD was still that same merge, reviewed
+          # an EMPTY diff, and minted a release whose range was empty. A
+          # release tag always names a NEW commit: when HEAD peels to the
+          # commit BASE already names, there is nothing to release — skip
+          # green (no tag, no release, no consumer fan-out). Published
+          # release tags are never re-pointed; only the moving major tag
+          # ($MOVING) is ever forced.
+          HEAD_C="$(git rev-parse "HEAD^{commit}")"
+          BASE_C="$(git rev-parse "${BASE}^{commit}")"
+          if [ "$HEAD_C" = "$BASE_C" ]; then
+            echo "empty release range: $BASE already names $HEAD_C — nothing to tag for $NEXT"
+            exit 0
+          fi
           git tag "$NEXT"
           git push origin "$NEXT"
           if [ -f "$RUNNER_TEMP/drift-review.md" ]; then

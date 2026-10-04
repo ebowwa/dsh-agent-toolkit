@@ -94,7 +94,12 @@ Consumers pin `@v1` (moving major tag). Breaking changes bump the major.
 drift-check advances `v1` to each new release it tags. There is no bare
 `v` moving tag: drift-check used to advance an undocumented `v` instead of
 `v1`, leaving every pinned consumer frozen on v1.0.9 through 33 releases
-(issue #38) — `v` is retired. Scrubber/security fixes land as minors and
+(issue #38) — `v` is retired. Every `vX.Y.0` release tag names a distinct
+commit: drift-check skips the release green when its `BASE..HEAD` range is
+empty — `v1.97.0` and `v1.98.0` both named `47a4f683` (issue #231) because
+a racing run reviewed an empty diff and published anyway. Published release
+tags are never re-pointed; only the moving major tag is ever forced.
+Scrubber/security fixes land as minors and
 reach consumers only through a drift-check bump PR merged by each repo's
 own gates + review — the audit gate. Nothing propagates silently.
 
