@@ -21,6 +21,17 @@
 # (hardlinks: near-zero disk, instant) and falls back to `cp -a` where
 # hardlinks are unsupported.
 #
+# Platform-skip audit (issue #190): bun — the default install command here
+# — silently OMITS a platform-mismatched MANDATORY dep (zero exit, no
+# warning) where npm hard-errors (`notsup Unsupported platform`). A green
+# install therefore proves nothing about platform coverage: the tree is
+# silently incomplete and the failure only surfaces later as a runtime
+# missing-binary. After every restore that materialized node_modules
+# (cache HIT or fresh install), the mandatory direct deps (dependencies +
+# devDependencies, minus optionalDependencies) are compared against the
+# tree and every absent one is named in a WARNING. The audit is
+# best-effort like restore itself: warnings never fail the claim.
+#
 # Cache root: $DSH_DEP_CACHE_DIR (default: ~/.cache/dsh/dep-cache).
 # Set DSH_DEP_CACHE=off to disable (restore then does nothing).
 # Set DSH_DEP_INSTALL_CMD to override the install command (default: bun
@@ -67,6 +78,48 @@ materialize() {
   cp -a "$src" "$dst"
 }
 
+# audit_platform_skips <checkout> — name every mandatory direct dep the
+# install silently omitted (the bun-vs-npm divergence, issue #190). npm
+# refuses a platform-mismatched mandatory dep (`notsup Unsupported
+# platform`); bun omits it with exit 0 and no output. Best-effort: any
+# doubt (no package.json, no tree, no node binary, unparseable JSON)
+# exits silently — a diagnostic must never fail a claim.
+audit_platform_skips() {
+  local dir="$1"
+  [ -f "$dir/package.json" ] || return 0
+  [ -d "$dir/node_modules" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const dir = process.argv[1];
+let pkg;
+try { pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); }
+catch { process.exit(0); }
+// optionalDependencies mark a dep platform-gated BY CONTRACT — npm and
+// bun both legally skip those. Only their absence from the MANDATORY
+// sets is the silent-skip signature.
+const optional = new Set(Object.keys(pkg.optionalDependencies || {}));
+const mandatory = new Map();
+for (const sec of ["dependencies", "devDependencies"])
+  for (const [name, spec] of Object.entries(pkg[sec] || {}))
+    if (!optional.has(name)) mandatory.set(name, spec);
+const missing = [...mandatory.keys()].filter((n) =>
+  !fs.existsSync(path.join(dir, "node_modules", ...n.split("/"))));
+for (const n of missing)
+  console.log("dep-cache: WARNING (issue #190): mandatory dep " + n + "@" +
+    mandatory.get(n) + " is ABSENT from node_modules after a zero-exit install" +
+    " — bun silently omits platform-mismatched deps where npm hard-errors" +
+    " (notsup); the tree is incomplete and this surfaces as a runtime" +
+    " missing-binary. Cross-platform leg: DSH_DEP_INSTALL_CMD=\"npm ci\"" +
+    " restores the loud install-time failure, or mark the dep optional.");
+if (missing.length)
+  console.log("dep-cache: " + missing.length +
+    " mandatory dep(s) silently skipped by the install — audited per" +
+    " issue #190 (best-effort: NOT failing the claim)");
+' "$dir"
+}
+
 cmd_restore() {
   local dir="$1" key entry t0
   [ "${DSH_DEP_CACHE:-on}" = "off" ] && { echo "dep-cache: disabled (DSH_DEP_CACHE=off)"; return 0; }
@@ -79,6 +132,10 @@ cmd_restore() {
     t0=$(date +%s%N 2>/dev/null || date +%s)
     if materialize "$entry" "$dir/node_modules"; then
       echo "dep-cache: cache HIT ($key) — node_modules restored into $dir"
+      # a hit restores the tree the cache was warmed with — audit it too,
+      # so a poisoned entry cannot keep replaying a silently-incomplete
+      # tree across claims (issue #190)
+      audit_platform_skips "$dir"
       return 0
     fi
     echo "dep-cache: cache hit but restore failed — falling through to install" >&2
@@ -97,6 +154,9 @@ cmd_restore() {
   fi
   t0=$(date +%s%N 2>/dev/null || date +%s)
   (cd "$dir" && "${cmd[@]}") || { echo "dep-cache: install failed — leaving it to the claim" >&2; return 0; }
+  # a zero-exit install is NOT proof of coverage (issue #190): bun exits 0
+  # while omitting platform-mismatched mandatory deps — name them
+  audit_platform_skips "$dir"
   if [ -d "$dir/node_modules" ]; then
     rm -rf "$entry"
     cp -a "$dir/node_modules" "$entry" \
