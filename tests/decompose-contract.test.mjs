@@ -84,6 +84,12 @@ test("standing fleet context: driver wires env snapshot + shipped registry", () 
   assert.match(MANIFEST, /\| Nodes \| OS \| Lanes served \| Notes \|/);
   assert.match(MANIFEST, /mini-L1/);
   assert.match(MANIFEST, /seed-L3/);
+  // the #397 air machines: a registry that omits a node carrying half the
+  // open-lane dispatch load mis-places every plan built on it (deeper
+  // pins + the drift fence live in tests/fleet-manifest-drift.test.mjs)
+  assert.match(MANIFEST, /air16-native-open/);
+  assert.match(MANIFEST, /air8-native-open/);
+  assert.match(MANIFEST, /m1-8gb-air-open/);
   assert.match(MANIFEST, /ghost seats/i);
   assert.match(MANIFEST, /factory#60/);
   assert.match(MANIFEST, /never NAMED linux/);
