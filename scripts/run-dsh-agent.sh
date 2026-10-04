@@ -123,10 +123,23 @@ fi
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
 TASK="${1:-$DEFAULT_TASK}"
-if [ -z "$TASK" ]; then
-  echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
-  exit 2
-fi
+# Stringified-undefined guard (issue #361): a tower-minted claim can arrive
+# with the literal 9-char string "undefined" (or "null") as its task body —
+# a JS undefined stringified somewhere in the dispatch mint. `${1:-…}` only
+# guards unset/empty, so the non-empty sentinel passed through verbatim and
+# a full API-powered session burned concluding "there is no task" (claim
+# YZrTic, 2026-10-04: one throttle-wave retry slot spent on a no-op). Fail
+# fast instead, BEFORE the seat/doppler/spend: the empty-claim class
+# surfaces cheap and greppable (the tower-side tombstone classifier, issue
+# #360, keys on this message). Deliberately NOT a DEFAULT_TASK fallback —
+# a mint that lost its task text must be visible, not silently become a
+# maintenance roam.
+case "$TASK" in
+  ""|"undefined"|"null")
+    echo "error: task body resolved to '${TASK:-<empty>}' (empty-claim class, issue #361) — pass a real task as \$1 or set DEFAULT_TASK; the literal undefined/null sentinels are a stringified JS undefined from the dispatch mint, and this driver refuses to burn a session on one" >&2
+    exit 2
+    ;;
+esac
 
 # The agent always launches via `doppler run` with the service token passed
 # through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.

@@ -1592,3 +1592,60 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
   );
 });
+
+// --- 13. stringified-undefined task guard (issue #361) ---------------------
+//
+// A tower-minted claim can arrive with the literal string "undefined" (or
+// "null") as its task body — a JS undefined stringified somewhere in the
+// dispatch mint (claim YZrTic, 2026-10-04). The old `${1:-$DEFAULT_TASK}` +
+// `-z` guard only caught unset/empty, so the non-empty sentinel launched a
+// full API-powered session that spent its whole budget concluding "there is
+// no task" — during a provider throttle wave, exactly when retry slots are
+// most precious. Contract: the sentinel is refused BEFORE the doppler token
+// check, the seat mint, and every tool probe, with a typed empty-claim
+// message the tower-side tombstone classifier can key on (issue #360 names
+// this class); a real task passes the guard untouched (differential: with
+// no token the driver dies at the NEXT check, the doppler one).
+
+test("a literal undefined/null task body is refused before any launch — the empty-claim class (issue #361)", () => {
+  // No stubs needed: the guard sits before the DOPPLER_SERVICE_TOKEN check
+  // and every tool probe, so a quiet env reaches it deterministically. The
+  // retry seam is pinned anyway per the tests-lint rule (every SCRIPT spawn
+  // pins it; a stub that starts failing must degrade to instant attempts).
+  for (const sentinel of ["undefined", "null"]) {
+    const proc = spawnSync("bash", [SCRIPT, sentinel], {
+      encoding: "utf8",
+      env: { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" },
+      timeout: 30_000,
+    });
+    assert.equal(proc.status, 2, `sentinel ${sentinel} must be refused with exit 2, stderr: ${proc.stderr}`);
+    assert.match(
+      proc.stderr,
+      new RegExp(`error: task body resolved to '${sentinel}' \\(empty-claim class, issue #361\\)`),
+      `sentinel ${sentinel} must fail with the typed empty-claim error`,
+    );
+    assert.match(
+      proc.stderr,
+      /stringified JS undefined/,
+      "the message must name the mint-side cause so the tombstone classifier can key on it (issue #360)",
+    );
+  }
+
+  // Differential: a REAL task passes the guard — with no doppler token the
+  // driver then dies at the NEXT check (the token one), proving the task
+  // text itself was accepted past the seam.
+  const realEnv = { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" };
+  delete realEnv.DOPPLER_SERVICE_TOKEN;
+  const real = spawnSync("bash", [SCRIPT, "a real task body"], {
+    encoding: "utf8",
+    env: realEnv,
+    timeout: 30_000,
+  });
+  assert.equal(real.status, 2, "the no-token death stays exit 2");
+  assert.match(
+    real.stderr,
+    /DOPPLER_SERVICE_TOKEN unset/,
+    "a real task must clear the task guard and reach the token check",
+  );
+  assert.doesNotMatch(real.stderr, /empty-claim class/, "a real task must never trip the empty-claim guard");
+});
