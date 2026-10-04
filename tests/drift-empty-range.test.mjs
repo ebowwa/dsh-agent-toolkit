@@ -29,9 +29,35 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
 
+// stepBlock(name) — the text of ONE workflow step, from its `- name:`
+// line to the next step at the same indent. Pins must scope their
+// string matches to the step that OWNS the contract, never the whole
+// file: a whole-file includes is satisfied by any step's env (issue
+// #393 — the tag-step BASE pin went green on trees where only the
+// REVIEW step carried that env line).
+const stepBlock = (name) => {
+  const lines = read(".github", "workflows", "drift-check.yml").split("\n");
+  const i = lines.findIndex((l) => l.trim() === `- name: ${name}`);
+  assert.notEqual(i, -1, `step "${name}" must exist in drift-check.yml`);
+  const indent = lines[i].match(/^(\s*)-/)[1].length;
+  const out = [];
+  for (let k = i + 1; k < lines.length; k++) {
+    const l = lines[k];
+    if (l.trim() === "") { out.push(l); continue; }
+    const m = l.match(/^(\s*)-/);
+    if (m && m[1].length <= indent) break; // next step / dedent out of steps:
+    out.push(l);
+  }
+  return out.join("\n");
+};
+
 test("the tag step takes BASE from the scope step (the guard's input)", () => {
-  const wf = read(".github", "workflows", "drift-check.yml");
-  assert.ok(wf.includes("BASE: ${{ steps.scope.outputs.base }}"),
+  // SCOPED to the tag step block (issue #393): the whole-file includes
+  // this replaces was a false green — main satisfies the bare string
+  // through the REVIEW step's env (drift-check.yml:94) while the tag
+  // step receives nothing, so it never pinned the tag step at all.
+  const tag = stepBlock("Tag + release + notify (only on TAG verdicts)");
+  assert.ok(tag.includes("BASE: ${{ steps.scope.outputs.base }}"),
     "the tagging step must receive the scope step's BASE — the commit the previous release tag already names");
 });
 
@@ -76,22 +102,7 @@ test("README documents the distinct-commit release rule", () => {
 });
 
 // --- issue #385: an empty range costs ZERO agent passes -------------------
-
-const stepBlock = (name) => {
-  const lines = read(".github", "workflows", "drift-check.yml").split("\n");
-  const i = lines.findIndex((l) => l.trim() === `- name: ${name}`);
-  assert.notEqual(i, -1, `step "${name}" must exist in drift-check.yml`);
-  const indent = lines[i].match(/^(\s*)-/)[1].length;
-  const out = [];
-  for (let k = i + 1; k < lines.length; k++) {
-    const l = lines[k];
-    if (l.trim() === "") { out.push(l); continue; }
-    const m = l.match(/^(\s*)-/);
-    if (m && m[1].length <= indent) break; // next step / dedent out of steps:
-    out.push(l);
-  }
-  return out.join("\n");
-};
+// (the #385 tests below pin through the shared stepBlock helper above)
 
 test("scope emits an empty-range flag over the full propagation surface (issue #385)", () => {
   const block = stepBlock("What changed since the last tag?");
