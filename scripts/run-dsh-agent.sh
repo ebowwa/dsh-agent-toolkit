@@ -317,6 +317,36 @@ Disposition is \"executed here\" or \"filed as #N\". End with a
 filed-followups: line listing every issue number you filed. A summary
 without the parts table is an incomplete exit."
 
+# Freshness preflight (factory#840, agent-side half): agents that ship
+# themselves (tower-dispatched claims — the deterministic shipper's
+# ship-changes.sh preflight never runs on that path) get the exact
+# commands, so a stale-base PR stops minting duplicates of already-landed
+# work (#830: branched 27 commits behind, duplicated a mirror commit that
+# had landed 9 minutes before the PR head was committed, as-merge did not
+# compile). Appended UNCONDITIONALLY like the standing contract — shipped
+# self-shipper and comment-workflow agents both inherit it.
+TASK="${TASK}
+
+## Freshness preflight — re-check the base before you mint the PR (factory#840)
+
+Your clone may be HOURS behind the trunk by the time you ship; another
+agent's mirror/sibling PR may have landed your fix in that window. Before
+\`gh pr create\`, against your PR base branch BASE (the dominant branch you
+were told to open against):
+1. git fetch origin BASE   # add --unshallow first if merge-base fails below
+2. mb=\$(git merge-base HEAD origin/BASE); tip=\$(git rev-parse origin/BASE)
+3. behind=\$(git rev-list --count \$mb..\$tip) — if behind > 0:
+   git rebase origin/BASE   # then re-run your TARGETED gates before shipping
+4. Same-scope check (even when behind == 0):
+   comm -12 <(git diff --name-only \$mb \$tip | sort) <(git diff --name-only origin/BASE...HEAD | sort)
+   — non-empty means a base commit since your branch point touched files you
+   also touch. Read those commits: if one already carries your fix, DO NOT
+   ship a duplicate — adopt the landed PR as vehicle of record and post the
+   empty-scope disposition instead.
+A shipped PR whose merge-base is stale past a same-scope landing reads as a
+duplicate and its as-merge tree may not compile; the rebase is cheap, the
+wasted review round is not."
+
 # Comment-agent-toolkit mode: the workflow posts the reply itself (as github-actions[bot]
 # via GITHUB_TOKEN), so the agent must NOT comment. It may still push commits
 # and open PRs; author commits as the bot so attribution is not the runner user.
