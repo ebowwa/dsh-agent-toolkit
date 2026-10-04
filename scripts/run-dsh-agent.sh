@@ -122,7 +122,26 @@ fi
 # config/fleet-priority.md is the authoritative tier file.
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
-TASK="${1:-$DEFAULT_TASK}"
+TASK="${1:-}"
+# Nullish-stringification guard (issue #361): the dispatch mint can lose a
+# claim's task text and stringify a JS undefined/null into the argv slot —
+# observed 2026-10-04 as the literal 9-char string `undefined` riding
+# `bash run-dsh-agent.sh "$DSH_TASK"`, where `${1:-…}` only guards
+# unset/empty and the garbage passed through verbatim: a full API-powered
+# session burned (one of the throttle wave's precious retry slots) to
+# conclude "there is no task". These literals are never legitimate task
+# text — fail fast, classified, BEFORE the agent spawn and its retry
+# ladder, and never fall through to the DEFAULT_TASK maintenance roam (a
+# mint that lost its task text must surface, not silently become a roam —
+# the boot tombstone's exit code plus the class token below make this
+# death greppable, the #360 corollary).
+case "$TASK" in
+  "undefined"|"null")
+    echo "::error::task argument is the literal string \"$TASK\" — the dispatch mint stringified a JS $TASK and the claim's task text never arrived (class: task-body-stringified-nullish, issue #361); refusing to launch a no-op session" >&2
+    exit 2
+    ;;
+esac
+TASK="${TASK:-$DEFAULT_TASK}"
 if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
