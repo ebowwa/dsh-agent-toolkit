@@ -24,7 +24,7 @@ test("the filing checklist carries the filer-stamps rule (filer sets the chain m
   assert.match(agents, /## Standing contract: chain\/sweep milestones \(issue #185\)/);
 
   const contributing = read("CONTRIBUTING.md");
-  assert.match(contributing, /5\. \*\*Stamp the chain\/sweep milestone\*\* \(issue #185\)/);
+  assert.match(contributing, /6\. \*\*Stamp the chain\/sweep milestone\*\* \(issue #185\)/);
   assert.match(contributing, /gh issue edit N --repo R --milestone "chain-anchor"/);
 });
 

@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { preserveUnknownRoutes, isPlainObject } from "../scripts/settings-normalize.mjs";
+import { preserveUnknownRoutes, normalizeWritePreserving, isPlainObject } from "../scripts/settings-normalize.mjs";
 import { checkLaneSettings, laneSettingsPath } from "../scripts/lane-settings-guard.mjs";
 import { resolveYaml, runWrite, stampModel } from "../scripts/settings-write.mjs";
 
@@ -121,6 +121,110 @@ describe("settings-normalize — preserve unknown/nested provider routes (FleetT
     const once = preserveUnknownRoutes(rc7StyleNormalizer(USER_SETTINGS), USER_SETTINGS);
     const twice = preserveUnknownRoutes(rc7StyleNormalizer(once), once);
     assert.equal(canonical(twice), canonical(once));
+  });
+});
+
+// ── 1b. issue #330: keys named like Object.prototype members ────────
+// The preserve loop's membership test must be an OWN-key test. `key in
+// out` consults the prototype chain, so a user key named `constructor`,
+// `toString`, `hasOwnProperty`, … read as "the normalizer set it", were
+// never copied, and silently dropped from the written file (Object
+// entries/stringify only ever see OWN keys). The module contract says
+// EVERY original key the normalizer did not set, at ANY depth, rides
+// through untouched — a route literally named `toString` is a legal
+// YAML settings shape and must survive a normalize-write. Same-class
+// pins ported from the tower fix (FleetTower PR #903, issue #791).
+describe("settings-normalize — prototype-named keys survive (issue #330, the FleetTower #791 class)", () => {
+  test("TOP-LEVEL keys named like Object.prototype members carry through (the issue repro)", () => {
+    const normalized = { model: "glm-5.3", providers: { zai: {} } };
+    const original = {
+      constructor: "user-value",
+      toString: { api: "https://x", pin: "secret-pin" },
+      hasOwnProperty: 7,
+      valueOf: null,
+      myRoute: { keep: true },
+    };
+    const merged = preserveUnknownRoutes(normalized, original);
+    assert.equal(merged.constructor, "user-value");
+    assert.equal(canonical(merged.toString), canonical(original.toString));
+    assert.equal(merged.hasOwnProperty, 7);
+    assert.equal(merged.valueOf, null);
+    assert.equal(canonical(merged.myRoute), canonical(original.myRoute));
+    // they are OWN keys now (they serialize; inherited ones never do)
+    for (const k of ["constructor", "toString", "hasOwnProperty", "valueOf", "myRoute"]) {
+      assert.equal(Object.hasOwn(merged, k), true);
+    }
+    // the normalizer's own keys still stand
+    assert.equal(merged.model, "glm-5.3");
+    assert.equal(Object.hasOwn(merged.providers, "zai"), true);
+  });
+
+  test("a key the normalizer SET wins even when prototype-named — own-set beats prototype-consult, not the user", () => {
+    const normalized = { toString: { set: "by-normalizer" } };
+    const original = { toString: { set: "by-user", extra: true } };
+    const merged = preserveUnknownRoutes(normalized, original);
+    // both sides are plain objects → merge-preserve recurses; the
+    // normalizer's own `set` wins, the user's unknown `extra` survives
+    assert.equal(merged.toString.set, "by-normalizer");
+    assert.equal(merged.toString.extra, true);
+  });
+
+  test("NESTED route named `toString` and field named `constructor` ride through at depth and inside route arrays", () => {
+    const normalized = {
+      providers: {
+        "opencode-go": {
+          type: "openai",
+          routes: { "kimi-k2": { model: "kimi-k2" } },
+        },
+      },
+      chain: [{ id: "keep-me", note: "set" }],
+    };
+    const original = {
+      providers: {
+        "opencode-go": {
+          routes: {
+            // a route LITERALLY named toString — legal YAML key
+            toString: { model: "user-model", credential: "pin:proto" },
+            "kimi-k2": { context: 131072 },
+          },
+        },
+      },
+      chain: [{ id: "user-entry", constructor: "entry-field" }],
+    };
+    const merged = preserveUnknownRoutes(normalized, original);
+    // the toString route is restored verbatim at full depth
+    assert.equal(canonical(merged.providers["opencode-go"].routes.toString), canonical(original.providers["opencode-go"].routes.toString));
+    // shared route merge-preserve still works beside it
+    assert.equal(merged.providers["opencode-go"].routes["kimi-k2"].context, 131072);
+    // array entries carrying a prototype-named FIELD keep it
+    const userEntry = merged.chain.find((e) => e && e.id === "user-entry");
+    assert.equal(userEntry.constructor, "entry-field");
+  });
+
+  test("ROUND-TRIP through YAML on disk: a settings file with prototype-named keys keeps them", { skip: !resolveYaml() && "no YAML runtime resolvable on this box" }, () => {
+    const yaml = resolveYaml();
+    const { home, settings } = tmpHome("protokeys");
+    const onDisk = {
+      model: "glm-5.3-flash",
+      constructor: "user-value",
+      providers: {
+        "opencode-go": { routes: { toString: { model: "user-model", credential: "pin:proto" } } },
+      },
+    };
+    writeFileSync(settings, yaml.stringify(onDisk), { mode: 0o600 });
+    // a FRESH-object normalizer (the real driver path: settings-write
+    // returns the stamped template, never a spread of current) — the
+    // pin must be red on the prototype-consulting membership test
+    normalizeWritePreserving(settings, () => ({ model: "glm-5.3-flash", session: { defaultAgent: "dsh" } }), {
+      parse: yaml.parse,
+      stringify: yaml.stringify,
+    });
+    const after = yaml.parse(readFileSync(settings, "utf8"));
+    assert.equal(after.constructor, "user-value");
+    assert.equal(canonical(after.providers["opencode-go"].routes.toString), canonical(onDisk.providers["opencode-go"].routes.toString));
+    // no temp litter beside the file
+    assert.equal(readdirSync(path.dirname(settings)).filter((f) => f.includes(".normalize-")).length, 0);
+    rmSync(home, { recursive: true, force: true });
   });
 });
 

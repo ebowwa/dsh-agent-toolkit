@@ -25,8 +25,10 @@ The gauge repo's default branch is **`master`**.
 
 **4. The update path is AUTOMATIC for installed copies** — Sparkle reads `SUFeedURL` (`https://secondsee.com/downloads/gauge/appcast.xml`) and offers/installs the update. No manual install needed for end users of an already-installed Gauge.app. For a fresh or manual install:
 ```bash
-curl -sL "https://secondsee.com/downloads/gauge/Gauge-<VER>.dmg" -o /tmp/g.dmg
-hdiutil attach /tmp/g.dmg -nobrowse -mountpoint /Volumes/G && cp -R /Volumes/G/Gauge.app /Applications/ && hdiutil detach /Volumes/G
+stage="$(mktemp -d "${TMPDIR:-/tmp}/dsh-gauge-app-release-XXXXXX")"   # per-run staging (issue #346) — a fixed /tmp/g.dmg is clobbered by a same-box sibling running this same fence
+curl -sL "https://secondsee.com/downloads/gauge/Gauge-<VER>.dmg" -o "$stage/g.dmg"
+hdiutil attach "$stage/g.dmg" -nobrowse -mountpoint "$stage/G" && cp -R "$stage/G/Gauge.app" /Applications/ && hdiutil detach "$stage/G"   # the mountpoint rides the stage — /Volumes/G is exactly as shared as /tmp
+rm -rf "$stage"   # cleanup rule: only the path this session minted (after detach)
 ```
 
 **5. Verify:** the run green (`gh run list -R ebowwa/gauge --workflow release`), the appcast's enclosure URL live (curl it), and on the mini after the Sparkle update lands: `plutil -extract CFBundleShortVersionString raw /Applications/Gauge.app/Contents/Info.plist` + a sustained `ps aux | grep Gauge` CPU read.

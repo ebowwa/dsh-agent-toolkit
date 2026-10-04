@@ -32,7 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,4 +308,34 @@ test("unusable invocation is a loud usage error", () => {
   const r = runTool([]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: tests-lint\.mjs/);
+});
+
+test("the CLI still lints through a symlinked argv (issue #324, the #302 class)", () => {
+  // Node resolves the main entry's symlinks for import.meta.url, but
+  // process.argv[1] stays as invoked. The pre-#324 guard compared the
+  // two raw (`import.meta.url === \`file://${process.argv[1]}\``), so
+  // spawning this linter through a symlink — or any aliased path, e.g.
+  // macOS /tmp → /private/tmp — made the CLI block never run: an
+  // unreadable corpus, exit 0, zero output, every rule skipped. A
+  // false green on the linter itself; a wrapper reaching the tool via
+  // a symlinked path green-skips the whole PATH/driver-spawn rule
+  // surface. Revert the realpath guard and the leg below goes red
+  // (observed on pristine main @ 3da299e: symlinked exit 0 silent,
+  // direct exit 1 with the read error).
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-lint-symlink-"));
+  try {
+    const link = path.join(dir, "tests-lint-link.mjs");
+    symlinkSync(TOOL, link);
+    const r = spawnSync(process.execPath, [link, path.join(dir, "no-such.test.mjs")], {
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+    assert.match(r.stderr, /cannot read/, "the CLI block must RUN through the symlink");
+    // direct invocation is unchanged
+    const direct = runTool([path.join(dir, "no-such.test.mjs")]);
+    assert.equal(direct.status, 1);
+    assert.match(direct.stderr, /cannot read/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

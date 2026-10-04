@@ -31,6 +31,7 @@ Two execution modes:
 | `.github/workflows/agent-dispatch.yml` | LEGACY manual/scheduled task entry |
 | `.github/workflows/drift-check.yml` | self-reviewing release agent: reviews its own main-branch diff, tags + releases only on an approved verdict (TAG / TAG-WITH-FINDINGS), advances the moving `@v1` pin, then notifies `DSH_BOT_CONSUMERS` (repo variable: comma/space-separated `owner/repo` list) via `repository_dispatch` — each consumer opens its own bump PR |
 | `scripts/dsh-worker.sh` | the out-of-band worker: poll → claim (label) → run driver → ship → reply → review (see docs/decoupled-worker.md) |
+| `scripts/install-worker.sh` | one-shot, IDEMPOTENT worker deployment for a factory box — `deploy-worker.yml` calls it ON the box (the self-register-factory pattern: a workflow may install a persistent per-user service; the keepalive needs no sudo): the toolkit checkout, the 0600 env file at `$DSH_WORKER_HOME/env` (the ONLY place credentials ever land — never the cron line, never the log), and the per-minute cron keepalive that re-pins the toolkit to the moving `v1` tag — the audited-release pin drift-check advances, so the worker's code updates itself only through the repo's own release gate; pinned by `tests/install-worker.test.mjs` |
 | `scripts/dep-cache.sh` | per-repo node_modules cache keyed on the lockfile hash, restored into the claim checkout after the worker's checkout (best-effort; issue #189) |
 | `scripts/install-plugin-smoke-deps.mjs` | the plugin smoke-test dependency installer, called by gates.yml: computes the peer closure IN PROCESS against registry metadata and installs the resolved union ONCE (`--no-save --no-package-lock`), then verifies the tree — packages present, peers resolved, `@local` links intact — failing loudly before the suite; an already-converged tree skips npm entirely. Replaces the old per-round npm loop that oscillated on bare checkouts (issue #161); pinned by `tests/plugin-smoke-deps.test.mjs` + `tests/gates-plugin-deps.test.mjs` |
 | `scripts/ship-changes.sh` | deterministic shipper, shared by the legacy workflow AND the worker (never trust the model to push) |
@@ -48,6 +49,9 @@ Two execution modes:
 | `plugins/dsh-session-id/` | chat-header copy button for the active session id (full `session-<uuid>` form) — pure browser feature over the `conversation.session.header.utilities` slot; stub host half exists only to make the patch row mountable |
 | `plugins/dsh-queue-priority/` | full queue control for a chat's pending prompts from the web UI — cookie-authed host route: move (ONE durable adjacent swap on the next-turn inbox, `agent/inbox/spliced`), plus stock-mirroring delete / edit / steer and fork (duplicate in place) + a dock panel under the composer with per-row action buttons |
 | `plugins/dsh-stream-watchdog/` | stalled-stream recovery for the LLM layer — wraps the outermost `llm/stream` waterfall with a per-chunk idle timer; a stream that opens and goes silent (the "chat randomly stopped mid turn" failure: nothing in the stack idle-times-out, and the retry policy only fires on a thrown failure) is closed and reclassified as the retryable `TIMEOUT` finish chunk, so `dsh-llm-retry` re-issues the step with its own backoff instead of the turn hanging forever |
+| `scripts/sync-lane-plugins.sh` | keepalive-side half of the plugin delegation system: materializes the CANONICAL per-box copies of every external source declared in `config/lane-plugins.json`, at the manifest's PINNED ref — runs right after the `v1` tag checkout, so pins advance on tag bump; `--verify` checks state without mutating (keepalives run it `|| true`: loud, never blocking). Division of labor: THIS clones, the consult mounts — nothing here touches a lane home |
+| `scripts/lane-plugins-consult.py` | spawn-side half of the plugin delegation system: `run-dsh-agent.sh` calls it immediately before the native web seam to read `config/lane-plugins.json` and emit tab-separated directives (ENV / PATCH / SKIP). Every gate fails SAFE — platform mismatch, node-glob mismatch, missing canonical copy, or missing package is a loud SKIP and the run proceeds without that plugin; a `require_probe` row without `probe_port` is itself a gate failure (loud SKIP, issue #256), never a mid-loop crash; pinned by `tests/lane-plugins.test.mjs` |
+| `scripts/local-fleet-audit.sh` | the LOCAL plane of any occupancy audit (the air-native-linux incident): live dsh/node participant processes, service managers (launchd, systemd --user, cron), and dsh/node filesystem artifacts ON the machine it runs on — not just GitHub. Report-only: findings print loudly, exit stays 0 (an audit that fails CI teaches people to stop running it); run it on any machine that might be participating — laptops included; pinned by `tests/local-fleet-audit.test.mjs` |
 | `scripts/scrub-output.mjs` | redaction (creds/PII/SSH keys in both directions; IP/host/path/date on outputs — dates KEPT in GitHub-bound text via `DSH_SCRUB_KEEP_DATES=1`, selected by the transport shims) |
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git (KEEP_DATES: authored prose carries dates; redacting at POST corrupts the stored body). Fail-closed (REVIEW.md): a scrubber failure aborts the invocation — the real binary is never exec'd with unscrubbed text. Both shims run the real binary as a child and unlink every scrubbed temp the moment it's done (issue #154 for gh's `*-file` calls, issue #180 for git's `-F`/`--file=`/`-F -` commit messages: the old `exec` tail leaked a post-scrub copy into TMPDIR on every path, success or failure); pinned by `tests/scrub-shims.test.mjs` |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
@@ -75,6 +79,15 @@ node --test tests/*.test.mjs
 Do NOT use the directory form (`node --test tests/`) — under Node 26 it
 fails with `MODULE_NOT_FOUND` before running anything.
 
+The glob form skips the plugin smoke suites (`plugins/*/test/smoke.mjs`)
+that CI's bare `node --test` also runs — after touching `plugins/`, use
+the parity form instead (the smoke suites need their deps first:
+`node scripts/install-plugin-smoke-deps.mjs` once on a bare checkout):
+
+```bash
+node --test tests/*.test.mjs plugins/*/test/smoke.mjs
+```
+
 ## Adopting (consumer repo)
 
 **Decoupled (recommended):** copy `examples/dsh-agent-thin.yml` into
@@ -97,6 +110,24 @@ drift-check advances `v1` to each new release it tags. There is no bare
 (issue #38) — `v` is retired. Scrubber/security fixes land as minors and
 reach consumers only through a drift-check bump PR merged by each repo's
 own gates + review — the audit gate. Nothing propagates silently.
+
+### Tag re-pointing (the convention, issue #231)
+
+A published `vX.Y.Z` release tag is only ever moved by one mechanism, and
+never by this repo: the CONSUMER's bump workflow (ebowwa/factory
+`dsh-agent-toolkit-bump.yml`, `tagsync` job) re-points the tag named in its
+merged bump-PR title to this repo's then-current main head, so the tag is
+the tree the consumer's gates reviewed. Because bump PRs can merge OUT OF
+ORDER, that move can drag an older published tag forward onto a newer
+release's commit — v1.97.0 and v1.98.0 both landed on 47a4f683 this way,
+making the `v1.97.0..v1.98.0` range empty while its release notes described
+real content. Consequences consumers must expect: (1) a per-tag range
+between two adjacent releases can be EMPTY even though both release notes
+describe content — diff `vA..vB` yourself before trusting the notes;
+(2) drift-check itself never moves or re-cuts a published tag (the
+tag-collision fence refuses a pre-existing `$NEXT`) and refuses to cut a
+release at all when its scoped diff is empty (the empty-range guard, pinned
+by `tests/drift-empty-range.test.mjs`).
 
 ## Local web search + fetch (per-cell, default off)
 
