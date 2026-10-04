@@ -128,7 +128,10 @@ describe content — diff `vA..vB` yourself before trusting the notes;
 (2) drift-check itself never moves or re-cuts a published tag (the
 tag-collision fence refuses a pre-existing `$NEXT`) and refuses to cut a
 release at all when its scoped diff is empty (the empty-range guard, pinned
-by `tests/drift-empty-range.test.mjs`).
+by `tests/drift-empty-range.test.mjs`) — enforced twice: the scope step's
+empty flag skips the run green before any agent pass, and the tag step's
+HEAD==BASE belt skips the release green when HEAD still names the commit
+BASE already names. A release tag always names a NEW commit.
 
 ## Local web search + fetch (per-cell, default off)
 

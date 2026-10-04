@@ -77,6 +77,47 @@ test("the tag step refuses to move or re-cut an already-published tag (issue #23
   );
 });
 
+test("the tag step takes BASE from the scope step — SCOPED to the tag step block (issue #393)", () => {
+  // Issue #393: the pin this replaces asserted the env line over the WHOLE
+  // workflow file, and main satisfied it through the REVIEW step's env
+  // while the tag step received nothing — a false green that only looked
+  // alive because a sibling test carried the real red. The assert below
+  // lives INSIDE the tag step block, so deleting the tag step's env line
+  // goes red here no matter what any other step carries.
+  const tag = runBlock("Tag + release + notify (only on TAG verdicts)");
+  assert.ok(
+    tag.includes("BASE: ${{ steps.scope.outputs.base }}"),
+    "the tagging step itself must receive the scope step's BASE — the commit the previous release tag already names",
+  );
+  // The belt that consumes it: HEAD and BASE peel to commits, and a
+  // HEAD==BASE collapse skips green BEFORE the tag is minted — a guard
+  // after the push is a post-mortem.
+  assert.ok(tag.includes('HEAD_C="$(git rev-parse "HEAD^{commit}")"'),
+    "the belt must resolve HEAD to a commit");
+  assert.ok(tag.includes('BASE_C="$(git rev-parse "${BASE}^{commit}")"'),
+    "the belt must resolve BASE (the previous release tag) to a commit");
+  const equality = tag.indexOf('if [ "$HEAD_C" = "$BASE_C" ]; then');
+  const skip = tag.indexOf("empty release range:");
+  const exit0 = tag.indexOf("exit 0", equality);
+  const fence = tag.indexOf("refusing to move or re-cut a published tag");
+  const mint = tag.indexOf('git tag "$NEXT"');
+  assert.ok(equality !== -1 && skip > equality && exit0 > skip,
+    "an empty tag-time range must announce itself loudly and exit green — a nothing-to-release is not a failure");
+  assert.ok(fence !== -1 && fence < equality,
+    "the collision fence keeps priority over the belt — wrong numbering stays red even when the range collapses");
+  assert.ok(mint > exit0,
+    "the HEAD==BASE belt must run BEFORE the tag is minted");
+});
+
+test("the BASE env pin is not satisfiable by one step alone (the #393 false-green shape)", () => {
+  // The review step carries the same env line for its own scope echo. The
+  // false green died by needing BOTH: one hit inside the review step and
+  // one inside the tag step — a whole-file count of 1 can never be green.
+  const hits = [...wf.matchAll(/BASE: \$\{\{ steps\.scope\.outputs\.base \}\}/g)].length;
+  assert.ok(hits >= 2,
+    "both the review and the tag step must carry the scope step's BASE (got " + hits + " hits)");
+});
+
 test("README documents the tag re-pointing convention", () => {
   const readme = readFileSync(path.join(ROOT, "README.md"), "utf8");
   assert.match(readme, /### Tag re-pointing/, "README must document the re-point convention");

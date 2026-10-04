@@ -165,6 +165,13 @@ jobs:
           DSH_AGENT_TOOLKIT_CONSUMERS: ${{ vars.DSH_AGENT_TOOLKIT_CONSUMERS }}
           NEXT: ${{ steps.scope.outputs.next }}
           MOVING: ${{ steps.scope.outputs.moving }}
+          # BASE is the tag step's own copy of the scope step's base — the
+          # commit the previous release tag already names, and the input the
+          # HEAD==BASE belt below peels. The scoped pin
+          # (tests/drift-empty-range.test.mjs, issue #393) asserts this line
+          # INSIDE this step block: the whole-file match it replaces was a
+          # false green satisfied by the review step's env alone.
+          BASE: ${{ steps.scope.outputs.base }}
           VERDICT: ${{ env.VERDICT }}
         run: |
           set -euo pipefail
@@ -181,6 +188,20 @@ jobs:
           if git rev-parse -q --verify "refs/tags/$NEXT" >/dev/null; then
             echo "::error::$NEXT already exists — refusing to move or re-cut a published tag (issue #231)"
             exit 1
+          fi
+          # HEAD==BASE belt (issue #231 residual, the tag-time half): a
+          # published release tag always names a NEW commit. The scope step's
+          # empty flag already skips the step green on a scope-time-empty
+          # range; this belt covers the tag-time collapse — if HEAD peels to
+          # the commit BASE already names, there is nothing to release, so
+          # skip GREEN (no tag, no release, no consumer fan-out) instead of
+          # minting a release whose range does not exist. The collision
+          # fence above keeps priority: numbering that is wrong stays red.
+          HEAD_C="$(git rev-parse "HEAD^{commit}")"
+          BASE_C="$(git rev-parse "${BASE}^{commit}")"
+          if [ "$HEAD_C" = "$BASE_C" ]; then
+            echo "empty release range: $BASE already names $HEAD_C — nothing to tag for $NEXT (issue #231)"
+            exit 0
           fi
           git tag "$NEXT"
           git push origin "$NEXT"
