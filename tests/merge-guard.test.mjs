@@ -110,18 +110,25 @@ const runGuard = (t, mode, args, { legs = [], env = {} } = {}) => {
 const runShim = (t, argv, { legs = [], guardEnv = {} } = {}) => {
   const dir = fixture(t);
   setLegs(dir, legs);
+  const env = {
+    ...process.env,
+    GH_SCRUB_REAL: path.join(dir, "gh"),
+    SCRUB_SCRIPT: SCRUB,
+    MG_STUB_DIR: dir,
+    GH_MERGE_GUARD_SCRIPT: GUARD,
+    TMPDIR: dir,
+  };
+  // "GH_MERGE_GUARD unset" must mean unset (issue #479): this helper spreads
+  // process.env, so on a lane that exports GH_MERGE_GUARD=on the ambient arm
+  // rode through the spread and the unset leg took the armed branch — green
+  // on a dev box, red on any armed lane (the env-construction flavor of the
+  // REVIEW.md lane-leak class). Delete BEFORE the guardEnv spread so an
+  // armed test still overrides the arm deliberately.
+  delete env.GH_MERGE_GUARD;
   const res = spawnSync("bash", [SHIM, ...argv], {
     encoding: "utf8",
     cwd: dir,
-    env: {
-      ...process.env,
-      GH_SCRUB_REAL: path.join(dir, "gh"),
-      SCRUB_SCRIPT: SCRUB,
-      MG_STUB_DIR: dir,
-      GH_MERGE_GUARD_SCRIPT: GUARD,
-      TMPDIR: dir,
-      ...guardEnv,
-    },
+    env: { ...env, ...guardEnv },
   });
   return { res, dir };
 };
@@ -311,6 +318,23 @@ test("shim: GH_MERGE_GUARD unset keeps the legacy behavior (loud INACTIVE note)"
   assert.equal(res.status, 0, `the unarmed shim must not change legacy behavior (stderr: ${res.stderr})`);
   assert.match(res.stderr, /merge guard INACTIVE/);
   assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+});
+
+test("shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issue #479 pin)", (t) => {
+  // The #479 defect is invisible on a clean dev box: the unset leg above is
+  // only red where the lane itself exports GH_MERGE_GUARD=on. This pin arms
+  // the lane INSIDE this process so the hermeticity of the harness env is
+  // graded everywhere — without the delete-before-spread fix in runShim this
+  // leg takes the armed branch and refuses, on any machine.
+  process.env.GH_MERGE_GUARD = "on";
+  try {
+    const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], { guardEnv: {} });
+    assert.equal(res.status, 0, `the harness 'unset' must beat the ambient arm (stderr: ${res.stderr})`);
+    assert.match(res.stderr, /merge guard INACTIVE/);
+    assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+  } finally {
+    delete process.env.GH_MERGE_GUARD;
+  }
 });
 
 test("shim: the guard hook only arms on the merge verb", (t) => {
