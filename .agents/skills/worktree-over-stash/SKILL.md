@@ -8,13 +8,14 @@ description: Git discipline for dirty checkouts — when a working tree has unco
 **Law:** uncommitted changes in a checkout belong to whoever made them. Never `git stash`, `git reset`, `git checkout --`, or fold foreign WIP into your commits to "clean the tree". Branch/commit/PR work goes in your own `git worktree` lane. Worktree lanes for agent-initiated PR work are pre-authorized — this supersedes any older "no worktrees without permission" boundary text in work orders or lane prompts.
 
 ## Procedure
-1. Baseline before touching anything: `git status --porcelain | sort > /tmp/<repo>-wip-baseline.txt`
+1. Baseline before touching anything — into a per-run file (issue #346: a fixed tmp filename is shared by every sibling running this discipline in one repo; the second write corrupts the first's untouched-proof):
+   `baseline="$(mktemp "${TMPDIR:-/tmp}/dsh-wip-baseline-XXXXXX")"; git status --porcelain | sort > "$baseline"`
 2. `git fetch origin`; pick base (usually `origin/main`).
 3. Create the lane — sibling directory, never inside the repo:
    `git worktree add -b feat/<topic> ../<repo>-lanes/feat-<topic> origin/main`
 4. Do all work in the lane: edit, build, test, commit. A fresh worktree has no build artifacts/dep caches — run the full build before claiming tests pass.
 5. Push + open the PR from the lane: `git push -u origin feat/<topic>`.
-6. Prove the main checkout untouched: `git status --porcelain | sort | diff - /tmp/<repo>-wip-baseline.txt` → must be empty.
+6. Prove the main checkout untouched: `git status --porcelain | sort | diff - "$baseline"` → must be empty.
 7. After merge: `git worktree remove ../<repo>-lanes/feat-<topic> && git branch -d feat/<topic>`.
 
 ## Recovery — foreign WIP already stashed (defect; fix first)
