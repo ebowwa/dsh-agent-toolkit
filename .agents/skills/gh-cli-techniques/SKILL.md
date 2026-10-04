@@ -36,7 +36,7 @@ git config --local --unset-all http.https://github.com/.extraheader
 ## Clone/fetch discipline for CI-scale repos
 
 ```bash
-git clone --depth 5 --branch <dominant> <url>     # 5-deep covers the parent check
+git clone --depth 5 --branch <dominant> <url> "$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"   # unique workdir (issue #333); 5-deep covers the parent check
 git fetch --depth=1 origin <branch>               # refresh one branch cheaply
 ```
 Full clones of big repos can time out; depth is almost always enough (you need parent + head, not history).

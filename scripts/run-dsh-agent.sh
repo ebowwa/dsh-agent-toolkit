@@ -372,6 +372,26 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir hygiene (issue #333) -------------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): no two
+# same-box agents share a throwaway checkout path. The observed loss class
+# (claim #302, 2026-10-04): a sibling's `rm -rf /tmp/<repo> && gh repo
+# clone` re-cloned OVER an in-flight worktree — the loser's uncommitted
+# branch died with zero signal (single-entry `clone:` reflog stamped
+# 02:25:39 over an edited tree). /tmp is host-global on the shared lane
+# boxes and the bare path carries no session/claim identity. Static
+# repo-controlled prose, appended after the input scrub pass and after
+# the branch-hygiene block, before the launch line below. Long-form
+# reference + receipts: .agents/README.md; fixtures:
+# tests/workdir-hygiene-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir hygiene (issue #333): a checkout path you did not mint is not yours — never rm -rf it, never clone over it. Same-box siblings race the SAME predictable throwaway paths; the loser loses uncommitted work with zero signal.
+1. MINT A UNIQUE WORKDIR PER CLAIM — clone into a path only this session can own: workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\" && gh repo clone <owner>/<repo> \"\$workdir\". The XXXXXX suffix is the point — /tmp is host-global and a predictable /tmp/<repo> is a collision, not a default.
+2. NEVER THE SHARED-PATH CLONE RECIPE — rm -rf /tmp/<repo> && gh repo clone ... is BANNED: the rm -rf is a destructive precondition on a path another in-flight sibling may be working in. Re-entering your OWN earlier workdir is fine; assuming nobody else is in a predictable one is not.
+3. CLEAN UP ONLY WHAT YOU MINTED — rm -rf only paths THIS session created (your mktemp workdir); leave shared checkouts, lane checkouts, and every path you did not mint alone.
+Acceptance — structural, not probabilistic: two same-box agents working the same repo can never collide on a checkout path, because neither ever names a path the other could predict."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).

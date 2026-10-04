@@ -221,6 +221,47 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir hygiene (issue #333)
+
+**A checkout path you did not mint is not yours.** Concurrent fleet agents
+on one box clone their claim repos into throwaway paths; a predictable
+shared path (`/tmp/<repo>`) plus the `rm -rf /tmp/<repo> && gh repo
+clone` recipe is a worktree-destruction mechanism. A sibling starting the
+same claim later re-clones OVER the earlier one's in-flight worktree —
+silently. Receipt (claim #302, 2026-10-04): the loser's clone carried a
+single-entry `clone:` reflog stamped 02:25:39 over an edited tree whose
+branch was never pushed; the work the session had just tested was gone
+with zero signal. `/tmp` is host-global across every agent on the box,
+and the bare path carries no session/claim identity — same silent-loss
+class as #276 (worker re-pin resets the live checkout), sibling-clone
+trigger.
+
+1. **MINT A UNIQUE WORKDIR PER CLAIM** — clone into a path only this
+   session can own:
+
+   ```bash
+   workdir="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"
+   gh repo clone <owner>/<repo> "$workdir"
+   ```
+
+   The `XXXXXX` suffix is the point: a predictable `/tmp/<repo>` is a
+   collision, not a default.
+2. **NEVER THE SHARED-PATH CLONE RECIPE** — `rm -rf /tmp/<repo> && gh
+   repo clone ...` is banned. The `rm -rf` is a destructive precondition
+   on a path another in-flight sibling may be working in. Re-entering
+   your own earlier workdir is fine; assuming nobody else is in a
+   predictable one is not.
+3. **CLEAN UP ONLY WHAT YOU MINTED** — `rm -rf` only paths this session
+   created (your `mktemp` workdir). Leave shared checkouts, lane
+   checkouts, and every path you did not mint alone.
+
+**Acceptance — structural, not probabilistic:** two same-box agents
+working the same repo can never collide on a checkout path, because
+neither ever names a path the other could predict. The conduct corpus
+(`.agents/skills/`) teaches unique paths only. The prompt assembly stamps
+this contract into every task it builds (structural + behavioral +
+corpus pins: `tests/workdir-hygiene-contract.test.mjs`).
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +294,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-hygiene-contract.test.mjs` — pins the workdir-hygiene
+  driver block (placement + the mint/ban/cleanup rules) and keeps the
+  `.agents/skills/` corpus free of shared-path clone recipes (issue #333).
