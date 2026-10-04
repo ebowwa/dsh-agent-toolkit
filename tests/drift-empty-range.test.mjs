@@ -99,3 +99,67 @@ test("no step name trips the gates' plain-scalar sub-checks (the PR 234 review f
     );
   }
 });
+
+// --- Zero-agent-pass hardening (issue #385, regenerating PR #396) ---
+//
+// The pins above prove the gates EXIST. The pins below prove they sit in
+// the shape that makes an empty range cost ZERO agent passes — the three
+// regression modes the existence pins do not catch:
+//   a. the emptiness probe moved out of its `if` — `git diff --quiet`
+//      exits 1 on a NON-empty diff, so a bare probe fails the scope step
+//      under `set -euo pipefail` and every NORMAL release reds before
+//      review;
+//   b. the review gate demoted from a step-level `if:` to an in-script
+//      early exit — the step boots (doppler probe, bash, the agent
+//      invocation itself) before discovering the range is empty: a
+//      cheaper pass, not zero passes;
+//   c. the loud line dropped — a silent green skip is unattributable.
+
+test("the emptiness probe rides the if — bare, its exit 1 reds every normal release", () => {
+  const scope = runBlock("What changed since the last tag?");
+  const probeLines = scope.split("\n").filter((l) => l.includes("git diff --quiet"));
+  assert.equal(probeLines.length, 1,
+    "exactly one emptiness probe — more is drift between the flag and the diff it describes");
+  assert.match(
+    probeLines[0],
+    /^\s*if git diff --quiet/,
+    "the probe must be the if-condition: `git diff --quiet` exits 1 on a NON-empty diff, so a bare probe fails the scope step under set -euo pipefail and every normal release reds before review",
+  );
+});
+
+test("the empty-range skip is loud — a ::warning:: annotation, not a silent green", () => {
+  const scope = runBlock("What changed since the last tag?");
+  const afterMark = scope.split("::warning::")[1] ?? "";
+  assert.ok(
+    scope.includes("::warning::") && /[Ee]mpty/.test(afterMark),
+    "the empty-range skip must announce itself as a ::warning:: annotation naming the emptiness — a silent skip is an unattributable green",
+  );
+});
+
+test("the review gate is a step-level if: — an empty range costs ZERO agent passes (issue #385)", () => {
+  const review = runBlock("Agent reviews its own diff (release gate)");
+  const ifPos = review.indexOf("if: steps.scope.outputs.empty != 'true'");
+  assert.ok(ifPos >= 0, "the review step must carry the empty-range gate");
+  const runPos = review.indexOf("run: |");
+  assert.ok(runPos > ifPos,
+    "the if must gate the STEP (before the run block): an in-script early exit still boots the step — doppler probe, bash, and the agent invocation — and pays for a pass the range never needed; the acceptance is ZERO agent passes, not a cheaper pass");
+  assert.ok(review.includes("run-dsh-agent.sh"),
+    "the agent invocation must survive for the non-empty case — the gate skips, it does not remove");
+});
+
+test("ordering: the flag exists before the review gate, and the agent runs only past it", () => {
+  const scopeId = wf.indexOf("id: scope");
+  const emptyOut = wf.indexOf('echo "empty=true" >> "$GITHUB_OUTPUT"');
+  const reviewIf = wf.indexOf("if: steps.scope.outputs.empty != 'true'");
+  const agent = wf.indexOf("run-dsh-agent.sh");
+  assert.ok(scopeId >= 0 && emptyOut > scopeId,
+    "the empty flag must be computed inside the scope step (id: scope) — before any agent pass");
+  assert.ok(reviewIf > emptyOut && agent > reviewIf,
+    "the gate must reference a flag that already exists, and the agent must boot only past that gate");
+});
+
+test("the tag step keys off the same flag, and the verdict gate itself survives (issue #385)", () => {
+  const tag = runBlock("Tag + release + notify (only on TAG verdicts)");
+  assert.ok(tag.includes('case "$VERDICT" in'),
+    "the verdict case gate must stay: empty!=true and an approved verdict are independent conditions — dropping the case would tag on a BLOCK or on a skipped review");
+});
