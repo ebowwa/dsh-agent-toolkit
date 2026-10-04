@@ -7,6 +7,11 @@ tasks and legacy CI comment jobs alike — so an agent cannot work a claim
 without reading it. This file is the reference text; the skills in
 `skills/` carry the workflows that ride on top of it.
 
+> The standing-contract prose below is pinned by the contract tests in
+> `tests/` (`milestone-contract`, `agent-contract`, `branch-hygiene-contract`,
+> `relationships-contract`, `decompose-contract`) — run
+> `node --test tests/*.test.mjs` after any edit here (issue #270).
+
 ## Standing contract: the discovery protocol
 
 **File what you notice, never silently scope-creep.** While working a

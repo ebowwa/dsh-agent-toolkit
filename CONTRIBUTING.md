@@ -8,6 +8,13 @@ lifecycle pings only — measured 2026-09-22). This copy is this repo's
 single source for agent communication conduct; the fleet-wide upstream
 lives in ebowwa/factory's CONTRIBUTING.md.
 
+> The conduct prose in this file and `.agents/README.md` is pinned by the
+> contract tests in `tests/` (`milestone-contract`, `agent-contract`,
+> `branch-hygiene-contract`, `relationships-contract`, `decompose-contract`).
+> The pins anchor on the rule clause, not the sentence shape (issue #270) —
+> still, run `node --test tests/*.test.mjs` after any edit here so a doc
+> change never lands blind.
+
 ## Communication during work (the thread is a message board)
 
 An agent working on a ticket is **not a black box**.
