@@ -221,6 +221,45 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir mint (issue #374)
+
+**A per-claim workdir is only yours if its name carries a random
+component you minted.** The #374 receipts (2026-10-04, shared box):
+two siblings working the SAME issue both minted
+`work-<issue>-<repo>-$(date +%s)` — a banned bare-epoch suffix whose
+entire uniqueness budget was the issue number plus ONE second — and the
+later clone landed on the identical path and silently replaced the
+earlier agent's confirmed edits mid-session; the earlier agent's syntax
+checks and test runs then validated a tree that was no longer its own.
+Blast radius is WORSE than the #333 fixed-`/tmp` class: the takeover is
+silent, and receipts attach to the wrong diff.
+
+1. **MINT WITH A RANDOM COMPONENT** — `mktemp -d` over the node home,
+   issue/repo tags riding the prefix:
+
+   ```bash
+   workdir="$(mktemp -d "$HOME/dsh-node/work-<issue>-<repo>-XXXXXX")"
+   ```
+
+   Any random suffix works (mktemp `XXXXXX`, `$$`+`$RANDOM` — the #327
+   branch-mint lesson); the tags may name the claim, they just cannot be
+   the only uniqueness. Bare `$(date +%s)` is banned.
+2. **NEVER REUSE A MATCHING DIR** — `ls -d work-<issue>-<repo>-* |
+   head -1` enters a sibling's live tree at ANY time, not just inside
+   the collision second: a matching name is not yours until YOU minted
+   it. Re-entering a workdir your own session minted earlier is fine.
+3. **VERIFY THE TREE BEFORE YOU EDIT** — the first command batch in a
+   fresh workdir confirms identity: `git log -1`, `git status`, HEAD
+   against the claim's base ref. A tree whose contents are not what you
+   cloned is a sibling's — leave it and mint your own.
+
+**Acceptance — zero silent takeovers:** every workdir this session
+creates carries a random component in its name, and the session never
+edits a tree whose mint it does not own.
+
+The prompt assembly stamps this contract into every task it builds too
+(structural + behavioral pins: `tests/workdir-mint-contract.test.mjs`).
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +292,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-mint-contract.test.mjs` — pins the workdir-mint driver
+  block (placement + the random-component mint + the bare-epoch ban + the
+  no-reuse rule) and keeps this doc in agreement with it.

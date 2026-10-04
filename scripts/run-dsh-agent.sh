@@ -372,6 +372,26 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir mint (issue #374) ----------------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): a
+# per-claim workdir is only yours if its NAME carries a random component
+# you minted. The #374 receipts (2026-10-04, shared box): two same-issue
+# siblings both minted work-<issue>-<repo>-$(date +%s); the uniqueness
+# budget was the issue number plus ONE second of epoch, the later clone
+# landed on the identical path, and it silently replaced the earlier
+# agent's confirmed edits mid-session — whose receipts then validated a
+# tree that was no longer its own. Static repo-controlled prose,
+# appended after the input scrub pass and before the launch line below,
+# in issue order after branch hygiene. Long-form reference:
+# .agents/README.md; fixtures: tests/workdir-mint-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir mint (issue #374): a per-claim workdir is only yours if its name carries a random component YOU minted — never a bare epoch. The #374 receipts: two same-issue siblings on one box minted work-<issue>-<repo>-\$(date +%s), collided at one-second granularity, and the later clone silently replaced the earlier agent's confirmed edits mid-session.
+1. MINT WITH A RANDOM COMPONENT — workdir=\"\$(mktemp -d \"\$HOME/dsh-node/work-<issue>-<repo>-XXXXXX\")\" — issue/repo tags may ride the prefix, but the uniqueness must be random (mktemp XXXXXX, \$\$+\$RANDOM — the #327 branch-mint lesson). \$(date +%s) alone is BANNED: epoch resolves at one-second granularity and a concurrent-mint wave (factory#869) arms same-issue siblings inside that second.
+2. NEVER REUSE A MATCHING DIR — ls -d work-<issue>-<repo>-* | head -1 enters a sibling's live tree at ANY time, not just inside the collision second: a matching name is not yours until YOU minted it. Re-entering a workdir your own session minted earlier is fine.
+3. VERIFY THE TREE BEFORE YOU EDIT — the first command batch in a fresh workdir confirms identity: git log -1, git status, HEAD against the claim's base ref. A tree whose contents are not what you cloned is a sibling's — leave it and mint your own.
+Acceptance — zero silent takeovers: every workdir this session creates carries a random component in its name, and the session never edits a tree whose mint it does not own."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).
