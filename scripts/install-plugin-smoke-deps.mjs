@@ -41,9 +41,18 @@ const die = (...m) => {
   process.exit(1);
 };
 
+// A cwd with NO plugins/ directory reads as "no plugins" (issue #329):
+// main()'s `die("no tested plugins found under plugins/")` then delivers
+// its intended diagnostic for the missing case too, instead of the raw
+// ENOENT traceback readdirSync throws first.
+function pluginDirs(root) {
+  const pluginsDir = path.join(root, "plugins");
+  return fs.existsSync(pluginsDir) ? fs.readdirSync(pluginsDir) : [];
+}
+
 export function testedPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     if (!fs.existsSync(path.join(root, "plugins", dir, "test"))) continue;
@@ -59,7 +68,7 @@ export function testedPlugins(root) {
 // (ui -> editor) may reach a plugin whose own test dir does not exist.
 export function allPlugins(root) {
   const out = [];
-  for (const dir of fs.readdirSync(path.join(root, "plugins"))) {
+  for (const dir of pluginDirs(root)) {
     const pjPath = path.join(root, "plugins", dir, "package.json");
     if (!fs.existsSync(pjPath)) continue;
     out.push({

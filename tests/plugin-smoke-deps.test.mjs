@@ -23,6 +23,7 @@ import {
   verify,
   linkLocals,
   testedPlugins,
+  allPlugins,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -147,6 +148,42 @@ test("verify is fail-closed: missing package, unresolved peer, pruned link", () 
       verify(tmp, plugins, union).some((p) => /@local link pruned/.test(p)),
       "a pruned @local link fails the verify, not the smoke suite",
     );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a root with NO plugins/ dir reads as no plugins — not a raw ENOENT (issue #329)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-missing-"));
+  try {
+    // the unit seam: both readers return [] instead of throwing
+    assert.deepEqual(
+      testedPlugins(tmp),
+      [],
+      "testedPlugins on a missing plugins/ dir is [], never a throw",
+    );
+    assert.deepEqual(
+      allPlugins(tmp),
+      [],
+      "allPlugins on a missing plugins/ dir is [], never a throw",
+    );
+
+    // the CLI seam: the die line delivers its intended diagnostic for the
+    // MISSING case (same as the empty case), not a readdir traceback
+    const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      assert.match(String(e.stderr), /no tested plugins found under plugins\//, "the script's own diagnostic fires");
+      assert.doesNotMatch(String(e.stderr), /ENOENT/, "no raw readdir traceback");
+    }
+    assert.ok(failed, "a cwd without plugins/ must still exit non-zero (fail-closed)");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
