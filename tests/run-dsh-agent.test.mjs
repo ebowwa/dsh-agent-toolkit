@@ -287,6 +287,126 @@ test("throttle-wave retry: a fast failure retries (bounded, typed), then still s
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2e. the nullish-stringification task guard (issue #361) ---------------
+//
+// The dispatch mint can lose a claim's task text and stringify a JS
+// undefined/null into the argv slot: observed 2026-10-04 as the literal
+// 9-char string `undefined` riding `bash run-dsh-agent.sh "$DSH_TASK"` —
+// `${1:-$DEFAULT_TASK}` only guards unset/empty, so the garbage passed
+// through VERBATIM and a full API-powered session burned (one of a
+// provider throttle wave's precious retry slots) to conclude "there is
+// no task". The guard must (a) fail fast with a CLASSIFIED, greppable
+// death — the boot tombstones carry exit codes but no distinct class for
+// this mode (issue #360's corollary) — (b) launch NOTHING (no session,
+// no retry ladder), and (c) NOT silently fall through to the
+// DEFAULT_TASK maintenance roam: a mint that lost its task text must
+// surface. Empty/unset $1 KEEPS the deliberate DEFAULT_TASK fallback
+// (the scheduled no-arg boot path) — pinning that the restructure did
+// not break it is half of this test.
+test("a literal undefined/null task body dies classified before any launch; empty/unset $1 still boots DEFAULT_TASK (issue #361)", () => {
+  // Structural pin (test-2c posture): the class token must live in the
+  // script — reverting the guard to `${1:-$DEFAULT_TASK}` goes red here
+  // deterministically, no spawn needed.
+  const src = readFileSync(SCRIPT, "utf8");
+  assert.match(
+    src,
+    /class: task-body-stringified-nullish/,
+    "the nullish task-body death must carry its class token in the script (tombstone greppability, issue #360)",
+  );
+  assert.doesNotMatch(
+    src,
+    /TASK="\$\{1:-\$DEFAULT_TASK\}"/,
+    "the seam must not regress to the one-line \${1:-$DEFAULT_TASK} form that passes literal undefined/null through (issue #361)",
+  );
+
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-nullish-task-"));
+  const bin = path.join(dir, "bin");
+  const runnerTemp = path.join(dir, "runner");
+  const argsFile = path.join(dir, "dsh-args.txt");
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
+  // dsh stub: records its argv — the "session burned" observable. If the
+  // guard works, this file is never created for the garbage task bodies.
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'printf "%s\\n" "$@" > "$STUB_ARGS_FILE"',
+      "echo STUB-FINAL-ANSWER",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const baseEnv = () => {
+    const env = {
+      ...HERMETIC_ENV,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: dir,
+      RUNNER_TEMP: runnerTemp,
+      DOPPLER_SERVICE_TOKEN: "stub-token",
+      DSH_KEEP_SESSIONS: "",
+      DSH_RETRY_BACKOFF_S: "0", // tests-lint rule 2: every driver spawn pins the seam
+      STUB_ARGS_FILE: argsFile,
+      GH_BIN: path.join(bin, "gh"),
+      DOPPLER_BIN: path.join(bin, "doppler"),
+      CELL_PROBE_DIRS: "",
+    };
+    delete env.GH_TOKEN;
+    delete env.GITHUB_ENV;
+    delete env.DSH_HOME;
+    delete env.DSH_PERSISTENT_HOME;
+    delete env.DSH_SESSION_PATH_FILE;
+    delete env.DEFAULT_TASK; // pin the in-script default, not an ambient override
+    return env;
+  };
+
+  // (a)+(b): the stringified-nullish bodies die classified, launch nothing.
+  for (const garbage of ["undefined", "null"]) {
+    if (existsSync(argsFile)) rmSync(argsFile);
+    const proc = spawnSync("bash", [SCRIPT, garbage], { encoding: "utf8", env: baseEnv(), timeout: 60_000 });
+    assert.equal(proc.status, 2, `literal ${garbage} must exit 2 (typed usage death), stderr: ${proc.stderr}`);
+    assert.match(
+      proc.stderr,
+      /::error::task argument is the literal string "(undefined|null)"/,
+      `literal ${garbage} must fail with the typed error`,
+    );
+    assert.match(
+      proc.stderr,
+      /class: task-body-stringified-nullish/,
+      `literal ${garbage} must name its class — the tombstone-greppability ask (issue #360)`,
+    );
+    assert.ok(
+      !existsSync(argsFile),
+      `literal ${garbage} must NEVER launch dsh — a no-op claim is not worth a session (issue #361)`,
+    );
+    assert.doesNotMatch(proc.stdout, /STUB-FINAL-ANSWER/, "no agent ran, so no final answer");
+  }
+
+  // (c) — and the converse: empty and unset $1 KEEP the deliberate
+  // DEFAULT_TASK maintenance roam (the scheduled no-arg boot path). The
+  // garbage must not be "fixed" by widening the fallback over it.
+  for (const argv of [[ "" ], []]) {
+    if (existsSync(argsFile)) rmSync(argsFile);
+    const proc = spawnSync("bash", [SCRIPT, ...argv], { encoding: "utf8", env: baseEnv(), timeout: 60_000 });
+    assert.equal(proc.status, 0, `argv ${JSON.stringify(argv)}: the DEFAULT_TASK roam must still boot, stderr: ${proc.stderr}`);
+    assert.match(proc.stdout, /STUB-FINAL-ANSWER/, `argv ${JSON.stringify(argv)}: the agent must run`);
+    const args = existsSync(argsFile) ? readFileSync(argsFile, "utf8") : "";
+    assert.match(
+      args,
+      /Routine maintenance task: work ONLY repositories owned by the github\.com\/ebowwa account/,
+      `argv ${JSON.stringify(argv)}: the booted task must be the in-script DEFAULT_TASK, got: ${args.slice(0, 200)}`,
+    );
+  }
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2d. the job-scoped home MINT: two concurrent runs get DISTINCT homes -
 //
 // dbdb720 (2026-08-24) published the job-scoped home via GITHUB_ENV and, in

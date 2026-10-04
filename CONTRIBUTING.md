@@ -54,19 +54,24 @@ Working a claim is not a bubble: you are the only witness to the
 out-of-scope bugs, gaps, and risks you walk past (issue #113). While
 working a claim, if you observe one:
 
-1. **File an issue** in the repo where you observed it — title prefix
+1. **Search before you file** (issue #320): run `gh search issues --repo
+   <repo> --label agent-todo --state open` and check whether an open
+   ticket already carries the file/line you are about to cite. If one
+   does, add your receipts as a comment on THAT ticket — never mint a
+   duplicate (receipt: sibling finds 95s apart, #309/#311).
+2. **File an issue** in the repo where you observed it — title prefix
    `found:`, body carrying receipts (file:line, command output, the claim
    you were working).
-2. **Label it** with the todo label that repo uses (`agent-todo` where it
+3. **Label it** with the todo label that repo uses (`agent-todo` where it
    exists; the closest todo label otherwise — say which you used).
-3. **Reference it in the exit summary** — every filed issue number goes on
+4. **Reference it in the exit summary** — every filed issue number goes on
    ONE `filed-followups:` line (exact shape `filed-followups: #114, #115`;
    filed nothing — omit the line entirely, never write
    `filed-followups: none`).
-4. **Do NOT fix it in the current claim** — that is scope-creep — unless
+5. **Do NOT fix it in the current claim** — that is scope-creep — unless
    it is trivial AND in-scope. The claim's diff stays on-task; PRs are
    task work-products, not discoveries.
-5. **Stamp the chain/sweep milestone** (issue #185): a `found:` ticket
+6. **Stamp the chain/sweep milestone** (issue #185): a `found:` ticket
    that belongs to a chain or sweep carries that chain's milestone — the
    filer sets it, creating the milestone if absent (name = the chain's
    anchor): `gh issue edit N --repo R --milestone "chain-anchor"`. One

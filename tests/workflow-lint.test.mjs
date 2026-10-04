@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -547,8 +547,44 @@ test("the pre-fix gate (tab-only check) was blind to this defect (regression pro
   });
 });
 
-test("unusable invocation is a loud usage error", () => {
-  assert.equal(runTool([]).status, 2);
+test("bare invocation lints the repo's workflows by default (issue #291)", () => {
+  // Regression: CLAUDE.md documents the gate step as a bare
+  // `node scripts/workflow-lint.mjs` — pre-#291 that exact form exited 2
+  // (usage error) on a clean tree: a false gate-red for every fresh agent
+  // following the doc verbatim. The default must resolve against the
+  // SCRIPT'S own repo root (not the caller's cwd), so the documented form
+  // works from any directory.
+  const here = runTool([]);
+  assert.equal(here.status, 0, "bare invocation must be green on a clean tree");
+  assert.equal(here.stderr, "");
+  const elsewhere = spawnSync(process.execPath, [TOOL], { encoding: "utf8", cwd: tmpdir() });
+  assert.equal(elsewhere.status, 0,
+    "bare invocation is repo-root-relative, not cwd-relative");
+});
+
+test("bare invocation with no repo workflows is a loud usage error (issue #291)", () => {
+  // The other half of the contract: the usage error now fires only when
+  // the DEFAULT set is empty. A copy of the script with no
+  // .github/workflows beside it must fail loud (exit 2) — never silently
+  // pass green because it had nothing to lint.
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-bare-"));
+  try {
+    mkdirSync(path.join(dir, "scripts"), { recursive: true });
+    writeFileSync(path.join(dir, "scripts", "workflow-lint.mjs"), readFileSync(TOOL, "utf8"));
+    // realpath: on macOS tmpdir() is a symlink (/var → /private/var) and the
+    // CLI guard compares import.meta.url against file://${argv[1]} — a
+    // symlinked argv would silently skip the CLI block and exit 0.
+    const copied = realpathSync(path.join(dir, "scripts", "workflow-lint.mjs"));
+    const r = spawnSync(process.execPath, [copied], { encoding: "utf8" });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /usage: workflow-lint\.mjs/);
+    assert.match(r.stderr, /no workflow files found/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit-arg invocation keeps its old contract", () => {
   const missing = runTool(["/nonexistent/wf.yml"]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /cannot read/);

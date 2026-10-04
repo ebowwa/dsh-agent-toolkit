@@ -109,14 +109,14 @@ jobs:
 
       - name: Checkout the PR merge ref
         if: steps.pr.outputs.state != 'MERGED' && steps.pr.outputs.state != 'CLOSED'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/pull/${{ steps.pr.outputs.number }}/merge
           fetch-depth: 0
 
       - name: Fetch dsh-agent-toolkit scripts
         if: steps.pr.outputs.state != 'MERGED' && steps.pr.outputs.state != 'CLOSED'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ebowwa/dsh-agent-toolkit
           # dsh-agent-toolkit-ref when given; else MAIN — never github.ref: the

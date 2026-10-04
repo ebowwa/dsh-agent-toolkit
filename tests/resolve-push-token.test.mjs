@@ -26,6 +26,19 @@
 // for a .git/config with no trailing newline (r2 finding 2), a pin that
 // a non-numeric DOPPLER_FETCH_TIMEOUT_S cannot kill the watchdog
 // (r2 finding 3), and a two-run idempotency pin (r2 finding 4).
+//
+// Load-tolerance round (#389, 2026-10-04): both watchdog legs dropped
+// their wall-clock assertions. A stopwatch raced the box, not the code:
+// the healthy leg ran 10717ms red inside a full-gate run and 5699ms
+// green in isolation on the SAME tree — concurrent fleet agents are the
+// normal environment on these cells, so any elapsed-ms bound is a
+// load-shaped flake. The bound is now pinned by CONSTRUCTION: the shim
+// hang sleeps BETWEEN the honored timeout and the script's hard-coded
+// 20s default, so every unbounded/ignored class lets the fetch ANSWER,
+// flipping the output to the doppler-wins shape — the typed-line and
+// header pins red deterministically, at any load. A generous spawnSync
+// timeout backstops the residual never-exits class with a red, never a
+// suite freeze.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -90,7 +103,7 @@ const freshRepo = () => {
   return dir;
 };
 
-const runResolver = (repo, envOverrides = {}, { hermetic = false } = {}) => {
+const runResolver = (repo, envOverrides = {}, { hermetic = false, timeoutMs = 0 } = {}) => {
   const shims = shimPath();
   if (hermetic) {
     // Review round-1 finding 1, the prescribed construction: a PATH with
@@ -116,8 +129,11 @@ const runResolver = (repo, envOverrides = {}, { hermetic = false } = {}) => {
     ...envOverrides,
   };
   // Absolute bash: in hermetic mode the child's PATH has no system dirs,
-  // so the executable must not be resolved through it.
-  const r = spawnSync(BASH, [SCRIPT], { cwd: repo, env, encoding: "utf8" });
+  // so the executable must not be resolved through it. timeoutMs, when
+  // set, is a hang BACKSTOP only (kill a resolver that never exits) —
+  // never a bound pin; see the #389 note in the file header.
+  const r = spawnSync(BASH, [SCRIPT],
+    { cwd: repo, env, encoding: "utf8", ...(timeoutMs ? { timeout: timeoutMs } : {}) });
   return { r, cleanup: () => rmSync(shims.dir, { recursive: true, force: true }) };
 };
 
@@ -182,18 +198,31 @@ test("doppler fetch failure falls back (never breaks the run)", withCase((repo) 
 }));
 
 test("hung doppler fetch is watchdog-bounded (falls back, does not hold the job)", withCase((repo) => {
-  // The doppler CLI never answers (sleeps far past the bound); the
-  // watchdog must cut it at DOPPLER_FETCH_TIMEOUT_S and take the typed
-  // fallback — the fetch-side twin of the --max-time 15 curl pin below
-  // (review round-1 finding 4: the fetch was the one unbounded call).
-  const t0 = Date.now();
+  // The doppler CLI never answers before the bound; the watchdog must cut
+  // it at DOPPLER_FETCH_TIMEOUT_S and take the typed fallback — the
+  // fetch-side twin of the --max-time 15 curl pin below (review round-1
+  // finding 4: the fetch was the one unbounded call).
+  //
+  // #389 load-tolerance: NO wall-clock assertion — the old pin raced
+  // `elapsed < 10s` against box load and red-shifted a HEALTHY watchdog
+  // (10717ms red in-gate, 5699ms green in isolation, same tree). The
+  // bound is pinned by construction instead: the shim hang (10s) sleeps
+  // BETWEEN the honored timeout (1s) and the script's hard-coded 20s
+  // default, so every defect class — watchdog removed, kill failed,
+  // timeout env ignored in favor of the default — lets the hang ANSWER,
+  // the resolver takes the doppler token (scopes ok), and the
+  // typed-fallback + header pins below red DETERMINISTICALLY at any box
+  // load. Only the healthy class (kill at ~1s) prints "fetch failed".
+  // The 60s spawnSync backstop (far past any observed load overhead —
+  // the loaded legs of this suite run ≤ ~35s) covers the residual
+  // never-exits class with a red, not a suite freeze.
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "30", DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_HANG_S: "10", DOPPLER_FETCH_TIMEOUT_S: "1",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
-  });
+  }, { timeoutMs: 60_000 });
   try {
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 10_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.equal(r.status, 0,
+      `resolver status=${r.status} signal=${r.signal ?? "none"} — either it failed or the 60s hang backstop fired; stderr=${r.stderr}`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
@@ -290,17 +319,28 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // NON-NUMERIC one: `sleep "abc"` fails instantly, the watchdog
   // subshell dies silently, and a hung fetch is unbounded again. So the
   // pin rides "abc" — the case `:-` alone lets through — and asserts
-  // the guard's 20s default still fires: the doppler shim sleeps 25s,
-  // comfortably past 20, so the ONLY bounded outcome is the watchdog
-  // kill + typed fallback.
-  const t0 = Date.now();
+  // the guard's 20s default still fires: the doppler shim sleeps far
+  // past 20, so the ONLY bounded outcome is the watchdog kill + typed
+  // fallback.
+  //
+  // #389 load-tolerance: the old `< 30_000` stopwatch shared the
+  // 10717ms-class box-load red-shift — healthy legs of this wall-clock
+  // shape ran 17–34s under full-gate load on this box class, so a
+  // healthy 20s default + load overhead could cross 30s. The pin no
+  // longer races: the hang (40s) OUTLASTS the 20s default with 20s of
+  // scheduler slack, and the defect class it guards (guard removed →
+  // `sleep abc` dies → no watchdog) lets the hang ANSWER, flipping the
+  // output to the doppler-wins shape — the typed-fallback + header
+  // pins below red deterministically. The 60s spawnSync backstop only
+  // ever fires on a resolver that never exits; the healthy path is
+  // ~20s + overhead.
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "25", DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_HANG_S: "40", DOPPLER_FETCH_TIMEOUT_S: "abc",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
-  });
+  }, { timeoutMs: 60_000 });
   try {
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 30_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
+    assert.equal(r.status, 0,
+      `resolver status=${r.status} signal=${r.signal ?? "none"} — either it failed or the 60s hang backstop fired; stderr=${r.stderr}`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }

@@ -13,8 +13,10 @@ Every dispatched agent's complete generation — every reasoning chunk, tool cal
 git fetch origin tower-state
 git ls-tree origin/tower-state data/sessions/          # list run ids
 F=$(git ls-tree -r origin/tower-state --name-only data/sessions/run-<id>/ | head -1)
-git show "origin/tower-state:$F" > /tmp/s.zst
-zstd -dc /tmp/s.zst > /tmp/s.jsonl                     # one JSON event per line
+stage="$(mktemp -d "${TMPDIR:-/tmp}/dsh-flight-recorder-audit-XXXXXX")"   # per-run staging (issue #364) — a fixed /tmp/s.zst is swapped by a same-box sibling auditing another revision, and the decode silently reads the wrong session's bytes
+git show "origin/tower-state:$F" > "$stage/s.zst"
+zstd -dc "$stage/s.zst" > "$stage/s.jsonl"             # one JSON event per line
+rm -rf "$stage"                                        # cleanup rule: only the path this session minted
 ```
 
 ## The event vocabulary
