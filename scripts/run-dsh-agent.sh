@@ -434,6 +434,26 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
 4. UNIQUE NAME + PUSH PREFLIGHT — a minted branch name is collision-proofed twice. It carries a unique suffix (pid, claim id, or timestamp): dsh/issue-127-c5844082078, never the bare dsh/issue-N-slug two agents racing one issue derive identically (#327). And before the FIRST push of a minted name, run git ls-remote origin <name>: a non-empty answer means a sibling already owns the name — delete your unpushed local branch, re-mint with a fresh suffix, push that. NEVER git pull onto the collided name (it merges the sibling's work into yours) and NEVER git push --force-with-lease over it (it overwrites the sibling's pushed work behind an open PR); both reflexes destroy a racing claim.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir hygiene (issues #333, #374) -----------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): a
+# throwaway workdir must be unguessable AND verifiably yours. Two silent
+# worktree-destruction receipts: the shared-path rm -rf re-clone (#333,
+# 2026-10-04 02:25:39) and the pseudo-unique bare-epoch mint — a same-issue
+# sibling landed in work-361-toolkit-1791109240 inside the same second and
+# silently replaced the first agent's confirmed edits mid-session (#374).
+# The concurrent-maintenance wave (factory#869: 14 identical-prompt agents
+# on one box) makes same-second mints the normal case, not the tail.
+# Static repo-controlled prose, appended after the input scrub pass and
+# before the launch line below. Long-form reference + receipts:
+# .agents/README.md; fixtures: tests/workdir-collision-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir hygiene (issues #333, #374): a workdir is yours only if no sibling can predict it, and only while you can prove it — two silent-takeover receipts closed.
+1. MINT A RANDOM WORKDIR PER CLAIM — a timestamp is NOT uniqueness: workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\" (a \$HOME-anchored census dir works the same way: mktemp -d \"\$HOME/dsh-node/work-<issue>-<repo>-XXXXXX\"). The bare \$(date +%s) suffix is banned — same-issue siblings collide inside one second (the #327 branch-mint lesson, applied to directories); the shared-path recipe rm -rf /tmp/<repo> && gh repo clone ... is banned outright — rm -rf is legal only inside a dir YOUR session minted.
+2. RE-ENTER ONLY A PATH YOU RECORDED — a workdir is re-entered via the exact path your own session minted and recorded, NEVER via glob reuse (ls -d work-<issue>-* | head -1): a matching dir can be a sibling's live tree at ANY time, and landing there silently replaces your edits mid-session. A dir you did not mint is not yours.
+3. THE OWNER-MARKER BELT — at mint, stamp ownership: printf 'session=%s\nclaim=%s\n' \"\$\$\" \"\$ISSUE\" > \"\$workdir/.dsh-workdir-owner\"; before each edit batch, re-check the marker matches YOUR session. A tree whose marker is not yours — or a dir you didn't mint, marker or not — is a takeover in progress: stop, do not edit, file it, mint fresh.
+Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree — neither names a path the other could guess (random mint), neither lands in a dir the other minted (recorded-path re-entry), and any takeover that slips those rules is detected before the next edit batch (owner marker)."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).
