@@ -39,6 +39,29 @@
 // header pins red deterministically, at any load. A generous spawnSync
 // timeout backstops the residual never-exits class with a red, never a
 // suite freeze.
+//
+// First-exec-tax round (#404, 2026-10-04): every FIRST exec of a
+// freshly-written script pays a macOS Xprotect scan — ~2.1s measured on
+// this box class under concurrent load, ~6ms on the second exec of the
+// same path (issue-body repro). This suite minted a FRESH shim dir per
+// leg (the right collision hygiene, #346/#364), which under a loaded
+// full gate queued ~60 fresh-script scans behind one pegged
+// XprotectService per run and stretched the suite ~10x. Two levers, no
+// hygiene regression — every dir is still a unique per-run mkdtemp
+// mint, never a fixed staging path:
+// 1. MINT-ONCE PER PROCESS: the canonical doppler/curl/base64 set is
+//    minted lazily and shared READ-ONLY by every leg that does not
+//    mutate it (the shims are pure env readers — nothing persists
+//    between legs), so the suite pays ONE scan tax instead of ~one per
+//    leg. Legs that MUTATE the dir (the argv-logging pin overwrites
+//    git/curl; the hermetic pin removes doppler and symlinks
+//    git/tr/awk/bash) mint their own private dir, so no mutation can
+//    leak into a sibling leg regardless of test order.
+// 2. PRE-WARM AT MINT: each fresh shim is exec'd once (one parallel
+//    round, before any leg) so every leg's exec is the warm ~6ms one.
+//    Best-effort by design: a pre-warm that silently no-ops only
+//    degrades to the pre-#404 scan-per-leg behavior — correctness never
+//    depends on it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -72,27 +95,58 @@ const BASH = resolveBin("bash");
 // busybox no-wrap implementations all collapse to the same input, so the
 // wrap-stripping pin bites on every lane (review round-1 finding 6).
 // Real git/tr/awk stay on PATH in this mode.
-const shimPath = () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "resolve-push-shims-"));
-  const doppler = `#!/bin/sh
+const dopplerShim = `#!/bin/sh
 if [ -n "\${DOPPLER_HANG_S:-}" ]; then sleep "\$DOPPLER_HANG_S"; fi
 if [ "\${DOPPLER_RC:-0}" != "0" ]; then exit "\$DOPPLER_RC"; fi
 printf '%s' "\${DOPPLER_OUT-}"
 `;
-  const curl = `#!/bin/sh
+const curlShim = `#!/bin/sh
 if [ "\${CURL_RC:-0}" != "0" ]; then exit "\$CURL_RC"; fi
 printf 'HTTP/1.1 200 OK\\r\\nX-OAuth-Scopes: %s\\r\\n\\r\\n' "\${CURL_SCOPES-}"
 `;
-  const base64 = `#!/bin/sh
+const base64Shim = `#!/bin/sh
 ${resolveBin("base64")} "$@" | tr -d '\\n' | awk '{ while (length($0) > 76) { print substr($0, 1, 76); $0 = substr($0, 77) } print }'
 `;
-  writeFileSync(path.join(dir, "doppler"), doppler);
-  writeFileSync(path.join(dir, "curl"), curl);
-  writeFileSync(path.join(dir, "base64"), base64);
+
+// Every dir is a fresh mkdtemp mint — a unique per-run name, the #346/#364
+// collision guarantee, never a fixed staging path (#404 acceptance 2).
+const mintedShimDirs = [];
+process.on("exit", () => {
+  for (const dir of mintedShimDirs.splice(0)) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
+
+// #404 pre-warm: exec each fresh shim once, in ONE parallel round, so the
+// one-time Xprotect scan is paid here instead of inside a leg (or ~once
+// per leg across the run). Best-effort: the wait status is deliberately
+// not asserted — a no-op'd or failed pre-warm only degrades to the
+// pre-#404 behavior, it can never flip a pin.
+const prewarmShims = (dir, names = ["doppler", "curl", "base64"]) => {
+  const warm = (name) => `'${path.join(dir, name)}' </dev/null >/dev/null 2>&1`;
+  // Clean env: a stray ambient DOPPLER_HANG_S must not make the pre-warm
+  // itself hang — the warm exec only needs PATH.
+  spawnSync(BASH, ["-c", `${names.map(warm).join(" & ")} & wait`],
+    { env: { PATH: process.env.PATH } });
+};
+
+const mintShims = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "resolve-push-shims-"));
+  mintedShimDirs.push(dir);
+  writeFileSync(path.join(dir, "doppler"), dopplerShim);
+  writeFileSync(path.join(dir, "curl"), curlShim);
+  writeFileSync(path.join(dir, "base64"), base64Shim);
   for (const f of ["doppler", "curl", "base64"]) chmodSync(path.join(dir, f), 0o755);
+  prewarmShims(dir);
   return { dir, path: `${dir}:${process.env.PATH}` };
 };
 
+// #404 mint-once: the canonical set is IMMUTABLE across the legs that use
+// it (pure env readers — no state persists between execs), so one shared
+// per-process mint carries every plain leg. Mutating legs (hermetic,
+// argv-logging) call mintShims() directly for their own private dir.
+let sharedShims;
+const shimPath = () => (sharedShims ??= mintShims());
 // Fresh empty git repo = the job workspace after a persist-credentials:
 // false checkout (no credential in config — that is the state the
 // resolver must fill).
@@ -104,7 +158,12 @@ const freshRepo = () => {
 };
 
 const runResolver = (repo, envOverrides = {}, { hermetic = false, timeoutMs = 0 } = {}) => {
-  const shims = shimPath();
+  // #404: plain legs share the per-process minted+pre-warmed set
+  // read-only; the hermetic leg MUTATES its dir (removes doppler,
+  // symlinks git/tr/awk/bash), so it takes a private mint — mutation can
+  // never leak into a sibling leg. Only private dirs clean up per leg;
+  // the shared dir is removed once by the process-exit hook.
+  const shims = hermetic ? mintShims() : shimPath();
   if (hermetic) {
     // Review round-1 finding 1, the prescribed construction: a PATH with
     // ONLY the prepared bin dir — curl + wrapping-base64 shims and
@@ -134,7 +193,12 @@ const runResolver = (repo, envOverrides = {}, { hermetic = false, timeoutMs = 0 
   // never a bound pin; see the #389 note in the file header.
   const r = spawnSync(BASH, [SCRIPT],
     { cwd: repo, env, encoding: "utf8", ...(timeoutMs ? { timeout: timeoutMs } : {}) });
-  return { r, cleanup: () => rmSync(shims.dir, { recursive: true, force: true }) };
+  return {
+    r,
+    cleanup: hermetic
+      ? () => rmSync(shims.dir, { recursive: true, force: true })
+      : () => {}, // shared dir — removed once by the exit hook
+  };
 };
 
 const headerIn = (repo) =>
@@ -244,7 +308,10 @@ test("credential never appears on any child argv (ps-safe on shared runners)", w
   const logDir = mkdtempSync(path.join(tmpdir(), "resolve-push-argv-"));
   const gitLog = path.join(logDir, "git-argv.log");
   const curlLog = path.join(logDir, "curl-argv.log");
-  const shims = shimPath();
+  // This leg MUTATES the shim set (logging git + logging curl variants),
+  // so it takes a private #404 mint — the shared per-process set stays
+  // untouched for the canonical legs.
+  const shims = mintShims();
   const gitShim = `#!/bin/sh
 printf '%s\\n' "\$*" >> ${JSON.stringify(gitLog)}
 exec ${resolveBin("git")} "\$@"
