@@ -1,0 +1,11 @@
+composed-tree boot probe — reflex-driven redo (issue #267 verification, supersedes the PR #271 screenshots)
+replicated verbatim from tests/session-query-mount.test.mjs (HERMETIC_ENV + stampOverlays + spawnSync)
+exit code: 1 | wall reached in 3.4s | engine polls ran for the whole boot
+
+--- stdout (verbatim) ---
+
+
+
+--- stderr (verbatim) ---
+dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment
+
