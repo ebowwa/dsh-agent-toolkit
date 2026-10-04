@@ -6,6 +6,16 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
 
 - Shell scripts pass bash -n; node scripts pass node --check (gates enforces
   both — a review that skipped gates is invalid on its face).
+- A merge lands only on a gates check that is completed/success ON THE
+  MERGED HEAD (issue #434): `gh pr merge` runs behind the merge guard
+  (`scripts/merge-guard.sh`, armed by the driver via the gh-scrub-shim) —
+  a PR whose gates run is queued, in-progress, cancelled, failed, or absent
+  on its head SHA must not merge, and the guard takes ONE snapshot (never a
+  poll-until-green loop). The receipt: PR #422 merged while its gates run
+  sat queued and never ran — zero completed CI runs graded the head it
+  landed. Branch protection with required status checks is the owner-side
+  backstop; bypassing or disarming the guard to land a change is a defect
+  of the same class as skipping gates.
 - Workflow files pass `scripts/workflow-lint.mjs` (gates enforces it): a
   structurally invalid workflow — e.g. a step dedented out of its `steps:`
   sequence, the run-32705244305 class — parses nowhere and 422s every

@@ -798,6 +798,17 @@ if [ -x "$SCRIPT_DIR/gh-scrub-shim" ] || [ -x "$SCRIPT_DIR/git-scrub-shim" ]; th
     export GIT_SCRUB_REAL="$(command -v git)"
     cp "$SCRIPT_DIR/git-scrub-shim" "$SHIM_BIN/git" && chmod +x "$SHIM_BIN/git"
   fi
+  # Arm the merge-time gates guard (issue #434): with the gh shim installed,
+  # the agent's `gh pr merge` runs behind scripts/merge-guard.sh — the PR's
+  # gates check must be completed/success ON THE PR HEAD SHA, one snapshot,
+  # never poll-until-green. This is the shim-side half of the #422 receipt
+  # (PR #422 merged while its gates run sat queued and never ran); branch
+  # protection with required status checks is the other half. Same env-name
+  # discipline as GH_SCRUB_REAL — no DSH_ prefix to survive child-env strips.
+  if [ -x "$SCRIPT_DIR/merge-guard.sh" ] && [ -x "$SHIM_BIN/gh" ]; then
+    export GH_MERGE_GUARD=on
+    export GH_MERGE_GUARD_SCRIPT="$SCRIPT_DIR/merge-guard.sh"
+  fi
   # Persist the shims' env contract to later steps (issue #251): the shim
   # dir can leak onto a later step's PATH (GITHUB_PATH / PATH-export races —
   # sqeakd main runs 36580443907, 36584054876), and a later step resolving
@@ -809,6 +820,8 @@ if [ -x "$SCRIPT_DIR/gh-scrub-shim" ] || [ -x "$SCRIPT_DIR/git-scrub-shim" ]; th
     [ -n "${GH_SCRUB_REAL:-}" ] && printf 'GH_SCRUB_REAL=%s\n' "$GH_SCRUB_REAL" >> "$GITHUB_ENV"
     [ -n "${GIT_SCRUB_REAL:-}" ] && printf 'GIT_SCRUB_REAL=%s\n' "$GIT_SCRUB_REAL" >> "$GITHUB_ENV"
     printf 'SCRUB_SCRIPT=%s\n' "$SCRUB_SCRIPT" >> "$GITHUB_ENV"
+    [ -n "${GH_MERGE_GUARD:-}" ] && printf 'GH_MERGE_GUARD=%s\n' "$GH_MERGE_GUARD" >> "$GITHUB_ENV"
+    [ -n "${GH_MERGE_GUARD_SCRIPT:-}" ] && printf 'GH_MERGE_GUARD_SCRIPT=%s\n' "$GH_MERGE_GUARD_SCRIPT" >> "$GITHUB_ENV"
   fi
   export PATH="$SHIM_BIN:$PATH"
 fi
