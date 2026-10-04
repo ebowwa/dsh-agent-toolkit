@@ -58,32 +58,59 @@ serialization matches the CI flow: the worker takes the **last** trusted
 pattern — and installs everything below idempotently: credentials from the
 repo's `TOWER_PROBE_PAT` + `DOPPLER_SERVICE_TOKEN` secrets land ONLY in the 0600
 env file, and the cron line re-pins the toolkit to the moving `v1` tag
-every sweep, so the worker's code updates exclusively through
-drift-check's audited releases.
+every sweep through `scripts/re-pin-toolkit.sh` — a GUARDED re-pin that
+refuses (loudly, into worker.log) while the shared checkout carries
+tracked modifications or a working branch, so an update never destroys
+in-flight agent work sitting in the tree (issue #276) — and the worker's
+code updates exclusively through drift-check's audited releases.
 
 The manual equivalent (what the installer automates; cron keepalive needs
 no sudo, `svc.sh`/systemd when sudo exists — issue #6):
 
 ```bash
-# 1. toolkit checkout (keep updated: git pull — or via the drift bump PR)
-git clone --depth 1 https://github.com/ebowwa/dsh-agent-toolkit "$HOME/dsh-bot"
+# 1. toolkit checkout — $HOME/dsh-agent-toolkit is the default the env
+#    example and install-worker.sh both carry (the cron line below
+#    re-pins it to the moving v1 tag every sweep)
+git clone --depth 1 https://github.com/ebowwa/dsh-agent-toolkit "$HOME/dsh-agent-toolkit"
 
 # 2. worker env — secrets live ONLY here, 0600:
-cp "$HOME/dsh-bot/config/dsh-worker.env.example" "$HOME/.dsh-worker/env"
+cp "$HOME/dsh-agent-toolkit/config/dsh-worker.env.example" "$HOME/.dsh-worker/env"
 chmod 600 "$HOME/.dsh-worker/env"
 #   edit: GH_TOKEN, DOPPLER_SERVICE_TOKEN (REQUIRED — the agent launches
 #   only via `doppler run`, with the token passed through the DOPPLER_TOKEN
 #   env, never argv; the driver fails typed, exit 2, without it),
 #   DSH_WORKER_REPOS
+#   (DSH_AGENT_TOOLKIT_DIR already defaults to $HOME/dsh-agent-toolkit —
+#   the location step 1 clones to; edit it only for a non-standard path)
 
 # 3a. systemd (the box has passwordless sudo — the issue #6 path):
 #     sudo ~/factory-runner/svc.sh install && sudo ~/factory-runner/svc.sh start
 #     (or a unit running: bash -c 'set -a; . $HOME/.dsh-worker/env; set +a; \
-#      exec $HOME/dsh-bot/scripts/dsh-worker.sh --loop')
+#      exec /bin/bash $HOME/dsh-agent-toolkit/scripts/dsh-worker.sh --loop')
+#      ^ /bin/bash carrier, NEVER a direct exec — the repo ships scripts
+#        mode 644, so `exec <script>` dies "Permission denied" (exit 126)
+#        on every unit start (the same discipline the installer's cron
+#        line carries)
 
 # 3b. cron keepalive, one line — starts within 60s, self-heals after
-#     reboots and job-cleanup kills (the pattern factory-runner proves):
-#     * * * * * pgrep -f 'dsh-worker.sh --once' >/dev/null || { set -a; . $HOME/.dsh-worker/env; set +a; $HOME/dsh-bot/scripts/dsh-worker.sh --once >> $HOME/.dsh-worker/worker.log 2>&1; }
+#     reboots and job-cleanup kills. This is the canonical shape
+#     scripts/install-worker.sh mints (its LINE); copy it verbatim,
+#     adapting only the three paths. In particular:
+#     - overlap guard = `flock -n`, NEVER pgrep — every pgrep form
+#       self-matches the carrier line (the sweep braces contain the
+#       real script path), so a pgrep-guarded keepalive never lets a
+#       sweep run and worker.log stays empty, silently (live-proven
+#       twice on seed-dshbot — see the overlap-guard note in
+#       install-worker.sh);
+#     - each sweep re-pins the toolkit to the moving `v1` tag
+#       (`fetch --tags --force` + `checkout -q --force v1`), so the
+#       worker's code updates only through drift-check's audited
+#       releases; a pin failure degrades to the previously pinned
+#       release — never a broken sweep;
+#     - the sweep runs via `bash <script>` — the repo ships scripts
+#       mode 644, so a direct invocation dies "Permission denied".
+#     Credentials live ONLY in the 0600 env file the line sources.
+#     * * * * * flock -n $HOME/.dsh-worker/sweep.lock /bin/bash -c 'git -C $HOME/dsh-agent-toolkit fetch --tags --force -q && git -C $HOME/dsh-agent-toolkit checkout -q --force v1 || true; set -a; . $HOME/.dsh-worker/env; set +a; exec /bin/bash $HOME/dsh-agent-toolkit/scripts/dsh-worker.sh --once >> $HOME/.dsh-worker/worker.log 2>&1'
 ```
 
 The cron line and unit must NOT contain tokens — only the 0600 env file
@@ -152,7 +179,9 @@ else here.
 - **Concurrency**: `--once` processes every queued item sequentially;
   multiple boxes each running `--once` on the same repos share the queue
   safely via the claim DELETE. `--loop` is for single-processor service
-  mode; when used, ensure only one loop per box (`pgrep` guard in cron).
+  mode; when used, ensure only one loop per box (`flock` guard in cron —
+  a `pgrep` guard self-matches its own carrier line, the same class the
+  installer rejects).
 - **Boot accounting (issue #96)**: the driver appends one JSONL tombstone
   per FAILED agent attempt to `$DSH_HOME/boot-tombstones.jsonl`
   (`at`, `lifetime_s`, `exit_code`, `class`, `had_session`, `attempt`), and

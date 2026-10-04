@@ -41,7 +41,7 @@ jobs:
     runs-on: [self-hosted, dsh]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -64,6 +64,19 @@ jobs:
           # pin @v1") — derived from the same MAJOR that builds NEXT, so a
           # future v2 release advances v2 automatically
           MOVING="v${MAJOR}"
+          # EMPTY-RANGE GUARD (issue #231): a scoped diff with zero content
+          # must never become a release. v1.97.0 and v1.98.0 both ended up on
+          # 47a4f683 (the factory's tagsync job moves a published tag forward
+          # on an out-of-order bump-PR merge), so a later drift run computing
+          # LATEST=v1.97.0 sees an EMPTY range and would still tag v1.98.0 on
+          # the same commit — a release whose notes describe a range that
+          # does not exist. No scoped content => no tag, loud skip.
+          if git diff --quiet "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::scoped diff $BASE..HEAD is EMPTY - no release will be cut (issue #231 empty-range guard)"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
           {
             echo "base=$BASE"
             echo "latest=${LATEST:-none}"
@@ -74,6 +87,7 @@ jobs:
           git diff --stat "$BASE..HEAD" -- scripts '.github/workflows/agent-*.yml' config | tail -5
 
       - name: Agent reviews its own diff (release gate)
+        if: steps.scope.outputs.empty != 'true'
         env:
           DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -142,6 +156,7 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
+        if: steps.scope.outputs.empty != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token
@@ -159,6 +174,14 @@ jobs:
           esac
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # TAG-COLLISION FENCE (issue #231): NEXT must be virgin. A published
+          # tag is never moved or re-cut by drift-check — if $NEXT already
+          # exists the release numbering is wrong (a repointed/undrifted tag)
+          # and tagging here would silently overwrite history.
+          if git rev-parse -q --verify "refs/tags/$NEXT" >/dev/null; then
+            echo "::error::$NEXT already exists — refusing to move or re-cut a published tag (issue #231)"
+            exit 1
+          fi
           git tag "$NEXT"
           git push origin "$NEXT"
           if [ -f "$RUNNER_TEMP/drift-review.md" ]; then
@@ -196,3 +219,14 @@ jobs:
               -F "client_payload[tag]=${NEXT}" 2>/dev/null \
               && echo "notified $repo" || echo "notify failed: $repo"
           done <<< "$CONSUMERS"
+
+      # Step name carries no inline-comment marker or colon-space: a plain
+      # scalar with either trips this repo's own workflow gates (the
+      # colon-space/inline-comment sub-check, review finding on PR #234).
+      - name: Empty release range - no tag (issue 231)
+        if: steps.scope.outputs.empty == 'true'
+        run: |
+          echo "The scoped diff base..HEAD is EMPTY (issue #231: a published tag"
+          echo "was repointed forward, or the scoped change was reverted before"
+          echo "drift ran). Cutting a release on an empty range produces release"
+          echo "notes for a range that does not exist. Skipping review and tag."

@@ -145,7 +145,36 @@ test("decoupled-mode docs exist and describe the queue + trust model", () => {
   assert.match(doc, /dsh\/queued/);
   assert.match(doc, /DSH_WORKER_REPOS/);
   assert.match(doc, /never auto-approves/);
+  // #285: the manual cron example must teach the canonical keepalive the
+  // installer mints — flock overlap guard + v1 re-pin — never the
+  // self-matching pgrep guard install-worker.sh rejects (the carrier's
+  // sweep braces contain the real script path, so every pgrep form finds
+  // ITSELF and no sweep ever runs; worker.log stays empty, silently).
+  const cronExample = doc.split("\n").find(l => l.includes("* * * * *"));
+  assert.ok(cronExample, "the manual cron keepalive example line exists");
+  assert.match(cronExample, /flock -n /, "doc keepalive carries the flock overlap guard");
+  assert.ok(!cronExample.includes("pgrep"), "doc keepalive must not teach the self-matching pgrep guard");
+  assert.match(cronExample, /fetch --tags --force/, "doc keepalive re-pins via a forced tag fetch");
+  assert.match(cronExample, /checkout -q --force v1/, "doc keepalive re-pins to the moving v1 tag each sweep");
+  // the manual path stays coherent with config/dsh-worker.env.example's
+  // DSH_AGENT_TOOLKIT_DIR default and the installer's install dir
+  assert.ok(!doc.includes("$HOME/dsh-bot"), "manual path must not point at the retired dsh-bot checkout location");
 });
+
+test("docs 3a systemd unit exec rides /bin/bash — a 644 script cannot direct-exec (#305)", () => {
+  const doc = read("docs/decoupled-worker.md");
+  // scripts/dsh-worker.sh is mode 644 in the repo (git ls-files -s), so a
+  // unit's `exec <script>` dies "Permission denied" (exit 126) on every
+  // start — live-proven class in install-worker.sh's cron line, which
+  // ALWAYS invokes the sweep via `bash <script>`. The manual 3a unit must
+  // teach the same discipline. The pin matches the carrier, not the
+  // checkout path (the path moved once already; the discipline is the law).
+  assert.match(doc, /exec \/bin\/bash \$HOME\/[^\s'"]*\/scripts\/dsh-worker\.sh --loop/,
+    "the 3a unit's exec must ride a /bin/bash carrier");
+  assert.ok(!/exec \$HOME\/[^\s'"]*\/scripts\/dsh-worker\.sh/.test(doc),
+    "no direct exec of the 644-mode worker script in the docs (Permission denied, exit 126)");
+});
+
 test("review queue: worker claims dsh/review items and runs review-pr.sh on them", () => {
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /REVIEW_LABEL="\$\{DSH_WORKER_REVIEW_LABEL:-dsh\/review\}"/);

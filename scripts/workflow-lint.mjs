@@ -41,7 +41,7 @@
 // Plain multi-line scalars (key: value folded across deeper non-key
 // lines) are accepted.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /** Split a raw line into (indent, body); body is the line minus leading spaces. */
@@ -398,7 +398,6 @@ export function lintWorkflow(text, name = "workflow") {
   return errors;
 }
 
-/** CLI: one or more workflow files; exit 1 with per-line errors if any fail. */
 // CLI-arm guard, issue #302: compare REALPATHS on both sides. Node loads a
 // module through its resolved path, so import.meta.url is always the real
 // file, while process.argv[1] stays as invoked. Spawn the tool through a
@@ -414,22 +413,38 @@ const invokedSelf = (() => {
   }
 })();
 if (invokedSelf) {
-  const files = process.argv.slice(2);
-  if (!files.length) {
-    console.error("usage: workflow-lint.mjs <workflow.yml> [more.yml ...]");
-    process.exit(2);
+  const usage = "usage: workflow-lint.mjs <workflow.yml> [more.yml ...] " +
+    "(no args: lint .github/workflows/*.yml and *.yaml at the repo root)";
+  let targets;
+  if (process.argv.length > 2) {
+    targets = process.argv.slice(2).map((f) => ({ file: f, display: f }));
+  } else {
+    let names = [];
+    try {
+      names = readdirSync(new URL("../.github/workflows/", import.meta.url))
+        .filter((n) => /\.ya?ml$/.test(n)).sort();
+    } catch { /* no .github/workflows beside the script → names stays [] */ }
+    if (!names.length) {
+      console.error(usage);
+      console.error("workflow-lint: no workflow files found at .github/workflows (repo root of this script)");
+      process.exit(2);
+    }
+    targets = names.map((n) => ({
+      file: new URL(`../.github/workflows/${n}`, import.meta.url),
+      display: `.github/workflows/${n}`,
+    }));
   }
   let bad = 0;
-  for (const f of files) {
+  for (const { file, display } of targets) {
     let text;
     try {
-      text = readFileSync(f, "utf8");
+      text = readFileSync(file, "utf8");
     } catch (e) {
-      console.error(`workflow-lint: cannot read ${f}: ${e.message}`);
+      console.error(`workflow-lint: cannot read ${display}: ${e.message}`);
       bad++;
       continue;
     }
-    for (const { message } of lintWorkflow(text, f)) {
+    for (const { message } of lintWorkflow(text, display)) {
       console.error(message);
       bad++;
     }

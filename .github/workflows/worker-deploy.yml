@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout the toolkit (the installer ships with it)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Lane impact: one job per deploy (workflow_dispatch only). The
       # activation sweep holds this runner for up to the task budget —
