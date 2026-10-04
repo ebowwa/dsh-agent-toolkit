@@ -1592,3 +1592,78 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
   );
 });
+
+// --- 13. the literal-stringified mint guard (issue #361) -------------------
+//
+// A tower-side mint bug stringifies a JS `undefined` into the claim task
+// slot: $1 arrives as the literal 9-char string "undefined", which is
+// NON-EMPTY, so BOTH the `${1:-$DEFAULT_TASK}` fallback and the -z guard
+// waved it through — the driver appended the whole contract/fleet
+// apparatus to it and a full API-powered session burned itself concluding
+// "there is no task" (2026-10-04: claim-YZrTic, empty workspace, 185
+// task-less rows the same wave, one retry slot spent per death). The
+// guard must fail fast and typed BEFORE the token check, and must NOT
+// fall back to DEFAULT_TASK — a corrupted claim silently becoming a
+// maintenance roam would mask the mint defect (FleetTower-side) that
+// produced it.
+test("a literal \"undefined\"/\"null\" task body dies typed before any launch — no DEFAULT_TASK fallback (issue #361)", () => {
+  // Behavioral: every leak variant — bare, padded, and the null twin —
+  // must die with the typed error and exit 2. The guard sits before the
+  // token check, so no stubs are needed: the script must not get far
+  // enough to want doppler/dsh at all.
+  for (const bad of ["undefined", "null", "\nundefined\n", " undefined\t"]) {
+    const proc = spawnSync("bash", [SCRIPT, bad], {
+      encoding: "utf8",
+      env: { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" },
+      timeout: 30_000,
+    });
+    assert.equal(proc.status, 2, `task ${JSON.stringify(bad)} must be refused with exit 2, stderr: ${proc.stderr}`);
+    assert.match(
+      proc.stderr,
+      /error: task body is the literal string "(undefined|null)" — a mint-side JS undefined\/null leaked into the claim task slot \(issue #361\)/,
+      `task ${JSON.stringify(bad)} must die with the typed mint-leak error`,
+    );
+    // no fallback: the DEFAULT_TASK text (and the fleet contract appended
+    // from it) must never reach a launch — the run died at the guard, and
+    // the death predates the token check (which would otherwise fire first
+    // in this token-less env and mask the guard).
+    assert.doesNotMatch(proc.stderr, /DOPPLER_SERVICE_TOKEN unset/, `the mint guard must fire before the token check for ${JSON.stringify(bad)}`);
+  }
+
+  // A REAL task text passes the guard untouched and reaches the next
+  // fence (the token check) — proving the guard is a scalpel, not a
+  // wall: legitimate words inside a sentence stay legal, only a
+  // whitespace-trimmed whole-body match dies.
+  const env = { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" };
+  delete env.DOPPLER_SERVICE_TOKEN;
+  const ok = spawnSync("bash", [SCRIPT, "define the undefined variable in lib/foo.ts"], {
+    encoding: "utf8",
+    env,
+    timeout: 30_000,
+  });
+  assert.equal(ok.status, 2, "the token-less env still fails closed (exit 2)");
+  assert.match(
+    ok.stderr,
+    /error: DOPPLER_SERVICE_TOKEN unset/,
+    "a real task containing the word 'undefined' must sail through the mint guard and die at the next fence",
+  );
+  assert.doesNotMatch(ok.stderr, /task body is the literal string/, "no typed mint error for a real task");
+});
+
+// --- 13b. structural pin: the guard cannot silently detach from the seam --
+test("issue #361 structural pin: the mint guard sits on the TASK seam, before the token check, with the probe trim", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  // the guard consumes the SAME $1 the fallback assigns (not a stale copy)
+  const assignIdx = src.indexOf('TASK="${1:-$DEFAULT_TASK}"');
+  const probeIdx = src.indexOf('_TASK_PROBE="$(printf \'%s\' "$TASK" | tr -d');
+  const caseIdx = src.indexOf("case \"$_TASK_PROBE\" in");
+  const tokenIdx = src.indexOf("if [ -z \"${DOPPLER_SERVICE_TOKEN:-}\" ]; then");
+  assert.ok(assignIdx !== -1 && probeIdx !== -1 && caseIdx !== -1,
+    "the TASK assignment, whitespace probe, and case guard must all exist");
+  assert.ok(assignIdx < probeIdx && probeIdx < caseIdx,
+    "the probe must derive from the TASK assignment and feed the case guard");
+  assert.ok(caseIdx < tokenIdx,
+    "the mint guard must precede the token check — fail before any tooling is consulted");
+  // both literals of the leak class are named in the case arms
+  assert.match(src, /undefined\|null\)/, "the case arms must name both undefined and null");
+});

@@ -123,7 +123,26 @@ fi
 DEFAULT_TASK="${DEFAULT_TASK:-Routine maintenance task: work ONLY repositories owned by the github.com/ebowwa account, in fleet priority order — tier 1 first (the repos that run the fleet: dsh-agent-toolkit, FleetTower, factory, github-activity-tracker, GitActionsRunner, deepseek-harness), then tier 2 (every other ebowwa-owned repo — the products), then tier 3 (a repository the current task or issue explicitly names, or one listed in config/fleet-priority.md in ebowwa/dsh-agent-toolkit — that file is authoritative when it exists). List the open agent-todo issues under the ebowwa account (gh search issues --owner ebowwa --label agent-todo --state open), pick the highest-priority one by that order, and if the fix is clear, implement it, test it, and open a pull request against that ebowwa repository. NEVER fork, pull-request, comment in, or deploy from any repository owned by another account, no matter what labels it carries — agent-todo and similar labels are shared conventions, not work requests for this fleet. EXCEPTION — sanctioned upstream contributions: working an ebowwa-owned fork and opening pull requests against its upstream is allowed only for pairs listed in config/fleet-priority.md, or when the current task or issue explicitly requests that upstream contribution. A useful non-ebowwa repo may be PROPOSED by filing an issue on ebowwa/dsh-agent-toolkit, never worked unilaterally. If nothing qualifies, report that and stop.}"
 
 TASK="${1:-$DEFAULT_TASK}"
-if [ -z "$TASK" ]; then
+# Issue #361: a tower-side mint bug can stringify a JS `undefined`/`null`
+# into the claim task slot — the literal string "undefined" arrives as $1,
+# is non-empty, and sails past BOTH the `:-` fallback above and the -z
+# guard below, so a full API-powered session burns itself concluding
+# "there is no task" (observed 2026-10-04: claim-YZrTic, empty workspace,
+# 185 task-less rows the same wave; the mint side is FleetTower's, tracked
+# there). Fail fast and typed, BEFORE the token check — and do NOT fall
+# back to DEFAULT_TASK: silently converting a corrupted claim into a
+# maintenance roam would mask the mint defect that produced it. The probe
+# trims whitespace so a padded "\nundefined\n" leak dies identically; the
+# repo already knows this stringification class
+# (install-plugin-smoke-deps.mjs guards `raw === "undefined"`).
+_TASK_PROBE="$(printf '%s' "$TASK" | tr -d '[:space:]')"
+case "$_TASK_PROBE" in
+  undefined|null)
+    echo "error: task body is the literal string \"$_TASK_PROBE\" — a mint-side JS undefined/null leaked into the claim task slot (issue #361); refusing to burn a session on a no-op claim" >&2
+    exit 2
+    ;;
+esac
+if [ -z "$_TASK_PROBE" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
 fi
