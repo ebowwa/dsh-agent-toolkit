@@ -21,7 +21,8 @@ whole plugin config), gating on its presence there — a restated row naming a
 missing package would be a dead mount. Every gate fails SAFE: platform
 mismatch, node-glob mismatch, missing canonical copy, dead probe port, or
 missing package => SKIP, and the run proceeds without that plugin. Nothing
-here ever exits non-zero for a gated plugin.
+here ever exits non-zero for a gated plugin — a require_probe row without
+a probe_port is itself a gate failure (loud SKIP), never a mid-loop crash.
 """
 import glob
 import json
@@ -62,6 +63,26 @@ def port_answers(port, host="127.0.0.1", timeout=1.0):
         return ok
     except Exception:
         return False
+
+
+def probe_skip_reason(entry):
+    """The engine-probe gate as a reason string (None = gate passes).
+
+    A `require_probe` row that never declared a `probe_port` is a manifest
+    bug, but it is NEVER a crash: `entry['probe_port']` raising KeyError
+    outside any try block kills the consult MID-LOOP and every later entry
+    silently never mounts (issue #256) — the exact death class the copy
+    gate below degrades from. Degrade it to a loud SKIP like every other
+    gate; the manifest pin in tests/lane-plugins.test.mjs catches the bug
+    at edit time."""
+    if not entry.get("require_probe"):
+        return None
+    port = entry.get("probe_port")
+    if port is None:
+        return "require_probe set but probe_port missing (manifest bug — gate cannot run)"
+    if not port_answers(port):
+        return f"127.0.0.1:{port} not answering (engine down here)"
+    return None
 
 
 def yaml_scalar(v):
@@ -252,8 +273,9 @@ def main():
             src = os.path.join(root, entry.get("source", {}).get("path", ""))
             begin = f"<!-- dsh:{pid} -->"
             end = f"<!-- /dsh:{pid} -->"
-            if entry.get("require_probe") and not port_answers(entry["probe_port"]):
-                print(f"SKIP\t{pid}\t127.0.0.1:{entry['probe_port']} not answering (engine down here)")
+            probe_reason = probe_skip_reason(entry)
+            if probe_reason:
+                print(f"SKIP\t{pid}\t{probe_reason}")
                 continue
             try:
                 block = open(src).read().strip()
@@ -301,8 +323,9 @@ def main():
             continue
         src = entry.get("source", {}).get("path", "")
         pkg_dir = os.path.join(root, src) if src else ""
-        if entry.get("require_probe") and not port_answers(entry["probe_port"]):
-            print(f"SKIP\t{pid}\t127.0.0.1:{entry['probe_port']} not answering (engine down here)")
+        probe_reason = probe_skip_reason(entry)
+        if probe_reason:
+            print(f"SKIP\t{pid}\t{probe_reason}")
             continue
         if not package_complete(pkg_dir):
             print(f"SKIP\t{pid}\tpackage missing/incomplete at {pkg_dir} (need package.json + lib/)")
