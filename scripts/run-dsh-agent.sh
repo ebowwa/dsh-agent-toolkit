@@ -372,6 +372,26 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir hygiene (issue #333) ------------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): one
+# claim, ONE unique workdir. Concurrent same-box siblings habitually share
+# a predictable throwaway clone path (/tmp/<repo> or a fixed relative
+# `work` dir); a later sibling's rm -rf precondition re-clone destroys the
+# earlier sibling's in-flight worktree with zero signal (receipt: a
+# single-entry clone reflog stamped over an edited tree, 2026-10-04 —
+# issue #333; the concurrent-mint multiplier is factory#869). Static
+# repo-controlled prose, appended after the input scrub pass and before
+# the launch line below — the same job-scoped-uniqueness law the DSH_HOME
+# mint below already follows (dsh-home.$$). Long-form reference:
+# .agents/README.md; fixtures: tests/workdir-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir hygiene (issue #333): one claim, ONE unique workdir — never a shared predictable clone path. On a shared box a sibling working the same repo runs the same recipe into the same path, and the rm -rf precondition silently destroys an in-flight sibling's worktree (issue #333).
+1. MINT A UNIQUE WORKDIR PER CLAIM — before the first clone: workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\"; gh repo clone OWNER/REPO \"\$workdir\" && cd \"\$workdir\". The XXXXXX suffix is the collision guard — two same-box siblings mint different dirs.
+2. NO SHARED-PATH rm -rf PRECONDITION — the bare 'rm -rf /tmp/<repo> && gh repo clone' recipe is BANNED: on a shared box it deletes whatever an in-flight sibling has there. rm -rf is legal only inside a dir YOUR session minted (the mktemp workdir above), never on a predictable path another agent could hold.
+3. FIXED CLONE DIRS COLLIDE TOO — 'gh repo clone <target> work' (the fixed relative work dir) is the same class: any two guests in one checkout land on one path. Same fix — the unique-per-claim workdir.
+Acceptance — structurally impossible collisions: two same-box siblings working the same repo NEVER share a worktree path; every throwaway clone this session minted rode a mktemp-unique workdir (or a lane the driver itself provisioned)."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).

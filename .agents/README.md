@@ -221,6 +221,46 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir hygiene (issue #333)
+
+**One claim, one unique workdir.** Concurrent fleet agents on one box
+habitually clone their claim repos into the SAME predictable throwaway
+path — `/tmp/<repo>` via the standard `rm -rf /tmp/<repo> && gh repo
+clone` recipe, or a fixed relative dir (`gh repo clone <target> work`).
+A sibling minted the same claim later runs the same recipe into the same
+path and destroys the earlier sibling's in-flight worktree — silently
+(receipt: a single-entry clone reflog stamped over an edited tree,
+2026-10-04 — issue #333; the concurrent-mint multiplier is factory#869:
+14 identical-prompt agents on one box).
+
+1. **MINT A UNIQUE WORKDIR PER CLAIM** — before the first clone:
+
+   ```bash
+   workdir="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"
+   gh repo clone OWNER/REPO "$workdir" && cd "$workdir"
+   ```
+
+   The `XXXXXX` suffix is the collision guard: two same-box siblings
+   mint different dirs.
+2. **NO SHARED-PATH rm -rf PRECONDITION** — the bare
+   `rm -rf /tmp/<repo> && gh repo clone` recipe is banned: on a shared
+   box it deletes whatever an in-flight sibling has there. `rm -rf` is
+   legal only inside a dir YOUR session minted (the `mktemp -d` workdir
+   above), never on a predictable path another agent could hold.
+3. **FIXED CLONE DIRS COLLIDE TOO** — `gh repo clone <target> work`
+   (the fixed relative `work` dir) is the same class: any two guests in
+   one checkout land on one path. Same fix — the unique-per-claim
+   workdir.
+
+**Acceptance — structurally impossible collisions:** two same-box
+siblings working the same repo never share a worktree path; every
+throwaway clone a session mints rides a `mktemp`-unique workdir (or a
+lane the driver itself provisioned — the job-scoped `$DSH_HOME` mint
+follows the same uniqueness law, `dsh-home.$$`).
+
+The prompt assembly stamps this contract into every task it builds too
+(behavioral + structural pins: `tests/workdir-contract.test.mjs`).
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +293,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-contract.test.mjs` — pins the workdir-hygiene driver block
+  (placement + the unique-workdir recipe + the shared-path ban) and guards
+  the docs corpus against fenced recipes that re-teach the collision.

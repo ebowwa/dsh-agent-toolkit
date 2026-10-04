@@ -51,7 +51,8 @@ run straight off the tree on Node.
   file with its purpose; testing, adoption, versioning.
 - `CONTRIBUTING.md` — agent conduct: the discovery protocol (`found:` issues
   with receipts, never silent scope-creep), issue relationships, branch
-  hygiene, exit-summary shapes. Stamped into every dispatched task by
+  hygiene, workdir hygiene (one claim, one unique workdir — issue #333),
+  exit-summary shapes. Stamped into every dispatched task by
   `scripts/run-dsh-agent.sh`; pinned by `tests/agent-contract.test.mjs`.
 - `REVIEW.md` — the review rules the adversarial review stage applies.
 - `.agents/` — the standing agent contracts the driver stamps into tasks;
