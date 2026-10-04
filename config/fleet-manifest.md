@@ -31,6 +31,18 @@ phantoms) is INELIGIBLE until healed; never route onto a phantom-full
 node. A dispatch/placement that cannot name its node + reason
 (os-affinity | resource-preference | shared) is not a placement.
 
+**Wrong-OS installs do not fail loudly under bun (issue #190).** npm
+hard-errors a platform-mismatched MANDATORY dep (`notsup Unsupported
+platform`); bun — the dep-cache default (issue #189) — silently OMITS it
+with a zero exit (live repro: fsevents ^2 darwin-only on linux, bun
+1.3.14 AND 1.4.2: 0 entries, no warning, exit 0). The failure model an
+OS-affinity derivation must plan for is therefore **silent absence →
+runtime missing-binary**, never an install-time hard-fail: a green
+install proves nothing about platform coverage. The dep-cache audit names
+the silently skipped mandatory deps on every restore; an OS-gated dep a
+wrong-OS leg must survive belongs in `optionalDependencies`, and a leg
+that NEEDS the loud failure runs `DSH_DEP_INSTALL_CMD="npm ci"`.
+
 ## Node registry
 
 | Nodes | OS | Lanes served | Notes |

@@ -15,12 +15,12 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEP_CACHE = path.join(ROOT, "scripts", "dep-cache.sh");
 
-const scenario = (lockfile, body = '"lockfile-v1"\n') => {
+const scenario = (lockfile, body = '"lockfile-v1"\n', pkg = '{"name":"t","private":true}\n') => {
   const dir = mkdtempSync(path.join(tmpdir(), "dep-cache-test-"));
   const checkout = path.join(dir, "checkout");
   const cache = path.join(dir, "cache");
   mkdirSync(checkout, { recursive: true });
-  writeFileSync(path.join(checkout, "package.json"), '{"name":"t","private":true}\n');
+  writeFileSync(path.join(checkout, "package.json"), pkg);
   if (lockfile) writeFileSync(path.join(checkout, lockfile), body);
   return { dir, checkout, cache,
     env: (extra = {}) => ({
@@ -131,6 +131,100 @@ test("restore is a no-op without a lockfile (nothing to key on) and honors DSH_D
     assert.ok(!existsSync(path.join(off.checkout, "node_modules")));
   } finally {
     for (const s of [none, off]) rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+// --- the platform-skip audit (issue #190) --------------------------------
+//
+// bun silently omits a platform-mismatched MANDATORY dep (zero exit, no
+// warning) where npm hard-errors (`notsup Unsupported platform`) — the
+// issue's live repro: fsevents ^2 as a darwin-only mandatory devDep on
+// linux installs to 0 entries, exit 0, on bun 1.3.14 AND 1.4.2. The audit
+// must NAME the skipped deps after any restore that materialized
+// node_modules, on both the MISS-install and the cache-HIT path, and must
+// never fail the claim (restore is best-effort by contract).
+
+test("audit: a mandatory dep absent after a zero-exit install warns BY NAME (the bun silent-skip, issue #190) and still exits 0", () => {
+  const s = scenario("bun.lock", undefined, JSON.stringify({
+    name: "t",
+    private: true,
+    dependencies: { fsevents: "^2.3.3" },
+    devDependencies: { "@scope/linux-tool": "^1.0.0" },
+  }));
+  try {
+    const res = run(["restore", s.checkout], s.env({
+      DSH_DEP_INSTALL_CMD: `mkdir -p node_modules/fake-pkg`,
+    }));
+    assert.equal(res.status, 0, "best-effort by contract — the audit must not fail the claim");
+    assert.match(res.stdout + res.stderr, /WARNING \(issue #190\)/);
+    assert.match(res.stdout + res.stderr, /fsevents@\^2\.3\.3/);
+    assert.match(res.stdout + res.stderr, /@scope\/linux-tool@\^1\.0\.0/, "scoped dep names must survive the audit");
+    assert.match(res.stdout + res.stderr, /2 mandatory dep\(s\) silently skipped/);
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("audit: the guard rides the cache HIT too — a poisoned entry warns on every restore", () => {
+  const s = scenario("bun.lock", undefined, JSON.stringify({
+    name: "t",
+    private: true,
+    dependencies: { fsevents: "^2.3.3" },
+  }));
+  try {
+    const warm = run(["restore", s.checkout], s.env({
+      DSH_DEP_INSTALL_CMD: `mkdir -p node_modules/fake-pkg`,
+    }));
+    assert.equal(warm.status, 0);
+    assert.match(warm.stdout + warm.stderr, /issue #190/, "the warming MISS install is audited");
+    // second restore hits the cache; the install command must never run
+    const hit = run(["restore", s.checkout], s.env({
+      DSH_DEP_INSTALL_CMD: `exit 3`,
+    }));
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /cache HIT/);
+    assert.match(hit.stdout + hit.stderr, /issue #190/, "a cache hit must re-audit the restored tree");
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("audit: a tree holding every mandatory dep stays silent", () => {
+  const s = scenario("bun.lock", undefined, JSON.stringify({
+    name: "t",
+    private: true,
+    dependencies: { fsevents: "^2.3.3" },
+    devDependencies: { "@scope/linux-tool": "^1.0.0" },
+  }));
+  try {
+    const res = run(["restore", s.checkout], s.env({
+      DSH_DEP_INSTALL_CMD: `mkdir -p node_modules/fsevents node_modules/@scope/linux-tool`,
+    }));
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /cache WARMED/);
+    assert.doesNotMatch(res.stdout + res.stderr, /issue #190/);
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("audit: optionalDependencies are exempt — platform-gated optional deps vanish legally", () => {
+  const s = scenario("bun.lock", undefined, JSON.stringify({
+    name: "t",
+    private: true,
+    dependencies: { "left-pad": "^1.0.0" },
+    optionalDependencies: { fsevents: "^2.3.3" },
+  }));
+  try {
+    const res = run(["restore", s.checkout], s.env({
+      DSH_DEP_INSTALL_CMD: `mkdir -p node_modules/left-pad`,
+    }));
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /cache WARMED/);
+    assert.doesNotMatch(res.stdout + res.stderr, /issue #190/,
+      "an optional dep absent from the tree is contract-legal silence, not the #190 signature");
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
   }
 });
 
