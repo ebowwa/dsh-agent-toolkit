@@ -34,9 +34,11 @@
 //   structurally-impossible-collisions acceptance sentence; the driver
 //   block sits after scrub, after branch hygiene, before launch; and the
 //   docs corpus teaches NO recipe that mints a workdir through a bare
-//   epoch suffix or re-enters one through glob reuse (the ban text lives
-//   in prose — a fenced block carrying these patterns is a recipe
-//   re-teaching the collision).
+//   epoch suffix or re-enters one through glob reuse, and none that
+//   stages through a fixed /tmp path (issue #351 — the #346 class,
+//   corpus-wide once #355/#364 healed the last two carriers; the ban
+//   text lives in prose — a fenced block carrying these patterns is a
+//   recipe re-teaching the collision).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -229,30 +231,118 @@ test("issues #333/#374: driver and contract doc both carry the three rules", () 
   }
 });
 
-// --- corpus sweep: no taught recipe mints or re-enters a colliding workdir -
+// --- corpus sweep: no taught recipe mints or re-enters a colliding workdir,
+// --- and none stages through a fixed /tmp path (issue #351) ---------------
+
+/** Fenced blocks (contents only) of a markdown text, with 1-based start
+ * line of each block's first content line. Prose stays out of scope by
+ * design — the docs must stay free to DISCUSS the defect class; only a
+ * fenced block re-teaching it is a recipe. */
+function fencedBlocks(text) {
+  const blocks = [];
+  const lines = text.split("\n");
+  let inFence = false;
+  let fenceStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) {
+      if (!inFence) { inFence = true; fenceStart = i + 1; }
+      else {
+        inFence = false;
+        blocks.push({ start: fenceStart, body: lines.slice(fenceStart, i).join("\n") });
+      }
+    }
+  }
+  return blocks;
+}
+
+// The fixed-/tmp staging shapes (issue #351 — the #346 class, corpus-wide).
+// Mirrors FIXED_TMP_STAGING_SHAPES in tests/tmp-staging-hygiene.test.mjs:
+// a fixed /tmp name used as a staging or proof surface inside a taught
+// recipe. Line-based by design (the house lint doctrine: catch the
+// observed defect class, not the universe). The "${TMPDIR:-/tmp}" mktemp
+// default never matches: its /tmp is preceded by ':' inside the parameter
+// expansion, not by a staging operator. Corpus-wide went live only after
+// the last two carriers of the class were healed (#355, #364) — before
+// that it went red on them by design.
+const FIXED_TMP_STAGING_SHAPES = [
+  /-o \/tmp\//, // curl ... -o /tmp/app.zip
+  /-d \/tmp\//, // unzip ... -d /tmp/app
+  /> \/tmp\//, // sort > /tmp/<repo>-wip-baseline.txt
+  /- \/tmp\//, // diff - /tmp/<repo>-wip-baseline.txt
+  /attach \/tmp\//, // hdiutil attach /tmp/g.dmg
+  /cp -R \/tmp\//, // cp -R /tmp/app/<App>.app
+];
+
+/** Offending fixed-/tmp lines in one fenced block, as `start+line` offsets. */
+function fixedTmpHits(body, start) {
+  return body
+    .split("\n")
+    .map((line, i) => ({ line, n: start + i }))
+    .filter(({ line }) => FIXED_TMP_STAGING_SHAPES.some((shape) => shape.test(line)));
+}
 
 test("issues #333/#374: the docs corpus teaches no epoch-mint or glob-reuse recipe (ban text lives in prose, never in a fenced block)", () => {
   const offenders = [];
   for (const file of CORPUS_FILES) {
-    const text = readFileSync(file, "utf8");
-    const lines = text.split("\n");
-    let inFence = false;
-    let fenceStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      if (/^\s*```/.test(lines[i])) {
-        if (!inFence) { inFence = true; fenceStart = i + 1; }
-        else {
-          inFence = false;
-          const block = lines.slice(fenceStart, i).join("\n");
-          if (/date \+%s/.test(block) && /work-|mktemp/.test(block)) {
-            offenders.push(`${path.relative(ROOT, file)}:${fenceStart} fenced block mints a workdir through a bare epoch — a timestamp is not uniqueness (#374)`);
-          }
-          if (/ls -d work-/.test(block)) {
-            offenders.push(`${path.relative(ROOT, file)}:${fenceStart} fenced block re-enters a workdir through glob reuse (#374)`);
-          }
-        }
+    for (const { start, body } of fencedBlocks(readFileSync(file, "utf8"))) {
+      if (/date \+%s/.test(body) && /work-|mktemp/.test(body)) {
+        offenders.push(`${path.relative(ROOT, file)}:${start} fenced block mints a workdir through a bare epoch — a timestamp is not uniqueness (#374)`);
+      }
+      if (/ls -d work-/.test(body)) {
+        offenders.push(`${path.relative(ROOT, file)}:${start} fenced block re-enters a workdir through glob reuse (#374)`);
       }
     }
   }
   assert.deepEqual(offenders, [], "every fenced recipe that touches workdir minting/re-entry must be collision-free");
+});
+
+// issue #351: the corpus-wide tripwire for the fixed-/tmp staging class.
+// The per-skill pins (tests/tmp-staging-hygiene.test.mjs) hold the three
+// skills #346 named; this sweep holds the WHOLE corpus, so the next
+// skill/recipe that stages through a fixed /tmp name goes red at the
+// gates instead of shipping another silent sibling clobber.
+
+test("issue #351: the docs corpus teaches no recipe staging through a fixed /tmp path (the #346 class, corpus-wide)", () => {
+  const offenders = [];
+  for (const file of CORPUS_FILES) {
+    const rel = path.relative(ROOT, file);
+    for (const { start, body } of fencedBlocks(readFileSync(file, "utf8"))) {
+      for (const { line, n } of fixedTmpHits(body, start)) {
+        offenders.push(`${rel}:${n} fenced recipe stages through a fixed /tmp path: ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], "every fenced recipe must stage through a session-unique mktemp dir, never a fixed /tmp name");
+});
+
+// --- scanner self-test: the pre-fix receipt lines bite, the mint stays legal
+
+test("issue #351 scanner self-test: every pre-fix receipt line trips a shape, the mktemp mint stays legal", () => {
+  const fence = (body) => "```bash\n" + body + "\n```";
+  // The exact pre-fix receipt lines (issue #346 receipts; the surface
+  // issue #351 quotes) — a scanner that cannot see the class it exists
+  // to catch is decoration.
+  const receipts = [
+    'curl -sL "<app.zip URL>" -o /tmp/app.zip && unzip -oq /tmp/app.zip -d /tmp/app',
+    "rm -rf /Applications/<App>.app && cp -R /tmp/app/<App>.app /Applications/",
+    "hdiutil attach /tmp/g.dmg -nobrowse -mountpoint /Volumes/G",
+    "git status --porcelain | sort > /tmp/<repo>-wip-baseline.txt",
+  ];
+  const block = fencedBlocks(fence(receipts.join("\n")))[0];
+  assert.ok(block, "self-test: the synthetic fence must parse");
+  assert.deepEqual(
+    fixedTmpHits(block.body, block.start).map(({ n }) => n - block.start + 1),
+    [1, 2, 3, 4],
+    "every receipt line must trip a shape",
+  );
+
+  // The legal forms stay legal: the mktemp mint + "$stage/..." staging.
+  const legal = fencedBlocks(
+    fence(
+      'stage="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"\n' +
+        'curl -sL "<url>" -o "$stage/a.zip" && unzip -oq "$stage/a.zip" -d "$stage/a"\n' +
+        'cp -R "$stage/a/Bundle.app" /Applications/ && rm -rf "$stage"',
+    ),
+  )[0];
+  assert.deepEqual(fixedTmpHits(legal.body, legal.start), [], "the mktemp mint + \$stage recipe must stay legal");
 });

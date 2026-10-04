@@ -12,8 +12,8 @@
 // found: ticket, #321 was tickets duplicating LANDED work; neither asks
 // "does an open carrier already hold the ticket I am about to work?".
 //
-// Two surfaces, one protocol — these fixtures pin BOTH and keep them in
-// agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
+// Three surfaces, one protocol — these fixtures pin ALL THREE and keep
+// them in agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
 //
 //   behavioral — a stub agent booted on the no-arg DEFAULT_TASK path (the
 //   scheduled maintenance roam) captures the task it was launched with,
@@ -21,10 +21,15 @@
 //   the live-carrier semantics, the skip-to-next rule, and the declared
 //   skip line.
 //
-//   structural — the driver's DEFAULT_TASK string and the standing
-//   contract doc (.agents/README.md) each carry the rule with its
-//   operative phrases, and the two surfaces agree. A drift between them,
-//   or a revert of either, goes red here.
+//   structural — the driver's DEFAULT_TASK string, the standing contract
+//   doc (.agents/README.md), and the decoupled trigger's fallback TASK
+//   (.github/workflows/agent-dispatch-thin.yml) each carry the rule with
+//   its operative phrases, and the three surfaces agree. A drift between
+//   them, or a revert of any one, goes red here. The workflow's fallback
+//   is the decoupled-mode copy of the same lane-pass preamble — REVIEW.md
+//   § Decoupled worker: a change to one mode that silently drifts the
+//   other is a defect (gap found on issue #449; PR #427 saw it too but
+//   shipped a second, conflicting pin instead of extending this one).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -37,6 +42,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const CONTRACT_DOC = path.join(ROOT, ".agents", "README.md");
+const THIN_DISPATCH = path.join(ROOT, ".github", "workflows", "agent-dispatch-thin.yml");
 
 // --- behavioral: the scheduled roam's booted task carries the rules -------
 
@@ -118,11 +124,12 @@ test("issue #414: the DEFAULT_TASK maintenance roam boots with the claim-time ca
   rmSync(dir, { recursive: true, force: true });
 });
 
-// --- structural: driver string + contract doc carry the same rule ---------
+// --- structural: driver string + contract doc + thin fallback carry the rule
 
-test("issue #414: the driver's DEFAULT_TASK and the standing contract doc carry the carrier check and agree", () => {
+test("issue #414: the driver's DEFAULT_TASK, the standing contract doc, and the thin-dispatch fallback TASK carry the carrier check and agree", () => {
   const src = readFileSync(SCRIPT, "utf8");
   const doc = readFileSync(CONTRACT_DOC, "utf8");
+  const workflow = readFileSync(THIN_DISPATCH, "utf8");
 
   // The driver's claim preamble (DEFAULT_TASK) carries the rule. In the
   // script source the search quotes are backslash-escaped (the string is
@@ -158,10 +165,33 @@ test("issue #414: the driver's DEFAULT_TASK and the standing contract doc carry 
   assert.match(doc, /skipped: #405 — live carrier #413/);
   assert.match(doc, /Acceptance — no duplicate carriers from this session:/);
 
+  // The decoupled trigger's fallback TASK carries the same clauses
+  // (issue #449). The empty-input fallback is the decoupled-mode copy of
+  // the driver's lane-pass preamble, so like the driver source it is a
+  // double-quoted shell string and pins the ESCAPED search-quote form.
+  assert.match(workflow, /claim-time carrier check \(issue #414\)/,
+    "thin-dispatch fallback: the check is named as the claim-time gate");
+  assert.match(workflow, /gh pr list --repo <repo> --state open --search \\"N in:title\\"/,
+    "thin-dispatch fallback: the carrier-check command rides the fallback TASK");
+  assert.match(workflow, /is a live carrier/,
+    "thin-dispatch fallback: the live-carrier semantics ride the fallback TASK");
+  assert.match(workflow, /\(open, not closed-without-merge, not stale\)/,
+    "thin-dispatch fallback: the live/stale definition rides the fallback TASK");
+  assert.match(workflow, /the ticket is taken: skip to the next qualifying ticket by that same order/,
+    "thin-dispatch fallback: the skip rule rides the fallback TASK");
+  assert.match(workflow, /say so in the exit summary/,
+    "thin-dispatch fallback: the declare rule rides the fallback TASK");
+  assert.match(workflow, /skipped: #N — live carrier #M/,
+    "thin-dispatch fallback: the declared skip-line shape rides the fallback TASK");
+
   // Cross-surface agreement on the two phrases a reader must be able to
   // trust wherever they read the rule from: the check command's shape
   // (`gh pr list ... --state open --search`) and the skip-line label.
-  for (const surface of [["driver", src], ["contract doc", doc]]) {
+  for (const surface of [
+    ["driver", src],
+    ["contract doc", doc],
+    ["thin-dispatch fallback", workflow],
+  ]) {
     const [name, text] = surface;
     assert.match(text, /gh pr list --repo .+ --state open --search/,
       `${name}: the check command's operative shape`);

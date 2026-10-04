@@ -173,6 +173,41 @@ scrubbable_field() {
   esac
 }
 
+# --- merge-time gates guard (issue #434) ------------------------------------
+# `gh pr merge` is the one gh verb whose EFFECT is landing unreviewed-by-CI
+# code on the base — and the #422 receipt rode exactly this verb: merged at
+# 2026-10-04T12:17:56Z while its `gates` run sat QUEUED and never ran. When
+# the driver arms GH_MERGE_GUARD=on (stamped next to this shim's env
+# contract), the verb is gated through merge-guard.sh: the PR's check must
+# be completed/success on its head SHA — queued/in-progress/cancelled/
+# failed/absent are NOT green, and the guard takes ONE snapshot, never a
+# poll-until-green loop. The env names follow the shim's own contract shape
+# (GH_ prefix, no KEY/TOKEN patterns) so whatever strips DSH_* from a child
+# env cannot silently disarm the guard either.
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then
+  case "${GH_MERGE_GUARD:-}" in
+    off)
+      echo "gh-scrub-shim: WARNING: merge guard OFF (GH_MERGE_GUARD=off) — this merge runs UNGATED (issue #434)" >&2;;
+    on)
+      MERGE_GUARD="${GH_MERGE_GUARD_SCRIPT:-${SCRUB_SCRIPT%/*}/merge-guard.sh}"
+      if [ ! -x "$MERGE_GUARD" ]; then
+        die "merge guard armed (GH_MERGE_GUARD=on) but $MERGE_GUARD is missing/not executable — refusing fail-closed (issue #434)"
+      fi
+      MERGE_TARGET=""
+      if [ $# -ge 3 ] && [ -n "${3:-}" ] && [ "${3#-}" = "${3:-}" ]; then
+        MERGE_TARGET="$3"
+      fi
+      MERGE_GUARD_GH="$REAL" MERGE_GUARD_CHECK="${GH_MERGE_GUARD_CHECK:-gates}" \
+        bash "$MERGE_GUARD" check ${MERGE_TARGET:+"$MERGE_TARGET"} \
+        || die "merge REFUSED by the gates guard (merge-guard.sh, issue #434) — merge only when the check is completed/success on the PR head; do NOT poll-and-retry around this"
+      ;;
+    "")
+      echo "gh-scrub-shim: WARNING: merge guard INACTIVE (GH_MERGE_GUARD unset) — this merge runs UNGATED (issue #434)" >&2;;
+    *)
+      die "merge guard misarmed (GH_MERGE_GUARD='${GH_MERGE_GUARD:-}' — expected on|off) — refusing fail-closed rather than guessing (issue #434)";;
+  esac
+fi
+
 args=()
 while [ $# -gt 0 ]; do
   flag="$1"; shift

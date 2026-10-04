@@ -1,0 +1,50 @@
+# fleet-manifest-drift — the standing registry's alignment fence (issue #397).
+#
+# config/fleet-manifest.md is the standing fleet context injected into
+# every dispatched agent's task prompt and is authoritative over the
+# inline summary the driver carries — but nothing verified it against the
+# live tower registry, so it rotted silently for 8 days (three nodes on
+# two air machines missing while one of them carried ~half the day's
+# dispatch load). This job runs scripts/fleet-manifest-drift.mjs:
+#
+#   - on PRs touching the fence's own files (toolkit-side edits that
+#     break alignment go red before merge), and
+#   - on a daily schedule — the drift that matters is TOWER-side: this
+#     repo does not change when the pool does, so only a clock catches
+#     a registry that moved on without the manifest.
+#
+# Red = realign + bump "Last aligned"; the finding lines name the exact
+# rows. Unreachable registry is a classified red, never a silent green.
+
+name: fleet-manifest-drift
+
+on:
+  pull_request:
+    paths:
+      - 'config/fleet-manifest.md'
+      - 'scripts/fleet-manifest-drift.mjs'
+      - '.github/workflows/fleet-manifest-drift.yml'
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-manifest-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: [self-hosted, dsh]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Diff the standing registry against the tower registry
+        env:
+          # FleetTower is private: github.token cannot read across repos,
+          # so prefer the fleet PAT (same pattern as drift-check.yml's
+          # DISPATCH_TOKEN) and fall back to the job token.
+          GH_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
+        run: node scripts/fleet-manifest-drift.mjs
