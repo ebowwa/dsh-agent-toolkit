@@ -221,6 +221,47 @@ pushed branch in none of them is a contract violation.
 The prompt assembly stamps this contract into every task it builds too
 (structural + behavioral pins: `tests/branch-hygiene-contract.test.mjs`).
 
+## Standing contract: workdir hygiene (issue #333)
+
+**Zero predictable throwaway workdirs.** A throwaway clone path is yours
+only if no sibling can predict it. Concurrent fleet agents on one box
+clone their claim repos into throwaway paths, and the standard recipe's
+bare `rm -rf /tmp/<repo>` re-clone precondition re-clones OVER any
+sibling already at that path — observed live 2026-10-04 02:25:39 on the
+shared mac box: a sibling's live worktree (edited files, an unpushed
+branch) was replaced by a pristine clone carrying a single-entry
+`clone:` reflog, with zero signal (factory#869 had armed 14 concurrent
+agents on one box; the mint double-arming a claim is the normal case,
+not the exception). The same silent-loss class as issue #276, with a
+sibling-clone trigger. The contract:
+
+1. **MINT A UNIQUE WORKDIR PER CLAIM** — never clone into a predictable
+   shared path:
+
+   ```bash
+   workdir="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"
+   gh repo clone <owner>/<repo> "$workdir"
+   ```
+
+   The `XXXXXX` suffix is minted, not chosen — siblings can never
+   collide — and the `dsh-<repo>-` prefix keeps the path census-able.
+2. **NEVER `rm -rf` A PATH YOU DID NOT MINT** — the bare
+   `rm -rf /tmp/<repo>` re-clone precondition is banned. A `mktemp -d`
+   workdir never pre-exists, so the destructive precondition is
+   unnecessary, not merely risky; a re-clone mints a fresh workdir
+   instead of clearing a predictable one.
+3. **SHARED-BOX DEFAULT** — assume siblings. The fleet arms concurrent
+   agents on one box (factory#869), and `$TMPDIR` on macOS is per-user
+   but shared by every agent session of that user — a fixed-name path
+   under it is a fleet-global collision point, not private scratch.
+
+**Acceptance — zero predictable workdirs:** every throwaway checkout the
+session creates rides a mktemp-minted path; the session never writes
+`rm -rf` against a path it did not mint itself.
+
+The prompt assembly stamps this contract into every task it builds too
+(structural + behavioral pins: `tests/workdir-hygiene-contract.test.mjs`).
+
 ## Why this exists
 
 Verified 2026-09-26 (dsh-agent-toolkit#113): lane agents observed
@@ -253,3 +294,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-hygiene-contract.test.mjs` — pins the workdir-hygiene
+  driver block (placement + the mint recipe + the rm -rf ban) and keeps the
+  docs corpus free of the colliding clone recipe (issue #333).

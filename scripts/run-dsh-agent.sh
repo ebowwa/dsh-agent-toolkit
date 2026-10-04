@@ -372,6 +372,24 @@ AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branc
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
 Acceptance — zero orphans: at exit, every branch the session pushed is in exactly one of three states — merged (the repo auto-delete-on-merge setting removes it), deleted, or declared on the branches-left: line behind its open PR. A pushed branch in none of them is a contract violation."
 
+# --- standing agent contract: workdir hygiene (issue #333) ------------------
+# Appended to EVERY task (dispatched tasks and comment jobs alike): a
+# throwaway clone path must be unguessable. Concurrent agents on one box
+# cloning into the same predictable path (/tmp/<repo>) destroy each other's
+# in-flight worktrees — the standard recipe's rm -rf precondition re-cloned
+# OVER a live sibling tree 2026-10-04 02:25:39 (single-entry clone reflog;
+# factory#869 had armed 14 concurrent agents on one box). Static
+# repo-controlled prose, appended after the input scrub pass and before the
+# launch line below. Long-form reference + receipts: .agents/README.md;
+# fixtures: tests/workdir-hygiene-contract.test.mjs.
+TASK="${TASK}
+
+AGENT CONTRACT — workdir hygiene (issue #333): a throwaway clone path is YOURS only if no sibling can predict it — two agents on one box cloning into the same /tmp/<repo> path race, and the rm -rf precondition destroys the loser's in-flight worktree with zero signal.
+1. MINT A UNIQUE WORKDIR PER CLAIM — never clone into a predictable shared path. workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\" && gh repo clone <owner>/<repo> \"\$workdir\" — the XXXXXX suffix is minted, not chosen, so siblings can never collide, and the dsh-<repo>- prefix keeps the path census-able.
+2. NEVER rm -rf A PATH YOU DID NOT MINT — the bare rm -rf /tmp/<repo> && gh repo clone precondition is banned: a mktemp -d workdir never pre-exists, so the destructive precondition is unnecessary, not merely risky. Need a re-clone? Mint a fresh workdir; never clear a predictable one.
+3. SHARED-BOX DEFAULT — assume siblings: the fleet arms concurrent agents on one box (factory#869), and \$TMPDIR on macOS is per-user but shared by every agent session of that user — a fixed-name path under it is a fleet-global collision point, not private scratch.
+Acceptance — zero predictable workdirs: every throwaway checkout the session creates rides a mktemp-minted path; the session never writes rm -rf against a path it did not mint itself."
+
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
 # job on the other), and a job-scoped home makes cleanup atomic (rm -rf).
