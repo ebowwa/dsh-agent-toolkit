@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -552,4 +552,63 @@ test("unusable invocation is a loud usage error", () => {
   const missing = runTool(["/nonexistent/wf.yml"]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /cannot read/);
+});
+
+test("symlinked argv still lints — broken workflow through a symlink exits 1 (issue #302)", () => {
+  // #302: the CLI entry guard compared import.meta.url (which resolves the
+  // module to its REAL path) against the raw `file://${process.argv[1]}`
+  // string (which stays as invoked). Through a symlink the two differ, the
+  // CLI block never ran, and the tool exited 0 without linting anything —
+  // a false green on the linter itself. Any wrapper/CI reaching the tool
+  // through a symlinked path (macOS /var → /private/var, /tmp →
+  // /private/tmp, bin dirs) got green with no lint.
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-symlink-"));
+  try {
+    const link = path.join(dir, "link.mjs");
+    symlinkSync(TOOL, link); // explicit symlink onto the real tool
+    const broken = path.join(dir, "broken.yml");
+    writeFileSync(broken, BROKEN);
+    // Leg 1 — the ticket's repro: broken file via symlinked argv MUST lint
+    // and exit 1 with the errors (pre-#302: silent exit 0, nothing linted).
+    const viaLink = spawnSync(process.execPath, [link, broken], { encoding: "utf8" });
+    assert.equal(viaLink.status, 1,
+      "broken workflow via symlinked argv must exit 1, not false-green 0");
+    assert.match(viaLink.stderr, /dedents onto a mapping level/,
+      "the lint errors must actually print through the symlink");
+    // Leg 2 — CLI block provably ran on a content-independent path: an
+    // unreadable target through the symlink is a loud exit-1 "cannot read",
+    // never the skip-0.
+    const missing = spawnSync(process.execPath, [link, "/nonexistent/wf.yml"], { encoding: "utf8" });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /cannot read/);
+    // Leg 3 — clean workflow through the symlink exits 0 with silent stderr
+    // (lint ran and found nothing — pairs with legs 1–2 to pin the guard).
+    const clean = path.join(dir, "clean.yml");
+    writeFileSync(clean, FIXED);
+    const cleanRun = spawnSync(process.execPath, [link, clean], { encoding: "utf8" });
+    assert.equal(cleanRun.status, 0, "clean workflow via symlinked argv must stay green");
+    assert.equal(cleanRun.stderr, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("tool copied behind a symlinked tmpdir still lints (issue #302, /var → /private/var leg)", () => {
+  // The other observed shape: the tool COPIED into macOS tmpdir() — the
+  // copy's argv path carries the /var → /private/var symlink even with no
+  // explicit symlink on the file. Pre-#302 this leg false-greened too (the
+  // ticket's exact `cp scripts/workflow-lint.mjs /tmp/...` repro).
+  const dir = mkdtempSync(path.join(tmpdir(), "workflow-lint-copy-"));
+  try {
+    const copied = path.join(dir, "workflow-lint.mjs");
+    writeFileSync(copied, readFileSync(TOOL, "utf8"));
+    const broken = path.join(dir, "broken.yml");
+    writeFileSync(broken, BROKEN);
+    const r = spawnSync(process.execPath, [copied, broken], { encoding: "utf8" });
+    assert.equal(r.status, 1,
+      "broken workflow via a tmpdir-symlinked tool path must exit 1, not 0");
+    assert.match(r.stderr, /dedents onto a mapping level/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

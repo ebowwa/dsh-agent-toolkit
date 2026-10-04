@@ -41,7 +41,8 @@
 // Plain multi-line scalars (key: value folded across deeper non-key
 // lines) are accepted.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** Split a raw line into (indent, body); body is the line minus leading spaces. */
 const splitIndent = (raw) => {
@@ -397,8 +398,20 @@ export function lintWorkflow(text, name = "workflow") {
   return errors;
 }
 
-/** CLI: one or more workflow files; exit 1 with per-line errors if any fail. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+/** CLI: one or more workflow files; exit 1 with per-line errors if any fail.
+ * Entry detection compares REALPATHS on both sides (#302): import.meta.url
+ * resolves the module to its real location while process.argv[1] stays as
+ * invoked, so a symlink anywhere in the argv path (macOS /var → /private/var
+ * and /tmp → /private/tmp, wrapper bin dirs) made the raw `file://` string
+ * compare fail, the CLI block never ran, and the tool exited 0 without
+ * linting anything — a false green on the linter itself. Unresolvable or
+ * missing argv[1] means we were imported as a module, never the entry. */
+let isCliEntry = false;
+try {
+  isCliEntry = process.argv[1] !== undefined &&
+    realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+} catch { /* not the entrypoint (no/unresolvable argv[1]) — import use */ }
+if (isCliEntry) {
   const files = process.argv.slice(2);
   if (!files.length) {
     console.error("usage: workflow-lint.mjs <workflow.yml> [more.yml ...]");
