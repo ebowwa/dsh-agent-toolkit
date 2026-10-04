@@ -6,7 +6,10 @@
 // These tests fail without the fix: the union merge loses determinism,
 // the walk no longer reaches a fixpoint through a peer cycle, the
 // install-once fast path disappears, or non-convergence stops being
-// loud — each pin goes red.
+// loud — each pin goes red. The CLI legs are hermetic on any box
+// (issue #280): green through a fixture-built converged tree, red on a
+// bare one, and the repo's own checkout pinned only where the closure
+// was actually installed.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -189,17 +192,59 @@ test("a root with NO plugins/ dir reads as no plugins — not a raw ENOENT (issu
   }
 });
 
-test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
+// CLI end-to-end through the real argv surface (--dry-run), hermetic on
+// ANY box (issue #280): the green leg materializes its own converged
+// tree in a temp dir — the repo checkout's node_modules is INSTALLED
+// state (gates.yml installs the closure before the suite on the CI
+// cell), not content a fresh clone carries, so pinning it
+// unconditionally made every pristine-clone gate run exactly 1 red that
+// no PR could fix (441/442 on a clean tree — the #273 box-state class).
+test("CLI --dry-run: green on a converged tree, red on bare", (t) => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const green = execFileSync("node", [script, "--dry-run"], {
-    encoding: "utf8",
-    cwd: ROOT,
-  });
-  assert.match(green, /--dry-run: verified/, "converged checkout pre-flights green");
-  assert.match(green, /specs/, "the resolved union is printed");
 
-  // bare fixture with an unmaterializable peer: red naming the gap,
-  // without npm ever installing anything
+  // GREEN, hermetic: a converged tree this fixture builds itself — the
+  // plugin's one peer is materialized by hand (package present,
+  // peer-free), the @local link made the way the installer makes it.
+  const green = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-green-"));
+  try {
+    fs.mkdirSync(path.join(green, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(green, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/psd-green-fixture-lib": "^1.0.0" },
+      }),
+    );
+    fs.mkdirSync(
+      path.join(green, "node_modules", "@deepseek-ai", "psd-green-fixture-lib"),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(
+        green,
+        "node_modules",
+        "@deepseek-ai",
+        "psd-green-fixture-lib",
+        "package.json",
+      ),
+      JSON.stringify({
+        name: "@deepseek-ai/psd-green-fixture-lib",
+        peerDependencies: {},
+      }),
+    );
+    linkLocals(green);
+    const out = execFileSync("node", [script, "--dry-run"], {
+      cwd: green,
+      encoding: "utf8",
+    });
+    assert.match(out, /--dry-run: verified/, "converged tree pre-flights green");
+    assert.match(out, /specs/, "the resolved union is printed");
+  } finally {
+    fs.rmSync(green, { recursive: true, force: true });
+  }
+
+  // RED, hermetic: bare fixture with an unmaterializable peer — red
+  // naming the gap, without npm ever installing anything
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-"));
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
@@ -222,6 +267,36 @@ test("CLI --dry-run: green on the repo's converged tree, red on bare", () => {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+
+  // The repo's own checkout: still pinned where the converged tree
+  // exists (the CI cell, any box that ran the installer) — and SKIPPED,
+  // not failed, where the closure was never installed (issue #280: a
+  // fresh clone reds here through no fault of the diff). The skip is
+  // narrow by construction: a node_modules WITHOUT any @deepseek-ai/*
+  // packages is a tree the closure step never ran on; a tree that
+  // carries SOME of the closure and still fails is a genuinely broken
+  // install and must stay red.
+  let repo;
+  try {
+    repo = execFileSync("node", [script, "--dry-run"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    const dsai = path.join(ROOT, "node_modules", "@deepseek-ai");
+    const neverInstalled =
+      !fs.existsSync(dsai) || fs.readdirSync(dsai).length === 0;
+    if (!neverInstalled) throw e;
+    t.skip(
+      `repo tree bare (no @deepseek-ai/* under node_modules — the closure ` +
+        `was never installed here; gates.yml installs it on the CI cell): ` +
+        `hermetic legs above carry the CLI contract (issue #280)`,
+    );
+    return;
+  }
+  assert.match(repo, /--dry-run: verified/, "converged checkout pre-flights green");
+  assert.match(repo, /specs/, "the resolved union is printed");
 });
 
 test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
