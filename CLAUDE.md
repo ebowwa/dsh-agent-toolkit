@@ -26,8 +26,8 @@ run straight off the tree on Node.
      `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
      checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
      converges the peer closure, installs once, and verifies the tree;
-     reruns are no-ops); without it those smokes fail environmentally,
-     not substantively.
+     reruns are no-ops); without it those smokes LOUD-SKIP with the
+     recovery command (issue #358) — environmental, not substantive.
 - **Review findings cite rules.** `REVIEW.md` is this repo's review
   contract; the review stage reads it (and this file) as ground truth, and
   every finding must cite a rule from it. The review contract is
