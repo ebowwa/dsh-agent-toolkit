@@ -41,7 +41,8 @@
 // Plain multi-line scalars (key: value folded across deeper non-key
 // lines) are accepted.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** Split a raw line into (indent, body); body is the line minus leading spaces. */
 const splitIndent = (raw) => {
@@ -397,14 +398,21 @@ export function lintWorkflow(text, name = "workflow") {
   return errors;
 }
 
-/** CLI: one or more workflow files; exit 1 with per-line errors if any fail.
- * With no args, lints every workflow at THIS repo's .github/workflows/
- * (the bare `node scripts/workflow-lint.mjs` form CLAUDE.md documents —
- * pre-#291 that form exited 2 on a clean tree). The default resolves
- * against the script's own repo root, not the caller's cwd, so the
- * documented invocation works from any directory; the usage error fires
- * only when the default set is empty. Explicit args behave as before. */
-if (import.meta.url === `file://${process.argv[1]}`) {
+// CLI-arm guard, issue #302: compare REALPATHS on both sides. Node loads a
+// module through its resolved path, so import.meta.url is always the real
+// file, while process.argv[1] stays as invoked. Spawn the tool through a
+// symlink (wrapper dirs; macOS /tmp → /private/tmp) and the old string
+// compare `file://${argv[1]}` never matched — the whole CLI block silently
+// skipped and the process exited 0 having linted NOTHING (false green).
+const invokedSelf = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false; // argv[1] unreadable — not a self-invocation
+  }
+})();
+if (invokedSelf) {
   const usage = "usage: workflow-lint.mjs <workflow.yml> [more.yml ...] " +
     "(no args: lint .github/workflows/*.yml and *.yaml at the repo root)";
   let targets;
