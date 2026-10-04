@@ -143,6 +143,12 @@ blast radius:
   `ai-reviewed`/`changes-requested` ONLY from a line-strict verdict
   (`scripts/review-verdict.mjs`); an absent/unparseable verdict sets no
   labels and tells a human to look.
+- **Prior independent verification is context, not approval**: the
+  reviewer's task includes any `gate-verify: pass|fail` markers other
+  agents left on the PR (issue #326 — the shared account cannot post
+  approving reviews) via `scripts/pr-verification.mjs`, as CLAIMS to
+  check against the diff; markers never set labels and never substitute
+  for the reviewer's own verdict.
 - **Reviews are queue items too**: `/review` on a PR (or a
   `workflow_dispatch`) enqueues `dsh/review` via `agent-review-thin.yml` —
   a ~15s job on the self-hosted `dsh` lane. The review itself always runs

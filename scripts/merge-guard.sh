@@ -29,6 +29,19 @@
 #                       gh here so the guard can never recurse into the shim
 #                       (inside an agent session PATH resolves `gh` to the
 #                       shim); default `command -v gh` for standalone use.
+#   MERGE_GUARD_VERIFY  OPT-IN (issue #326): when exactly "on", the guard
+#                       ALSO requires a passing gate-verify comment on the
+#                       PR — the shared-account fleet cannot post approving
+#                       reviews ("Review can not approve your own pull
+#                       request"), so independent agent verification rides
+#                       the gate-verify marker channel, reported by
+#                       scripts/pr-verification.mjs. A fail marker or a
+#                       silent channel refuses; an unresolvable channel
+#                       refuses fail-closed. Default OFF — gates-only, the
+#                       #434 semantics unchanged; comment markers can
+#                       never block or green-light a merge silently.
+#   MERGE_GUARD_VERIFY_TOOL  override path to pr-verification.mjs (default
+#                       the sibling script in this scripts/ dir).
 #   GH_TOKEN / GH_CONFIG_DIR  pass through to gh, as usual.
 #
 # Fail-closed (REVIEW.md): every unresolvable state — no gh, PR not
@@ -105,11 +118,32 @@ process.stdin.on("data", (d) => (s += d)).on("end", () => {
   console.log((latest.status || "?") + " " + (latest.conclusion || "none"));
 });')"
 
+# Independent verification (issue #326) — OPT-IN via MERGE_GUARD_VERIFY=on.
+# Consulted ONLY after the gates check is green: the gate-verify channel is
+# a SECOND signal on an already-green head, never a substitute for CI. A
+# fail marker or a silent channel refuses (exit 1); an unresolvable
+# channel refuses fail-closed (exit 2, the typed reason rides through).
+verify_gate() {
+  [ "${MERGE_GUARD_VERIFY:-}" = "on" ] || return 0
+  local tool out rc
+  tool="${MERGE_GUARD_VERIFY_TOOL:-"$(dirname "$0")/pr-verification.mjs"}"
+  [ -f "$tool" ] \
+    || unresolvable "MERGE_GUARD_VERIFY=on but the verification tool is missing at '$tool' (issue #326)"
+  out="$(node "$tool" "$PR_NUM" 2>&1)"
+  rc=$?
+  case "$rc" in
+    0) echo "merge-guard: independent verification GREEN — $out";;
+    1) refuse "gate-verify channel on PR #$PR_NUM is NOT pass (${out:-empty}) — a fail marker or a silent channel does not pass the armed verify gate (issue #326)";;
+    *) unresolvable "gate-verify channel unresolvable for PR #$PR_NUM: ${out:-<no output>} (issue #326)";;
+  esac
+}
+
 case "$VERDICT" in
   ABSENT)
     refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM — the workflow never ran on this head; landing it is exactly the #422 receipt (issue #434)";;
   "completed success")
     echo "merge-guard: GREEN — '$CHECK' completed/success on PR #$PR_NUM head ${PR_SHA:0:7}"
+    verify_gate
     [ "$MODE" = "check" ] && exit 0
     exec "$GH_BIN" pr merge "$@"
     ;;
