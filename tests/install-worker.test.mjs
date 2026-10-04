@@ -131,7 +131,6 @@ test("success echo names the guard the LINE actually arms (flock-guarded, never 
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
-});
 
 test("idempotent: a second run does not duplicate the cron line", () => {
   const f = fixture();
