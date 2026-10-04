@@ -8,7 +8,24 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } from "../lib/index.js";
+
+// issue #358: lib/index.js imports @deepseek-ai/dsh-tools at module scope
+// and a bare clone has not installed the plugin dep closure, so the module
+// LOAD itself throws ERR_MODULE_NOT_FOUND and the bare `node --test` gate
+// reddens with what looks like plugin breakage. Probe the load; on a bare
+// tree SKIP LOUD with the converging fix and stay green (the real legs
+// below still run on every converged tree).
+let lib;
+try {
+	lib = await import("../lib/index.js");
+} catch (error) {
+	if (error?.code === "ERR_MODULE_NOT_FOUND") {
+		console.error(`SKIP\tdsh-system-prompt-editor smoke: plugin deps not installed on this tree — ${error.message} — run scripts/install-plugin-smoke-deps.mjs (converges once, reruns are no-ops), then rerun for the real legs (issue #358)`);
+		process.exit(0);
+	}
+	throw error;
+}
+const { apply, normalizeConfig, readBlock, resolveLayout, readScoped, workspaceFor, USER_PROMPT_SECTION } = lib;
 
 const dir = mkdtempSync(join(tmpdir(), "sp-editor-"));
 const file = join(dir, "system-prompt.md");

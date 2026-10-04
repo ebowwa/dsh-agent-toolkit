@@ -22,8 +22,24 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const nodeHalf = await import(join(pkgDir, "lib", "index.js"));
-const hotHalf = await import(join(pkgDir, "lib", "hot.js"));
+
+// issue #358: lib/index.js imports @deepseek-ai/schemastery through the
+// runtime tree's node_modules — a bare clone has not installed that
+// closure, so the module LOAD itself throws ERR_MODULE_NOT_FOUND and the
+// bare `node --test` gate reddens with what looks like plugin breakage.
+// Probe the load; on a bare tree SKIP LOUD with the converging fix and
+// stay green (the real legs below still run on every converged tree).
+let nodeHalf, hotHalf;
+try {
+	nodeHalf = await import(join(pkgDir, "lib", "index.js"));
+	hotHalf = await import(join(pkgDir, "lib", "hot.js"));
+} catch (error) {
+	if (error?.code === "ERR_MODULE_NOT_FOUND") {
+		console.error(`SKIP\tdsh-stream-watchdog smoke: plugin deps not installed on this tree — ${error.message} — run scripts/install-plugin-smoke-deps.mjs (converges once, reruns are no-ops), then rerun for the real legs (issue #358)`);
+		process.exit(0);
+	}
+	throw error;
+}
 
 let pass = 0;
 let fail = 0;

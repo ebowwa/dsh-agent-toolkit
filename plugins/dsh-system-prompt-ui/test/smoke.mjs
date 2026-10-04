@@ -11,7 +11,25 @@ import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { apply as nodeApply, BLOCK_ROUTE } from "../lib/index.js";
+
+// issue #358: lib/index.js imports @deepseek-ai/dsh-tools at module scope
+// and a bare clone has not installed the plugin dep closure, so the module
+// LOAD itself throws ERR_MODULE_NOT_FOUND and the bare `node --test` gate
+// reddens with what looks like plugin breakage. Probe the load; on a bare
+// tree SKIP LOUD with the converging fix and stay green (the real legs
+// below still run on every converged tree; the client.js leg below reads
+// the source through a vm with a stub loader and never resolves deps).
+let lib;
+try {
+	lib = await import("../lib/index.js");
+} catch (error) {
+	if (error?.code === "ERR_MODULE_NOT_FOUND") {
+		console.error(`SKIP\tdsh-system-prompt-ui smoke: plugin deps not installed on this tree — ${error.message} — run scripts/install-plugin-smoke-deps.mjs (converges once, reruns are no-ops), then rerun for the real legs (issue #358)`);
+		process.exit(0);
+	}
+	throw error;
+}
+const { apply: nodeApply, BLOCK_ROUTE } = lib;
 
 const dir = mkdtempSync(join(tmpdir(), "sp-ui-"));
 const file = join(dir, "system-prompt.md");
