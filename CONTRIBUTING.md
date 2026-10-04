@@ -71,5 +71,15 @@ The driver stamps this contract into every task it assembles
 reference text lives in [.agents/README.md](.agents/README.md) and the
 exit-summary shape is pinned by `tests/agent-contract.test.mjs`.
 
+**This prose is test-pinned.** The conduct sections of this file and
+[.agents/README.md](.agents/README.md) are graded by the contract tests
+(`tests/agent-contract.test.mjs`, `tests/milestone-contract.test.mjs`,
+`tests/relationships-contract.test.mjs`,
+`tests/branch-hygiene-contract.test.mjs`) — a sentence edit here can
+redden CI from a different file, so run `node --test tests/*.test.mjs`
+after any edit. The pins anchor on the substantive clause, casing- and
+position-agnostic (issue #270): a reflowed sentence stays green, a
+disappeared rule goes red.
+
 Repo conventions (gates, layers, toolchain) live in this repo's own
 CLAUDE.md / README — this file owns only the communication conduct above.

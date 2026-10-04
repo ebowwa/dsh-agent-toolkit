@@ -163,10 +163,12 @@ test("issue #115: driver and contract doc carry the three verified mutations wit
     assert.match(doc, re, `contract doc: ${name} must keep its verified input shape`);
   }
   // The doc's verified-API section pins GraphQL-only + the read fields a
-  // reviewer uses to verify an edge.
+  // reviewer uses to verify an edge. Wrap-tolerant span (issue #270): the
+  // field list may reflow onto wrapped/bulleted lines without breaking
+  // the pin — only the disappearance of a field read goes red.
   assert.match(doc, /REST endpoints 404 — GraphQL only/);
   for (const field of ["`relatesTo`", "`blockedBy`", "`blocking`", "`subIssues`"]) {
-    assert.match(doc, new RegExp(`Reads on Issue:.*${field}`), `contract doc must list the ${field} read`);
+    assert.match(doc, new RegExp(`Reads on Issue:[\\s\\S]{0,400}${field}`), `contract doc must list the ${field} read`);
   }
 });
 

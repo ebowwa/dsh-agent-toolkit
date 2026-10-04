@@ -247,9 +247,19 @@ second.
 - `tests/agent-contract.test.mjs` — pins the discovery-protocol driver
   block, its unconditional placement in prompt assembly, and the
   exit-summary shape.
+- `tests/milestone-contract.test.mjs` — pins the chain/sweep milestone
+  convention on all three surfaces: this doc, CONTRIBUTING.md, and the
+  shipper's carry.
 - `tests/relationships-contract.test.mjs` — pins the issue-relationships
   driver block (placement + the three verified mutation shapes) and keeps
   this doc in agreement with it.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+
+**This prose is test-pinned** (issue #270): the contract sections above
+are graded by the test files listed here, so a sentence edit can redden
+CI from a different file — run `node --test tests/*.test.mjs` after any
+edit. The pins anchor on the substantive clause, casing- and
+position-agnostic: a reflowed sentence stays green, a disappeared rule
+goes red.

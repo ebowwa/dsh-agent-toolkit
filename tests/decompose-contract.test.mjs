@@ -124,10 +124,12 @@ test("filed parts are SELF-CONTAINED tickets (zero sibling context)", () => {
   assert.match(DRIVER, /class: mac-native — target: mac lane/);
   // coupling phrases are banned by name — the exact failure the rule kills
   assert.match(DRIVER, /never \\"see the\n  other task\\", never \\"as described above\\"/);
-  // and the skill states the rule standalone (the fixtures' source of truth)
+  // and the skill states the rule standalone (the fixtures' source of
+  // truth) — wrap-tolerant (issue #270): a markdown rewrap of SKILL.md
+  // must not redden this pin, only the rule's disappearance may.
   assert.match(
     SKILL,
-    /\*\*SELF-CONTAINED\*\*: a fresh agent holding only that ticket\n  completes it with ZERO sibling context/
+    /\*\*SELF-CONTAINED\*\*: a fresh agent holding only that ticket\s+completes it with ZERO sibling context/
   );
   for (const el of ["the goal of the part", "receipts", "its own acceptance criteria", "the target capability class \\+ node class"]) {
     assert.match(SKILL, new RegExp(el), `self-contained body element missing: ${el}`);
@@ -143,9 +145,10 @@ test("filing is routing: pile-gate honesty, no half-running, no scope-creep", ()
   // parts the agent CAN run, it runs — filing never ships less
   assert.match(DRIVER, /Parts this cell CAN legally and efficiently run: run them here\./);
   assert.match(DRIVER, /Filing is routing, not outsourcing/);
-  // the skill carries the same honesty section
-  assert.match(SKILL, /ride the pile\ngate \(~1 day\)/);
-  assert.match(SKILL, /Never assume\ninstant sub-dispatch; never block on a filed ticket/);
+  // the skill carries the same honesty section — wrap-tolerant spans
+  // (issue #270): the pinned rule, not the line breaks, is the contract
+  assert.match(SKILL, /ride the pile\s+gate \(~1 day\)/);
+  assert.match(SKILL, /Never assume\s+instant sub-dispatch; never block on a filed ticket/);
 });
 
 test("the skill contract exists in .agents with the skill-file shape", () => {

@@ -114,6 +114,18 @@ test("the docs point at the enforcement seam (the driver stamps every task)", ()
   assert.match(contributing, /run-dsh-agent\.sh/);
 });
 
+test("the docs warn that their prose is test-pinned (issue #270)", () => {
+  // The #270 signal gap: nothing in the docs said tests grade their
+  // sentences, so a prose edit could redden CI from a different file with
+  // no pointer back. Both surfaces now carry the warning, and this pin is
+  // token-anchored — reflow-safe by the same rule the warning teaches.
+  for (const [name, text] of [[".agents/README.md", agentsReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, /node --test tests\/\*\.test\.mjs/, `${name}: the run-the-suite instruction`);
+    assert.match(text, /after any\s+edit/, `${name}: the edit-then-test rule`);
+    assert.match(text, /substantive\s+clause/, `${name}: the clause-anchor doctrine`);
+  }
+});
+
 // --- 3. the exit-summary shape (fixtures) --------------------------------
 
 test("exit-summary shape: a single filed issue", () => {
