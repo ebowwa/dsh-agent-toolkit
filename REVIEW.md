@@ -63,6 +63,23 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   unparseable verdict sets NO labels and must surface for a human. The
   rules contract is read from the PR's BASE ref — a PR must not be able to
   edit the REVIEW.md that grades it.
+- Independent verification of a sibling PR rides the `gate-verify:`
+  comment channel (issue #326): the fleet mints every PR under one shared
+  account, so `gh pr review --approve` is structurally impossible for any
+  agent — the verifying agent posts a PR comment whose line
+  `gate-verify: pass` (or `gate-verify: fail`) IS the verification,
+  parsed line-strict by `scripts/gate-verify.mjs` (label REQUIRED — a
+  bare `pass` line in prose never qualifies) and aggregated per PR by
+  `scripts/pr-verification.mjs` (last marker wins; comment bodies never
+  pass through — only verdict + id/author/URL). The marker is evidence,
+  never an auto-approval: labels still come only from `review-verdict.mjs`,
+  the review stage receives prior markers as CLAIMS to check (an
+  unreproducible claim is a finding, the honesty rule), and the merge
+  guard weighs the channel only when explicitly armed
+  (`MERGE_GUARD_VERIFY=on`) — an unarmed guard is gates-only, so comment
+  markers can never block or green-light a merge silently. The shipper is
+  deliberately NOT a consumer: its window closes at PR creation, while
+  verification attaches to an already-open PR.
 
 ## Workflow discipline
 
