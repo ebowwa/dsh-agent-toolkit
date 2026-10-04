@@ -127,6 +127,21 @@ if [ -z "$TASK" ]; then
   echo "error: no task given (pass it as \$1 or set DEFAULT_TASK)" >&2
   exit 2
 fi
+# The `:-` fallback above only guards unset/empty $1. A tower-side mint can
+# also stringify a JS undefined/null INTO the claim body (observed
+# 2026-10-04: 185+ claims in one wave arrived as the literal 9-char string
+# "undefined", each burning a full provider session to conclude "there is
+# no task" — issues #360/#361; the mint site itself is FleetTower-side).
+# These literals are NOT taskless scheduled runs (those want DEFAULT_TASK)
+# — they are corrupted claims. Fail fast and loud, BEFORE the retry ladder
+# wraps anything: a mint that lost its task text must surface here, not
+# silently become a maintenance roam or a throttle-wave retry burn.
+case "$TASK" in
+  undefined|null)
+    echo "::error::task body is the literal string '$TASK' — an upstream mint stringified a JS $TASK into the claim (issues #360/#361); refusing to launch a session on it" >&2
+    exit 2
+    ;;
+esac
 
 # The agent always launches via `doppler run` with the service token passed
 # through the environment (DOPPLER_TOKEN) — there is no local-auth fallback.

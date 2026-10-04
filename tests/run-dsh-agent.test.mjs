@@ -412,6 +412,80 @@ test("the job-scoped home mint is per-run: two concurrent drivers on one shared 
   rmSync(dir, { recursive: true, force: true });
 });
 
+// --- 2e. the corrupted-claim guard: a literal "undefined"/"null" task body
+// dies at the seam (issues #360/#361) ---------------------------------------
+//
+// 2026-10-04: a tower-side mint wave stringified a JS undefined into the
+// claim body — the spawn seam hands the driver the literal 9-char string
+// "undefined" as $1, `${1:-$DEFAULT_TASK}` only guards unset/empty, and
+// every such agent burned a full provider session to conclude "there is
+// no task" (185+ rows in one wave; the mint site itself is
+// FleetTower-side, tracked there). The driver-side contract pinned here:
+// the literal undefined/null strings are CORRUPTED claims, not taskless
+// scheduled runs — typed error, exit 2, before the retry ladder wraps
+// anything and before a session is spent. A real task passes the guard,
+// proven by reaching the NEXT typed guard (an unset DOPPLER_SERVICE_TOKEN
+// dies with its own message). No stubs are needed: both guards fire in
+// the script's first 150 lines, before any external tool is consulted.
+test("a literal-string task body (undefined/null) is a corrupted claim: fail fast at the seam, never DEFAULT_TASK, never a launch (issues #360/#361)", () => {
+  // Structural class guard (test-2c posture): the seam must keep the
+  // literal case — a revert to bare `${1:-$DEFAULT_TASK}` reds here
+  // deterministically, before any behavioral leg runs.
+  const src = readFileSync(SCRIPT, "utf8");
+  assert.match(
+    src,
+    /case "\$TASK" in\n\s+undefined\|null\)/,
+    "the task seam must classify the literal undefined/null strings (issues #360/#361)",
+  );
+
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-agent-undeftask-"));
+  const envFor = () => {
+    const env = {
+      ...HERMETIC_ENV,
+      HOME: dir,
+      DSH_RETRY_BACKOFF_S: "0", // tests-lint rule 2 (these guards fire long before the ladder; every driver spawn pins the seam regardless)
+    };
+    delete env.DOPPLER_SERVICE_TOKEN; // the pass-through leg must die at the TOKEN guard, not run an agent
+    return env;
+  };
+
+  // The two corrupted shapes: each dies AT THE TASK SEAM with its own
+  // typed error (and must not reach the doppler-token guard below it).
+  for (const literal of ["undefined", "null"]) {
+    const proc = spawnSync("bash", [SCRIPT, literal], {
+      encoding: "utf8",
+      env: envFor(),
+      cwd: dir,
+      timeout: 30_000,
+    });
+    assert.equal(proc.status, 2, `literal '${literal}' must exit 2, stderr: ${proc.stderr}`);
+    assert.match(
+      proc.stderr,
+      new RegExp(`task body is the literal string '${literal}'`),
+      `literal '${literal}' must die with the corrupted-claim error`,
+    );
+    assert.doesNotMatch(
+      proc.stderr,
+      /DOPPLER_SERVICE_TOKEN/,
+      `literal '${literal}' must die at the TASK guard — reaching the token guard means the corrupted claim was accepted`,
+    );
+  }
+
+  // A real task passes the task guard — pinned by dying at the NEXT typed
+  // guard instead (unset token), proving the literal classifier does not
+  // over-capture short tasks.
+  const real = spawnSync("bash", [SCRIPT, "do the real claimed work"], {
+    encoding: "utf8",
+    env: envFor(),
+    cwd: dir,
+    timeout: 30_000,
+  });
+  assert.equal(real.status, 2, "the real-task leg exits 2 at the token guard");
+  assert.match(real.stderr, /DOPPLER_SERVICE_TOKEN unset/, "a real task passes the task seam and reaches the next guard");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- 2b. soft gh end-to-end: the WHOLE driver must survive a failed gh
 // bootstrap and still launch the agent (review r2 finding 2's
 // integration half). The extracted-function pins in cell-tools.test.mjs
