@@ -7,6 +7,13 @@ tasks and legacy CI comment jobs alike — so an agent cannot work a claim
 without reading it. This file is the reference text; the skills in
 `skills/` carry the workflows that ride on top of it.
 
+**These contract sections are load-bearing for CI** (issue #270): the
+rules below are pinned by tests — `tests/milestone-contract.test.mjs`,
+`tests/agent-contract.test.mjs`, `tests/branch-hygiene-contract.test.mjs`,
+`tests/relationships-contract.test.mjs`, `tests/decompose-contract.test.mjs`.
+The pins grade the rule, not the sentence shape, but the rule must
+survive your edit: run `node --test tests/*.test.mjs` after any edit here.
+
 ## Standing contract: the discovery protocol
 
 **File what you notice, never silently scope-creep.** While working a
