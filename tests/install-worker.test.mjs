@@ -84,8 +84,13 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
     // live twice). flock is the canonical cron mutual exclusion.
     assert.match(cron, /flock -n .*sweep\.lock/, "flock-overlapped, no pgrep self-match possible");
     assert.ok(!cron.includes("pgrep"), "no pgrep guard may ship in the keepalive");
-    assert.match(cron, /checkout -q --force v1/, "re-pins to the moving v1 tag each sweep (--force: dirty trees must never shadow the tag — 2026-09-21 incident)");
-    assert.match(cron, /fetch --tags --force/, "force-moves the moving tag (plain fetch clobbers: \"would clobber existing tag\")");
+    // The re-pin rides the GUARDED pin script (issue #276): --force stays
+    // inside it for the detached pin state (2026-09-21: stray edits must
+    // never shadow the tag), but a checkout on a branch is HELD, not
+    // clobbered. The line itself must not carry the raw force-checkout.
+    assert.match(cron, /pin-toolkit\.sh .* \|\| true/, "re-pin goes through the guarded pin-toolkit.sh (issue #276)");
+    assert.ok(!cron.includes("checkout -q --force v1"), "no raw per-minute force-checkout in the line — the #276 discard path");
+    assert.match(cron, /flock -n .*sweep\.lock/, "flock overlap guard intact");
     assert.ok(!cron.includes(GH_CRED), "NO credential in the cron line");
     assert.ok(!cron.includes(DOPPLER_CRED), "NO doppler credential in the cron line");
     // the installer's own output never echoes the values either
@@ -110,16 +115,38 @@ test("idempotent: a second run does not duplicate the cron line", () => {
   }
 });
 
-test("always refreshes the toolkit pin to v1 (with safe.directory; no silent failures)", () => {
+test("deploy pin routes through pin-toolkit.sh when the checkout carries it (guarded, issue #276)", () => {
   const f = fixture();
   try {
+    // a checkout from a post-guard release carries the guarded pin script
+    mkdirSync(path.join(f.botDir, "scripts"), { recursive: true });
+    writeFileSync(path.join(f.botDir, "scripts", "pin-toolkit.sh"),
+      readFileSync(path.join(ROOT, "scripts", "pin-toolkit.sh")));
+    const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /toolkit pinned at/);
+    const git = readFileSync(f.gitLog, "utf8");
+    assert.match(git, /symbolic-ref -q HEAD/, "the guard consults HEAD state before any --force");
+    assert.match(git, /fetch --tags --force/, "fetches the moving tag through the guard");
+    assert.match(git, /checkout -q --force v1/, "--force stays on the detached pin state (2026-09-21 cure)");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("deploy pin keeps the legacy inline path for a pre-guard checkout (transition safety)", () => {
+  const f = fixture();
+  try {
+    // the fixture's toolkit dir has NO scripts/pin-toolkit.sh — the
+    // pre-guard release shape; the deploy must not break mid-transition
     const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /toolkit pinned at/);
     const git = readFileSync(f.gitLog, "utf8");
     assert.match(git, /fetch --tags/, "fetches tags every install");
-    assert.match(git, /checkout --force v1/, "checks out the moving v1 pin (--force — local edits never shadow tags)");
+    assert.match(git, /checkout --force v1/, "legacy inline pin (local edits never shadow tags)");
     assert.match(git, /safe\.directory=/, "ownership guard explicitly satisfied");
+    assert.doesNotMatch(git, /symbolic-ref/, "no guard call on the legacy path");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }

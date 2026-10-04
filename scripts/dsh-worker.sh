@@ -120,6 +120,54 @@ CHECK_ENV DSH_WORKER_REPOS
 [ -f "$DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" ] \
   || { echo "dsh-worker: no runnable driver at $DSH_AGENT_TOOLKIT_DIR/scripts/run-dsh-agent.sh" >&2; exit 2; }
 
+# KEEPALIVE SELF-HEAL (issue #276 propagation arm): boxes provisioned
+# before the guarded pin carry the raw `checkout -q --force v1` cron
+# line — the per-minute path that reset the live checkout under a
+# working agent. That OLD line is also what DELIVERS this worker (it
+# re-pins the moving v1 tag, and the tag carries this script), so the
+# upgrade rides the worker itself: when the installed line runs
+# dsh-worker.sh but predates the guarded pin, rewrite it in place,
+# preserving its own toolkit dir, worker home, schedule and flock
+# anchors — never minting a line where none exists (dev/CI cells with
+# no keepalive stay untouched), never re-running install-worker by hand
+# on every box. DSH_WORKER_NO_KEEPALIVE_HEAL=1 opts out (test seam /
+# operator hold).
+heal_keepalive_line() {
+  [ -n "${DSH_WORKER_NO_KEEPALIVE_HEAL:-}" ] && return 0
+  command -v crontab >/dev/null 2>&1 || return 0
+  local cur line dir home healed
+  cur="$(crontab -l 2>/dev/null || true)"
+  case "$cur" in
+    *dsh-worker.sh*--once*) ;;   # a keepalive exists — inspect it
+    *) return 0 ;;               # no keepalive on this box: not ours to mint
+  esac
+  case "$cur" in
+    *pin-toolkit.sh*) return 0 ;; # already the guarded shape
+  esac
+  line="$(printf '%s\n' "$cur" | grep -F 'dsh-worker.sh --once' | head -1)"
+  # anchors of the line grammar: the toolkit dir rides
+  # `bash <dir>/scripts/dsh-worker.sh`, the worker home rides
+  # `flock -n <home>/sweep.lock` — both predate the guard and are stable.
+  dir="$(printf '%s' "$line" | sed -n 's|.*bash \([^ ;]*\)/scripts/dsh-worker\.sh.*|\1|p')"
+  home="$(printf '%s' "$line" | sed -n 's|.*flock -n \([^ ;]*\)/sweep\.lock.*|\1|p')"
+  if [ -z "$dir" ] || [ -z "$home" ]; then
+    echo "dsh-worker: keepalive line predates the guarded pin but its anchors are unparseable — NOT healing (manual rewrite needed, issue #276)" >&2
+    return 0
+  fi
+  healed="$(printf '%s\n' "$cur" | sed "s|git -C ${dir} fetch --tags --force -q && git -C ${dir} checkout -q --force v1|bash ${dir}/scripts/pin-toolkit.sh ${dir} ${home}/worker.log|")"
+  if [ "$healed" = "$cur" ]; then
+    echo "dsh-worker: keepalive line is not the known raw-pin shape — NOT healing (issue #276)" >&2
+    return 0
+  fi
+  if printf '%s\n' "$healed" | crontab - 2>/dev/null; then
+    echo "dsh-worker: keepalive line upgraded to the guarded pin (issue #276): raw force-checkout → pin-toolkit.sh" >&2
+  else
+    echo "dsh-worker: keepalive heal failed (crontab write) — the raw pin line remains (issue #276)" >&2
+  fi
+  return 0
+}
+heal_keepalive_line
+
 DATA="${DSH_WORKER_DATA_ROOT:-$HOME/.dsh-worker}"
 QUEUE_LABEL="${DSH_WORKER_QUEUE_LABEL:-dsh/queued}"
 RUN_LABEL="${DSH_WORKER_RUN_LABEL:-dsh/running}"

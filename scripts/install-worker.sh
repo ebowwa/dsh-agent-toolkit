@@ -11,10 +11,12 @@
 #      ~/.dsh-worker/env) — the ONLY place the credentials ever land
 #      (never the cron line, never the log);
 #   3. the cron keepalive line: every minute, pgrep-guard, RE-PIN the
-#      toolkit to the moving `v1` tag (fetch --tags + checkout v1 — the
-#      audited-release pin drift-check advances), source the env file,
-#      run one sweep. The worker's code therefore updates itself only
-#      through the repo's own release gate.
+#      toolkit to the moving `v1` tag via scripts/pin-toolkit.sh (fetch
+#      --tags + guarded checkout --force v1 — the audited-release pin
+#      drift-check advances; a branch checkout is HELD, not clobbered —
+#      issue #276), source the env file, run one sweep. The worker's
+#      code therefore updates itself only through the repo's own release
+#      gate.
 #
 # Env contract (values via env; NEVER printed):
 #   WORKER_GH_CRED          required — the worker PAT (TOWER_PROBE_PAT)
@@ -49,15 +51,31 @@ WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 # 1. toolkit checkout (clone when absent) and ALWAYS refresh the pin to
 #    the current v1 release — a deploy must run what steady-state runs
 #    (the first activation ran a stale checkout and re-failed a fixed
-#    bug). safe.directory is set explicitly: the Actions runner's per-job
-#    HOME/gitconfig handling can trip git's ownership guard silently.
+#    bug). The pin goes through scripts/pin-toolkit.sh (issue #276): the
+#    GUARDED form — --force stays on the detached pin state (stray edits
+#    must never shadow the tag, 2026-09-21) but a checkout sitting on a
+#    BRANCH is held, not clobbered (an in-place agent's work is real
+#    work). A pre-guard release checkout (no pin-toolkit.sh yet) keeps
+#    the legacy inline pin so deploys never break mid-transition.
 #    No -q: nothing in this installer may fail quietly.
 PIN_OK=0
 if [ ! -d "$DSH_AGENT_TOOLKIT_DIR/.git" ]; then
   git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_AGENT_TOOLKIT_DIR" \
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
-if git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
+PIN_TOOLKIT="$DSH_AGENT_TOOLKIT_DIR/scripts/pin-toolkit.sh"
+if [ -f "$PIN_TOOLKIT" ]; then
+  if bash "$PIN_TOOLKIT" "$DSH_AGENT_TOOLKIT_DIR"; then
+    PIN_OK=1
+    if [ -f "$DSH_AGENT_TOOLKIT_DIR/.pin-held" ]; then
+      echo "install-worker: pin HELD — a branch is checked out (issue #276); the sweep re-pins after it is left"
+    else
+      echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
+    fi
+  else
+    echo "install-worker: WARNING — pin-toolkit failed (exit $?) — the toolkit runs its previous checkout (cron retries each sweep)" >&2
+  fi
+elif git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" fetch --tags --force \
    && git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" checkout --force v1; then
   PIN_OK=1
   echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
@@ -82,14 +100,15 @@ touch "$WORKER_HOME/worker.log" 2>/dev/null || true
 
 # 3. cron keepalive — idempotent (skipped when the line exists). The
 #    credentials are NOT in the line: it sources the 0600 env file.
-#    NOTE --force (2026-09-21 incident): a bare `checkout v1` SILENTLY
-#    KEEPS local modifications — an in-place patch of settings.zai.yaml
-#    (the door switch) left every box's checkout dirty, and the sweep then
-#    shadowed v1.73.0→v1.74.0 for hours while agent homes regenerated from
-#    the stale template. --force discards stray local edits; the template
-#    channel is tag-only by design.
-#    `checkout v1` failing degrades to running the previously pinned
-#    release (the fetch error lands in worker.log) — never a broken sweep.
+#    The re-pin rides scripts/pin-toolkit.sh (issue #276): --force STAYS
+#    for the detached pin state (2026-09-21 incident: a bare
+#    `checkout v1` silently kept a stray settings.zai.yaml patch and the
+#    dirty checkout shadowed v1.73.0→v1.74.0 for hours), but a checkout
+#    on a BRANCH is held, not clobbered (2026-10-03 incident: the
+#    unguarded --force reset the live checkout under a working agent
+#    twice in ten minutes — issue #276). A pin failure degrades to
+#    running the previously pinned release (the error lands in
+#    worker.log) — never a broken sweep.
 # Overlap guard = flock, NOT pgrep. Every pgrep form self-matches here:
 # the carrier sh -c's cmdline contains the REAL script path in the sweep
 # braces, so the guard pattern always finds ITSELF (bracket tricks only
@@ -103,7 +122,7 @@ command -v flock >/dev/null 2>&1 \
 # ships scripts mode 644 — a direct invocation is "Permission denied"
 # (live-proven: the keepalive fired every minute from 17:52 and died at
 # exactly this word until fixed).
-LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'git -C ${DSH_AGENT_TOOLKIT_DIR} fetch --tags --force -q && git -C ${DSH_AGENT_TOOLKIT_DIR} checkout -q --force v1 || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
+LINE="* * * * * flock -n ${WORKER_HOME}/sweep.lock /bin/bash -c 'bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/pin-toolkit.sh ${DSH_AGENT_TOOLKIT_DIR} ${WORKER_HOME}/worker.log || true; set -a; . ${WORKER_HOME}/env; set +a; exec /bin/bash ${DSH_AGENT_TOOLKIT_DIR}/scripts/dsh-worker.sh --once >> ${WORKER_HOME}/worker.log 2>&1'"
 # The canonical-line rule: ALWAYS drop any existing dsh-worker line and
 # install the current one. Append-only idempotence ships upgrades never
 # (the box keeps its first, buggier line forever); rewrite-always is the

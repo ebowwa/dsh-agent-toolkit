@@ -306,6 +306,14 @@ where the work belongs:
   sub-dispatch and never block on a filed ticket; if one sits on this
   claim's critical path, say so loudly in the exit summary.
 
+## The live toolkit checkout is not a workspace (issue #276)
+
+A lane box's shared toolkit checkout (DSH_AGENT_TOOLKIT_DIR, aka
+~/dsh-agent-toolkit or the retired ~/dsh-bot) is re-pinned by the worker
+cron EVERY MINUTE. NEVER edit it in-place: do claim work in a throwaway
+clone or git worktree of the target repo. (Since #276 the re-pin holds
+while a branch is checked out, but clone-first is the contract.)
+
 ## Exit summary — the parts table (mandatory)
 
 Your final summary carries the decomposition, one row per part:

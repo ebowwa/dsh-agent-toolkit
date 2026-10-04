@@ -39,6 +39,7 @@ esac
     env: (extra = {}) => ({
       GH_TOKEN: "fake-token", DSH_AGENT_TOOLKIT_DIR: ROOT, DSH_WORKER_REPOS: "owner/repo",
       DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
+      DSH_WORKER_NO_KEEPALIVE_HEAL: "1", // hermetic: the heal must never touch the host crontab from the suite
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       ...extra,
     }) };

@@ -59,6 +59,7 @@ esac
         DSH_BOT_DIR: ROOT, // the retired name — the deployed env files' shape
         DSH_WORKER_REPOS: "owner/repo",
         DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
+        DSH_WORKER_NO_KEEPALIVE_HEAL: "1", // hermetic: the heal must never touch the host crontab from the suite
         PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       },
     });
@@ -84,6 +85,7 @@ test("worker: NEITHER name set still fails typed (exit 2) — the shim never loo
         GH_TOKEN: "fake-token",
         DSH_WORKER_REPOS: "owner/repo",
         DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
+        DSH_WORKER_NO_KEEPALIVE_HEAL: "1", // hermetic: the heal must never touch the host crontab from the suite
         PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       },
     });
@@ -439,6 +441,7 @@ echo "## Verdict: APPROVE"
         GH_TOKEN: "fake-token",
         DSH_WORKER_REPOS: "owner/repo",
         DSH_WORKER_DATA_ROOT: data,
+        DSH_WORKER_NO_KEEPALIVE_HEAL: "1", // hermetic: the heal must never touch the host crontab from the suite
         DSH_WORKER_DASHBOARD: "0",
         PATH: `${shims}${path.delimiter}${process.env.PATH}`,
       }),
