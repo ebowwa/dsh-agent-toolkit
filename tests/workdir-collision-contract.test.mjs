@@ -34,9 +34,13 @@
 //   structurally-impossible-collisions acceptance sentence; the driver
 //   block sits after scrub, after branch hygiene, before launch; and the
 //   docs corpus teaches NO recipe that mints a workdir through a bare
-//   epoch suffix or re-enters one through glob reuse (the ban text lives
-//   in prose — a fenced block carrying these patterns is a recipe
-//   re-teaching the collision).
+//   epoch suffix, re-enters one through glob reuse, or clones into a
+//   fixed bare destination (#333 — `gh repo clone <target> work`). The
+//   ban text lives in the contract doc's prose, so a fenced block or an
+//   inline code recipe carrying these patterns is a recipe re-teaching
+//   the collision — the taught skills get both scans (the #333 receipt
+//   itself was an inline code step, not a fence), the contract doc gets
+//   the fence scan (its inline code IS the ban citation).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -229,13 +233,53 @@ test("issues #333/#374: driver and contract doc both carry the three rules", () 
   }
 });
 
-// --- corpus sweep: no taught recipe mints or re-enters a colliding workdir -
+// --- corpus sweep: no taught recipe mints, re-enters, or clones into a
+// colliding workdir ---------------------------------------------------------
 
-test("issues #333/#374: the docs corpus teaches no epoch-mint or glob-reuse recipe (ban text lives in prose, never in a fenced block)", () => {
+// A fenced block teaches a colliding clone when its `gh repo clone` /
+// `git clone` line passes a FIXED bare destination (no `$`, not `.`):
+// `gh repo clone <target> work` is the #333 receipt — every guest in the
+// checkout lands on the same path, and a sibling's `rm -rf` precondition
+// wipes it. A destination that rides a shell variable (`"$workdir"`) or
+// a destination-less clone into the session's own minted cwd is
+// collision-free.
+const VALUE_FLAGS = new Set([
+  "--branch", "-b", "--depth", "--reference", "--reference-if-able",
+  "--origin", "-o", "--upstream-remote", "-u", "--template",
+  "--separate-git-dir", "-c",
+]);
+
+function fixedBareCloneDest(block) {
+  for (const raw of block.split("\n")) {
+    const m = raw.match(/\b(?:gh repo clone|git clone)\b/);
+    if (!m) continue;
+    // One command segment at a time: comments and chain operators end it.
+    const seg = raw.slice(m.index + m[0].length).split(/#|&&|\|\||;|\|/)[0];
+    const tokens = seg.trim().split(/\s+/).filter(Boolean);
+    const positionals = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith("--")) { if (!t.includes("=") && VALUE_FLAGS.has(t)) i++; continue; }
+      if (t.startsWith("-") && t.length > 1) { if (VALUE_FLAGS.has(t)) i++; continue; }
+      positionals.push(t);
+    }
+    if (positionals.length < 2) continue; // destination-less: basename lands in the session's own cwd
+    const dest = positionals[positionals.length - 1];
+    if (!dest.includes("$") && dest !== ".") return dest;
+  }
+  return null;
+}
+
+test("issues #333/#374: the docs corpus teaches no epoch-mint, glob-reuse, or fixed-destination recipe (fenced or inline — ban text lives in the contract doc's prose)", () => {
   const offenders = [];
   for (const file of CORPUS_FILES) {
     const text = readFileSync(file, "utf8");
     const lines = text.split("\n");
+    // The contract doc cites the bans in prose (its inline code IS the
+    // ban citation), so it is exempt from the inline-span scan only; the
+    // taught skills get both scans — the #333 receipt itself was an
+    // inline code step, not a fence.
+    const inlineExempt = file === CONTRACT_DOC;
     let inFence = false;
     let fenceStart = 0;
     for (let i = 0; i < lines.length; i++) {
@@ -250,9 +294,21 @@ test("issues #333/#374: the docs corpus teaches no epoch-mint or glob-reuse reci
           if (/ls -d work-/.test(block)) {
             offenders.push(`${path.relative(ROOT, file)}:${fenceStart} fenced block re-enters a workdir through glob reuse (#374)`);
           }
+          const fixedDest = fixedBareCloneDest(block);
+          if (fixedDest) {
+            offenders.push(`${path.relative(ROOT, file)}:${fenceStart} fenced block clones into the fixed bare destination \`${fixedDest}\` — the destination is the session's minted path (#333)`);
+          }
+        }
+        continue;
+      }
+      if (inFence || inlineExempt) continue;
+      for (const span of lines[i].match(/`[^`]*`/g) ?? []) {
+        const inlineDest = fixedBareCloneDest(span.slice(1, -1));
+        if (inlineDest) {
+          offenders.push(`${path.relative(ROOT, file)}:${i + 1} inline code recipe clones into the fixed bare destination \`${inlineDest}\` — the destination is the session's minted path (#333)`);
         }
       }
     }
   }
-  assert.deepEqual(offenders, [], "every fenced recipe that touches workdir minting/re-entry must be collision-free");
+  assert.deepEqual(offenders, [], "every taught recipe that touches workdir minting/re-entry/cloning must be collision-free");
 });

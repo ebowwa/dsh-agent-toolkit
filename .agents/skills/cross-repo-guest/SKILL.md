@@ -1,6 +1,6 @@
 ---
 name: cross-repo-guest
-description: Working in a TARGET repo (ANE, dsh-agent-toolkit, secondsee) from a factory checkout — the CLAUDE.md swap, target-first bootstrap, credential identity, and dominant-branch rules. Use when your task names a repo other than the factory, or after `gh repo clone <target> work`.
+description: Working in a TARGET repo (ANE, dsh-agent-toolkit, secondsee) from a factory checkout — the CLAUDE.md swap, target-first bootstrap, credential identity, and dominant-branch rules. Use when your task names a repo other than the factory, or after cloning the target into your minted workdir.
 ---
 
 # Cross-repo guest work
@@ -11,7 +11,8 @@ You were dispatched in the FACTORY repo but your work lives in a TARGET repo. Ev
 
 Your session's CLAUDE.md describes the **factory** — mock-first TypeScript, bun, layer rules. It does NOT apply to the target. After cloning:
 
-1. `gh repo clone <target> work && cd work`
+1. Mint a unique workdir, then clone into it (the standing workdir-hygiene contract; a fixed dir like `work` is one any sibling guest in the same checkout collides on, and `rm -rf` is legal only inside a dir YOUR session minted):
+   `work="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<target>-XXXXXX")" && gh repo clone <target> "$work" && cd "$work"`
 2. Read the TARGET's own `CLAUDE.md` and `README.md`. Follow THAT repo's conventions, gates, and toolchain. You are a guest there.
 3. The factory's rules (bun, arch, mock-first) are wrong for a Python target (uv, pytest, its own architecture tests). Never run factory gates in a target repo.
 

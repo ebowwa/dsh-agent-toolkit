@@ -346,7 +346,10 @@ agents on one box). The contract:
    — and the shared-path clone recipe (`rm -rf /tmp/<repo> && gh repo
    clone ...`) is banned outright: `rm -rf` is legal only inside a dir
    YOUR session minted, never on a predictable path another agent could
-   hold.
+   hold. No taught recipe names a fixed bare clone destination, either
+   (`gh repo clone <target> work`): the destination is always the
+   session's minted path, never a predictable name a sibling could hold
+   or wipe.
 2. **RE-ENTER ONLY A PATH YOU RECORDED** — a workdir is re-entered via
    the exact path your own session minted and recorded (the shell
    variable, your notes), NEVER via glob reuse
