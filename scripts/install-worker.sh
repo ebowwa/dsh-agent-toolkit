@@ -121,6 +121,6 @@ fi
 echo "install-worker: OK"
 echo "  toolkit : $DSH_AGENT_TOOLKIT_DIR (pinned to the moving v1 tag per sweep)"
 echo "  env     : $WORKER_HOME/env (mode 600) — the only credential resting place"
-echo "  cron    : keepalive armed (pgrep-guarded, once per minute)"
+echo "  cron    : keepalive armed (flock-guarded, once per minute)"
 echo "  repos   : $WORKER_REPOS"
 echo "  watch   : $WORKER_HOME/worker.log"
