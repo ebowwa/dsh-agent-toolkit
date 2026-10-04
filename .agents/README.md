@@ -183,10 +183,23 @@ survey agent files it as mess (HYGIENE.md measured exactly this: gat's
 16-branch `dsh/*` pile was "the single biggest messiness item in either
 repo"). The repos run auto-delete-on-merge (already live everywhere;
 verified on this repo: `delete_branch_on_merge=true`), so a **merged**
-branch cleans itself up. The contract closes the two leak paths the
-setting cannot reach:
+branch cleans itself up. The contract closes the three leak paths the
+setting cannot reach (the first named by issue #327):
 
-1. **SAME-SESSION PR PER BRANCH** — every branch your work lands on gets
+1. **MINT A UNIQUE BRANCH NAME** — concurrent agents on one claim derive
+   the same `dsh/issue-N-slug` name and the second push is rejected
+   (issue #327: two agents minted `dsh/issue-305-systemd-bash-exec`
+   seconds apart; the reflex `git pull` would merge a sibling's untested
+   work into the loser's branch, and a force-push would overwrite the
+   sibling's branch behind its open PR). Every minted name carries a
+   unique disambiguator suffix (pid, claim-id, or timestamp) — the
+   `dsh/issue-127-c5844082078` shape, never a bare `dsh/issue-N-slug`.
+   Before the first push, preflight the name:
+   `git ls-remote origin <branch-name>` — non-empty output means a
+   sibling's branch owns the name: re-mint with a fresh suffix and push
+   that instead. Never `git pull` onto the rejected name and never
+   force-push over it.
+2. **SAME-SESSION PR PER BRANCH** — every branch your work lands on gets
    its PR opened in the same session that pushed it. If your lane ships
    for you (the deterministic shipper opens the PRs), confirm the PR
    exists before you exit; if you push yourself, you create the PR. A
@@ -195,12 +208,12 @@ setting cannot reach:
    it from `DSH_CLOSING_TICKET` or the PR body's `#N` reference; when
    you open the PR yourself, set it in the same breath:
    `gh pr edit N --repo R --milestone "anchor"`).
-2. **DELETE ON CLOSE WITHOUT MERGE** — when a PR of yours closes without
+3. **DELETE ON CLOSE WITHOUT MERGE** — when a PR of yours closes without
    merging (superseded, wrong approach, duplicate), delete its branch in
    the same breath (`gh pr close NUMBER --delete-branch`; fallback
    `git push origin --delete BRANCH`). Merged branches are auto-deleted by
    the repo setting — never restore one.
-3. **BRANCHES-LEFT EXIT LINE** — reference every remote branch your session
+4. **BRANCHES-LEFT EXIT LINE** — reference every remote branch your session
    leaves behind (open PRs waiting on review) on ONE `branches-left:` line,
    exact shape:
 

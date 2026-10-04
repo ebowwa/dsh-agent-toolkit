@@ -6,11 +6,13 @@
 // measured as gat's 16-branch `dsh/*` pile ("the single biggest messiness
 // item in either repo"). The repos already run auto-delete-on-merge
 // (verified live on this repo: `delete_branch_on_merge=true`), so a MERGED
-// branch cleans itself up; the contract closes the two leak paths the
+// branch cleans itself up; the contract closes the three leak paths the
 // setting cannot reach:
 //
-//   1. a pushed branch with no PR — SAME-SESSION PR PER BRANCH;
-//   2. a PR closed without merging — DELETE ON CLOSE WITHOUT MERGE.
+//   1. a mint collision between concurrent agents on one claim — MINT A
+//      UNIQUE BRANCH NAME with a first-push preflight (issue #327);
+//   2. a pushed branch with no PR — SAME-SESSION PR PER BRANCH;
+//   3. a PR closed without merging — DELETE ON CLOSE WITHOUT MERGE.
 //
 // ...and gives the exit summary its machine-checkable receipt: ONE
 // `branches-left:` line, comma-space separated branch names, nothing else
@@ -151,17 +153,26 @@ test("issue #127: the prompt assembly appends the branch-hygiene contract to the
   assert.match(task, /zero orphan branches/);
   assert.match(task, /a branch whose work outlives the session without a PR is a lost thread/);
 
-  // Rule 1 — same-session PR per branch:
+  // Rule 1 — unique-suffix mint + collision preflight (issue #327):
+  assert.match(task, /MINT A UNIQUE BRANCH NAME — concurrent agents on one claim derive the SAME dsh\/issue-N-slug name/);
+  assert.match(task, /unique disambiguator suffix \(pid, claim-id, or timestamp\)/);
+  assert.match(task, /the dsh\/issue-127-c5844082078 shape, never a bare dsh\/issue-N-slug/);
+  assert.match(task, /Before the FIRST push, preflight the name: git ls-remote origin <branch-name>/);
+  assert.match(task, /non-empty output means a sibling's branch owns the name: re-mint with a fresh suffix and push that instead/);
+  assert.match(task, /NEVER git pull onto the rejected name/);
+  assert.match(task, /NEVER force-push over it/);
+
+  // Rule 2 — same-session PR per branch:
   assert.match(task, /SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/);
   assert.match(task, /A pushed branch with no PR is an orphan/);
 
-  // Rule 2 — delete on close without merge, with the exact commands:
+  // Rule 3 — delete on close without merge, with the exact commands:
   assert.match(task, /DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging \(superseded, wrong approach, duplicate\), delete its branch in the same breath/);
   assert.match(task, /gh pr close NUMBER --delete-branch/);
   assert.match(task, /git push origin --delete BRANCH/);
   assert.match(task, /Merged branches are auto-deleted by the repo setting — never restore one/);
 
-  // Rule 3 — the branches-left exit line, with its exact shape:
+  // Rule 4 — the branches-left exit line, with its exact shape:
   assert.match(task, /BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind \(open PRs waiting on review\) on ONE branches-left: line/);
   assert.match(task, /branches-left: dsh\/issue-127-c5844082078, dsh\/issue-128-nextticket/);
   assert.match(task, /never write branches-left: none/);
@@ -208,18 +219,23 @@ test("issue #127: the contract block sits in the driver between its markers, aft
 // word-for-word strings that appear identically on both.
 const HYGIENE_RULES = [
   [
+    "MINT A UNIQUE BRANCH NAME",
+    /1\. MINT A UNIQUE BRANCH NAME — concurrent agents on one claim derive the SAME dsh\/issue-N-slug name/,
+    /\*\*MINT A UNIQUE BRANCH NAME\*\*/,
+  ],
+  [
     "SAME-SESSION PR PER BRANCH",
-    /1\. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/,
+    /2\. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it/,
     /\*\*SAME-SESSION PR PER BRANCH\*\*/,
   ],
   [
     "DELETE ON CLOSE WITHOUT MERGE",
-    /2\. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging/,
+    /3\. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging/,
     /\*\*DELETE ON CLOSE WITHOUT MERGE\*\*/,
   ],
   [
     "BRANCHES-LEFT EXIT LINE",
-    /3\. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind/,
+    /4\. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind/,
     /\*\*BRANCHES-LEFT EXIT LINE\*\*/,
   ],
 ];
@@ -241,6 +257,12 @@ test("issue #127: driver and contract doc carry the two leak-path rules and the 
     /pushed branch with no PR is an orphan/,
     /gh pr close NUMBER --delete-branch/,
     /git push origin --delete BRANCH/,
+    // The issue-#327 collision rules (word-for-word on both surfaces,
+    // markdown-tolerant on the doc's backticks):
+    /unique disambiguator suffix \(pid, claim-id, or timestamp\)/,
+    /never a bare `?dsh\/issue-N-slug`?/,
+    /git ls-remote origin `?<branch-name>`?/,
+    /re-mint with a fresh suffix and push\s+that instead/,
   ]) {
     assert.match(src, re, "driver block drift");
     assert.match(doc, re, "contract doc drift");
