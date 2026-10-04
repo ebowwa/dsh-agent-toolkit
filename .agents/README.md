@@ -12,12 +12,17 @@ without reading it. This file is the reference text; the skills in
 **File what you notice, never silently scope-creep.** While working a
 claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
 
-1. **File an issue** in the repo where you observed it — title prefix
+1. **Search before you file** (issue #320): run `gh search issues
+   --repo <repo> --label agent-todo --state open` and check whether an
+   open ticket already carries the file/line you are about to cite. If
+   one does, add your receipts as a comment on THAT ticket — never
+   mint a duplicate (receipt: sibling finds 95s apart, #309/#311).
+2. **File an issue** in the repo where you observed it — title prefix
    `found:`, body carrying receipts: file:line, command output, and the
    claim you were working.
-2. **Label it** with the todo label that repo uses (`agent-todo` where it
+3. **Label it** with the todo label that repo uses (`agent-todo` where it
    exists; the closest todo label otherwise — say which you used).
-3. **Reference it in the exit summary.** Every filed issue number goes on
+4. **Reference it in the exit summary.** Every filed issue number goes on
    ONE `filed-followups:` line, exact shape:
 
    ```
@@ -28,10 +33,10 @@ claim, if you observe a bug, gap, or risk OUTSIDE the claim scope:
    nothing: omit the line entirely — never write `filed-followups: none`;
    absence is the machine-checkable signal that the diff carries no
    followups.
-4. **Never fix it in the current claim** — that is scope-creep — unless
+5. **Never fix it in the current claim** — that is scope-creep — unless
    the fix is trivial AND in-scope. The claim diff stays on-task; PRs are
    task work-products, not discoveries.
-5. **Stamp the chain/sweep milestone** (issue #185): when the `found:`
+6. **Stamp the chain/sweep milestone** (issue #185): when the `found:`
    ticket belongs to a chain or sweep, the FILER sets that chain's
    milestone on it — creating the milestone if absent (name = the chain's
    anchor, e.g. `citation-sweep` or the root defect key). One call, part
@@ -53,7 +58,7 @@ chain or sweep files under a GitHub **milestone** named for its anchor
 1. **Filer stamps** — a newly filed ticket that belongs to a chain/sweep
    carries that milestone; absent, the filer creates it (same anchor
    name). One `gh issue edit N --repo R --milestone "anchor"` call, part
-   of the file step (checklist item 5 of the discovery protocol above).
+   of the file step (checklist item 6 of the discovery protocol above).
 2. **Ship carries** — a shipped PR carries the closing ticket's
    milestone (`gh pr edit N --repo R --milestone "anchor"`), so the PR
    list renders chain progress and the milestone closes out with the
@@ -184,7 +189,7 @@ survey agent files it as mess (HYGIENE.md measured exactly this: gat's
 repo"). The repos run auto-delete-on-merge (already live everywhere;
 verified on this repo: `delete_branch_on_merge=true`), so a **merged**
 branch cleans itself up. The contract closes the two leak paths the
-setting cannot reach:
+setting cannot reach — plus the same-claim collision landmine (#327):
 
 1. **SAME-SESSION PR PER BRANCH** — every branch your work lands on gets
    its PR opened in the same session that pushed it. If your lane ships
@@ -212,6 +217,17 @@ setting cannot reach:
    nothing: omit the line entirely — never write `branches-left: none`;
    absence is the machine-checkable signal that the session left no
    branches behind.
+4. **UNIQUE NAME + PUSH PREFLIGHT** — a minted branch name is
+   collision-proofed twice. It carries a **unique suffix** (pid, claim id,
+   or timestamp): `dsh/issue-127-c5844082078`, never the bare
+   `dsh/issue-N-slug` two agents racing one issue derive identically
+   (#327). And before the FIRST push of a minted name, run
+   `git ls-remote origin <name>`: a non-empty answer means a sibling
+   already owns the name — delete your unpushed local branch, re-mint
+   with a fresh suffix, push that. NEVER `git pull` onto the collided
+   name (it merges the sibling's work into yours) and NEVER
+   `git push --force-with-lease` over it (it overwrites the sibling's
+   pushed work behind an open PR); both reflexes destroy a racing claim.
 
 **Acceptance — zero orphans:** at exit, every branch the session pushed is
 in exactly one of three states — merged (auto-deleted by the repo setting),
@@ -242,6 +258,71 @@ it, so an agent working in-place trades its own work's safety for the
 whole box's currency. See
 [`skills/worktree-over-stash/`](skills/worktree-over-stash/SKILL.md)
 for the worktree lane pattern.
+## Standing contract: workdir hygiene (issues #333, #374)
+
+**A workdir is yours only if no sibling can predict it, and only while
+you can prove it.** Concurrent fleet agents on one box clone their claim
+repos into throwaway workdirs, and two predictability vectors have now
+destroyed in-flight work. First the shared-path class (#333): the
+standard `rm -rf /tmp/<repo> && gh repo clone` recipe re-clones OVER any
+sibling already at that path — silently. Then the pseudo-unique class
+(#374): an agent minted `work-<issue>-<repo>-$(date +%s)`, called it
+unique, and a same-issue sibling minted the SAME path inside the same
+epoch second — worse, the takeover was silent: the first agent's
+confirmed edits were replaced by the sibling's implementation
+mid-session, and every syntax check and test run after the takeover
+validated a tree that was no longer theirs (receipts: a single-entry
+clone reflog stamped over an edited tree, #333, 2026-10-04 02:25:39;
+`work-361-toolkit-1791109240` file mtimes 10:23:45Z/10:24:45Z over edits
+confirmed at 10:21Z, #374; the concurrent-maintenance wave that makes
+same-second mints the normal case is factory#869 — 14 identical-prompt
+agents on one box). The contract:
+
+1. **MINT A RANDOM WORKDIR PER CLAIM** — a timestamp is NOT uniqueness.
+   Uniqueness comes from a random component a sibling cannot guess:
+
+   ```bash
+   workdir="$(mktemp -d "${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX")"
+   gh repo clone OWNER/REPO "$workdir" && cd "$workdir"
+   ```
+
+   (A `$HOME`-anchored census dir works the same way:
+   `mktemp -d "$HOME/dsh-node/work-<issue>-<repo>-XXXXXX"`.) The bare
+   `$(date +%s)` suffix is banned — it collides for same-issue siblings
+   within one second, the #327 branch-mint lesson applied to directories
+   — and the shared-path clone recipe (`rm -rf /tmp/<repo> && gh repo
+   clone ...`) is banned outright: `rm -rf` is legal only inside a dir
+   YOUR session minted, never on a predictable path another agent could
+   hold.
+2. **RE-ENTER ONLY A PATH YOU RECORDED** — a workdir is re-entered via
+   the exact path your own session minted and recorded (the shell
+   variable, your notes), NEVER via glob reuse
+   (`ls -d work-<issue>-* | head -1`): a matching dir can be a sibling's
+   live tree at ANY time, not just the same epoch second, and landing
+   there silently replaces your edits mid-session — the #374 takeover
+   receipt. A dir you did not mint is not yours.
+3. **THE OWNER-MARKER BELT** — mint stamps ownership, edit batches verify
+   it. At mint, write a marker inside the workdir:
+
+   ```bash
+   printf 'session=%s\nclaim=%s\n' "$$" "$ISSUE" \
+     > "$workdir/.dsh-workdir-owner"
+   ```
+
+   Before each edit batch, re-check the marker matches YOUR session. A
+   tree whose marker is not yours — or a dir you didn't mint, marker or
+   not — is a takeover in progress: stop, do not edit, file it, mint
+   fresh. This is the belt for rule 2's suspenders: it catches the reuse
+   vectors no naming discipline can close.
+
+**Acceptance — structurally impossible collisions:** two same-box
+siblings working the same issue can never share a worktree — neither
+names a path the other could guess (random mint), neither lands in a dir
+the other minted (recorded-path re-entry), and any takeover that slips
+the first two rules is detected before the next edit batch (owner
+marker). The prompt assembly stamps this contract into every task it
+builds too (structural + behavioral pins:
+`tests/workdir-collision-contract.test.mjs`).
 
 ## Why this exists
 
@@ -275,3 +356,6 @@ second.
 - `tests/branch-hygiene-contract.test.mjs` — pins the branch-hygiene driver
   block (placement + the two leak-path rules + the acceptance sentence) and
   the `branches-left:` exit-summary shape.
+- `tests/workdir-collision-contract.test.mjs` — pins the workdir-hygiene
+  driver block (placement + random-mint/re-entry/marker rules) and keeps
+  the corpus free of epoch-mint and glob-reuse recipes (issues #333, #374).

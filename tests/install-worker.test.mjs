@@ -110,6 +110,43 @@ test("installs the env file 0600 with the values; cron line has NO credential", 
   }
 });
 
+test("header comment names the guard the LINE arms (flock-guard, never pgrep-guard) — #292", () => {
+  // Static source pin: the "What it installs" header is the first thing a
+  // reader skims; it may never teach the discredited pgrep guard the cron
+  // LINE replaced (every pgrep form self-matches — lines 93-99). Scoped to
+  // the header block only: the flock-NOT-pgrep explanation below legitimately
+  // spells "pgrep" while arguing against it.
+  const src = readFileSync(INSTALLER, "utf8");
+  const header = src.slice(0, src.indexOf("set -euo pipefail"));
+  assert.ok(header.length > 0, "header block located in installer source");
+  assert.match(header, /cron keepalive line: every minute, flock-guard, RE-PIN/,
+    "the keepalive bullet labels the flock guard the LINE arms (#292)");
+  assert.ok(!header.includes("pgrep-guard"),
+    "the discredited pgrep-guard label never ships in the installer header");
+});
+
+test("success echo names the guard the LINE actually arms (flock-guarded, never pgrep-guarded)", () => {
+  const f = fixture();
+  try {
+    const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, res.stderr);
+
+    // the LINE is the ground truth the echo must describe
+    const cron = readFileSync(f.store, "utf8");
+    assert.match(cron, /flock -n .*sweep\.lock/, "the armed LINE is flock-guarded");
+    assert.ok(!cron.includes("pgrep"), "the armed LINE carries no pgrep");
+    // #289: the label may never drift from the LINE again — 'pgrep-guarded'
+    // is the exact phrase the 2026-09-21 self-match incident taught to
+    // distrust, and it misdescribed the flock line at the moment of truth.
+    assert.match(res.stdout, /cron\s+: keepalive armed \(flock-guarded, once per minute\)/,
+      "the success echo labels the flock guard the LINE arms");
+    assert.ok(!res.stdout.includes("pgrep-guarded"),
+      "the discredited pgrep-guarded label never ships in installer output");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 test("idempotent: a second run does not duplicate the cron line", () => {
   const f = fixture();
   try {

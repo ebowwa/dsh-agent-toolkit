@@ -10,7 +10,7 @@
 #   2. the worker env file (0600) at $DSH_WORKER_HOME/env (default
 #      ~/.dsh-worker/env) — the ONLY place the credentials ever land
 #      (never the cron line, never the log);
-#   3. the cron keepalive line: every minute, flock-guarded, RE-PIN the
+#   3. the cron keepalive line: every minute, flock-guard, RE-PIN the
 #      toolkit to the moving `v1` tag through scripts/re-pin-toolkit.sh
 #      (fetch --tags + checkout v1 — the audited-release pin drift-check
 #      advances — behind a refusal gate: never destroy in-flight agent
@@ -133,6 +133,6 @@ fi
 echo "install-worker: OK"
 echo "  toolkit : $DSH_AGENT_TOOLKIT_DIR (pinned to the moving v1 tag per sweep)"
 echo "  env     : $WORKER_HOME/env (mode 600) — the only credential resting place"
-echo "  cron    : keepalive armed (pgrep-guarded, once per minute)"
+echo "  cron    : keepalive armed (flock-guarded, once per minute)"
 echo "  repos   : $WORKER_REPOS"
 echo "  watch   : $WORKER_HOME/worker.log"

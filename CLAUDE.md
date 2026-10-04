@@ -22,7 +22,12 @@ run straight off the tree on Node.
   3. Unit tests: bare `node --test` in CI; locally use the glob form
      `node --test tests/*.test.mjs`. Do NOT use the directory form
      (`node --test tests/`) — under Node 26 it fails `MODULE_NOT_FOUND`
-     before running anything. The plugin smoke tests need the
+     before running anything. The glob form also SKIPS the plugin
+     smoke suites — bare discovery runs every `test/` directory too,
+     a shell glob does not — so after touching `plugins/`, verify with
+     the parity form
+     `node --test tests/*.test.mjs plugins/*/test/smoke.mjs`, the
+     exact set CI grades (issue #301). The plugin smoke tests need the
      `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
      checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
      converges the peer closure, installs once, and verifies the tree;
@@ -51,8 +56,10 @@ run straight off the tree on Node.
   file with its purpose; testing, adoption, versioning.
 - `CONTRIBUTING.md` — agent conduct: the discovery protocol (`found:` issues
   with receipts, never silent scope-creep), issue relationships, branch
-  hygiene, exit-summary shapes. Stamped into every dispatched task by
-  `scripts/run-dsh-agent.sh`; pinned by `tests/agent-contract.test.mjs`.
+  hygiene, workdir hygiene (issues #333/#374 — random mint, recorded-path
+  re-entry, owner-marker belt), exit-summary shapes. Stamped into every
+  dispatched task by `scripts/run-dsh-agent.sh`; pinned by
+  `tests/agent-contract.test.mjs`.
 - `REVIEW.md` — the review rules the adversarial review stage applies.
 - `.agents/` — the standing agent contracts the driver stamps into tasks;
   `docs/decoupled-worker.md` — the worker's queue semantics and trust model.
