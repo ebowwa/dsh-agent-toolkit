@@ -213,8 +213,15 @@ jobs:
           while read -r repo; do
             [ -n "$repo" ] || continue
             DISPATCH_TOKEN="${PAT_TOKEN:-$GH_TOKEN}"
-            gh api "repos/$repo/dispatches" --method POST \
-              -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            # gh authenticates natively from the GH_TOKEN env — the token
+            # rides the child process's environ, never argv (REVIEW.md
+            # credential law: argv is ps-readable to same-user processes on
+            # the shared [dsh] cell; issue #472 found the -H form here). The
+            # one-command prefix leaves the step's outer GH_TOKEN
+            # (github.token) untouched for every other gh call in this step,
+            # and PAT_TOKEN's precedence over the github.token fallback is
+            # preserved verbatim by DISPATCH_TOKEN.
+            GH_TOKEN="$DISPATCH_TOKEN" gh api "repos/$repo/dispatches" --method POST \
               -f event_type="dsh-agent-toolkit-release" \
               -F "client_payload[tag]=${NEXT}" 2>/dev/null \
               && echo "notified $repo" || echo "notify failed: $repo"

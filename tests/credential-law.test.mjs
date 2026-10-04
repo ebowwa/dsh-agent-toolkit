@@ -95,15 +95,22 @@ const CRED_URL = /https:\/\/[^/"'`\s]+@/;
 // as any line-pinned lint: a `-c` split onto a `\`-continuation line.)
 const GIT_C_ARGV = /(?:^|\s)git(?:\s[^\n]*?)?\s-c\s*\S*extraheader/;
 
-// Credential as a curl argv value: `curl -H "Authorization: ..."`
-// (REVIEW.md's second named rejection).
-const CURL_H_ARGV = /curl[^\n]*-H[^\n]*(?:[Aa]uthorization|[Tt]oken)/;
+// Credential as a header on ANY command's argv: `-H "Authorization: ..."`
+// / `--header "Authorization: ..."` (REVIEW.md's second named rejection).
+// The law is binary-agnostic — the token is one argv element regardless of
+// which binary receives it — and issue #472 proved the point: the defect
+// `gh api -H "Authorization: Bearer $DISPATCH_TOKEN"` sat in the live tree
+// for the whole life of the curl-anchored pattern because only `curl` was
+// matched, and the `-H` even rode a `\`-continuation line of its own. So:
+// the flag is matched anywhere in the line (continuation-line forms are
+// caught), with Authorization/Token in the header value.
+const HEADER_H_ARGV = /(?:^|\s)(?:-H|--header)(?:=|\s+)[^\n]*(?:[Aa]uthorization|[Tt]oken)/;
 
 function violations(lines) {
   return {
     rawInterpolation: lines.filter((l) => l.text.includes("${{")),
     credentialUrl: lines.filter((l) => CRED_URL.test(l.text)),
-    argvCredential: lines.filter((l) => GIT_C_ARGV.test(l.text) || CURL_H_ARGV.test(l.text)),
+    argvCredential: lines.filter((l) => GIT_C_ARGV.test(l.text) || HEADER_H_ARGV.test(l.text)),
   };
 }
 
@@ -160,6 +167,47 @@ test("credential-law checker: the sanctioned seams pass (no overreach)", () => {
   // env: lines are NOT run content — the env block above must never be scanned
   const contents = runBlockLines(clean, "clean.yml").map((l) => l.text).join("\n");
   assert.ok(!contents.includes("secrets.REPO_TOKEN"), "env: lines are not run-block content");
+});
+
+test("credential-law checker: flags the exact #472 gh -H defect shape", () => {
+  // The defect as it shipped on main: the dispatch token passed as gh's own
+  // header flag, split onto a `\`-continuation line — invisible to a
+  // curl-anchored, same-line scan, which is how it lived beside this test.
+  const evil = [
+    "jobs:",
+    "  release:",
+    "    steps:",
+    "      - name: notify consumers",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "          PAT_TOKEN: ${{ secrets.REPO_TOKEN }}",
+    "        run: |",
+    "          DISPATCH_TOKEN=\"${PAT_TOKEN:-$GH_TOKEN}\"",
+    "          gh api \"repos/$repo/dispatches\" --method POST \\",
+    "            -H \"Authorization: Bearer $DISPATCH_TOKEN\" \\",
+    "            -f event_type=release",
+  ].join("\n");
+  const v = violations(runBlockLines(evil, "evil472.yml"));
+  assert.equal(v.argvCredential.length, 1, "gh api -H Authorization (continuation-line form) must be flagged");
+  assert.match(v.argvCredential[0].text, /Authorization: Bearer/);
+});
+
+test("credential-law checker: the sanctioned #472 seam passes (env-prefixed GH_TOKEN)", () => {
+  const clean = [
+    "jobs:",
+    "  release:",
+    "    steps:",
+    "      - name: notify consumers",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "          PAT_TOKEN: ${{ secrets.REPO_TOKEN }}",
+    "        run: |",
+    "          DISPATCH_TOKEN=\"${PAT_TOKEN:-$GH_TOKEN}\"",
+    "          GH_TOKEN=\"$DISPATCH_TOKEN\" gh api \"repos/$repo/dispatches\" --method POST \\",
+    "            -f event_type=release",
+  ].join("\n");
+  const v = violations(runBlockLines(clean, "clean472.yml"));
+  assert.deepEqual(v, { rawInterpolation: [], credentialUrl: [], argvCredential: [] });
 });
 
 // --- layer 2: the live tree — every workflow, every run block ----------------
