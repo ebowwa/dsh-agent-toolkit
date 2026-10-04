@@ -1,0 +1,47 @@
+# cell-disk-guard — scheduled rotation of the burst pool's diag archive on a
+# runner cell (issue #478). The seed cell's burst spawner preserves every
+# ephemeral runner's `_diag` into `_diag-archive/` on reap — 2718 dirs and
+# climbing on 2026-10-04 — while a couple of concurrent bursts push the
+# shared root fs to 100%. The spawner-side admission gate is the lane
+# supervisor's trough-aware spin floor (FleetTower#1018 / PR FleetTower#1052,
+# which calls this repo's `scripts/cell-disk-guard.sh admit` semantics); THIS
+# workflow owns the other half the issue asks for: the archive actually
+# rotating on a schedule.
+#
+# The archive is chowned root:root by the spawner's reap, so the canonical
+# schedule is the root-side systemd timer (`cell-disk-guard.sh schedule`
+# prints the units). This workflow is the belt over that suspenders: it runs
+# on whatever `[self-hosted, dsh]` cell picks it up (no archive there = a
+# green nothing-to-rotate line), tries direct unlink then non-interactive
+# sudo, and fails LOUD (red run, #474 convention) when entries over budget
+# survive — rotation not landing is exactly the state worth paging on.
+
+name: cell-disk-guard
+
+on:
+  schedule:
+    - cron: "15 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cell-disk-guard
+  cancel-in-progress: false
+
+jobs:
+  rotate:
+    runs-on: [self-hosted, dsh]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rotate the diag archive (issue 478)
+        env:
+          CELL_DISK_GUARD_KEEP: ${{ vars.CELL_DISK_GUARD_KEEP || '500' }}
+          CELL_DISK_GUARD_MAX_AGE_DAYS: ${{ vars.CELL_DISK_GUARD_MAX_AGE_DAYS || '14' }}
+        run: |
+          set -uo pipefail
+          echo "--- cell free space at rotation time ---"
+          df -h / || true
+          bash scripts/cell-disk-guard.sh rotate
