@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-worker.sh — one-shot, IDEMPOTENT worker deployment for a factory
-# box. The deploy-worker.yml workflow calls this ON the box (the
+# box. The worker-deploy.yml workflow calls this ON the box (the
 # self-register-factory pattern: a workflow may install a persistent
 # per-user service; cron keepalive needs no sudo).
 #

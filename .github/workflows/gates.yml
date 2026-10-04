@@ -23,6 +23,30 @@ jobs:
     runs-on: [self-hosted, dsh]
     timeout-minutes: 10
     steps:
+      - name: Disk free-space floor check
+        # Fail LOUD before the job when the runner cell is under a free-disk
+        # floor. Run 37213824189 (issue #474): the gates job died mid
+        # unit-test on `No space left on device` writing the runner's own
+        # _diag log — a red required check with zero test signal, holding
+        # PR #473. A disk-starved cell now fails HERE, in plain text with
+        # the numbers, instead of crashing anywhere else with a confusing
+        # runner stack trace. Floor defaults to 2048 MiB and is overridable
+        # per-environment with the repo variable GATES_DISK_FLOOR_MB.
+        env:
+          GATES_DISK_FLOOR_MB: ${{ vars.GATES_DISK_FLOOR_MB || '2048' }}
+        run: |
+          set -euo pipefail
+          dir="${GITHUB_WORKSPACE:-$HOME}"
+          [ -d "$dir" ] || dir="$HOME"
+          avail_kb=$(df -kP "$dir" | awk 'NR==2 {print $4}')
+          avail_mb=$((avail_kb / 1024))
+          floor_mb="${GATES_DISK_FLOOR_MB:-2048}"
+          echo "Runner cell free space: ${avail_mb} MiB — floor: ${floor_mb} MiB"
+          df -h "$dir"
+          if [ "$avail_mb" -lt "$floor_mb" ]; then
+            echo "::error::Runner cell disk under floor — ${avail_mb} MiB free < ${floor_mb} MiB floor. Prune the runner cell (_diag/, _work, caches, old toolchains) and re-run this job; do not debug the tests."
+            exit 1
+          fi
       - uses: actions/checkout@v5
       - name: Syntax-check every script
         run: |

@@ -63,17 +63,24 @@ function stage(t, scrubBody) {
 function runShim(t, shim, scrubBody, argv, opts = {}) {
   const { dir, scrub, capture, real } = stage(t, scrubBody);
   const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
+  const env = {
+    ...process.env,
+    [envKey]: real,
+    SCRUB_SCRIPT: scrub,
+    SHIM_TEST_CAPTURE: capture,
+    // pin the scrub temp file into the auto-cleaned harness dir
+    TMPDIR: dir,
+  };
+  // These tests exercise the UNARMED shim; an ambient GH_MERGE_GUARD=on on a
+  // lane arms the merge-guard hook on `pr merge` argv through the
+  // process.env spread and refuses fail-closed (issue #479 — the
+  // env-construction flavor of the REVIEW.md lane-leak class). "Unset" must
+  // mean unset on every machine.
+  delete env.GH_MERGE_GUARD;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     cwd: opts.cwd,
-    env: {
-      ...process.env,
-      [envKey]: real,
-      SCRUB_SCRIPT: scrub,
-      SHIM_TEST_CAPTURE: capture,
-      // pin the scrub temp file into the auto-cleaned harness dir
-      TMPDIR: dir,
-    },
+    env,
   });
   return { res, capture, dir };
 }
@@ -397,6 +404,27 @@ test("gh shim: boolean-style flag use is untouched (gh pr merge -m keeps working
     fs.readFileSync(capture, "utf8").trim().split("\n").pop(), "-m",
     "-m reaches gh verbatim, never consumed as a value",
   );
+});
+
+test("gh shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issue #479 pin)", (t) => {
+  // The #479 defect only bites where the lane exports GH_MERGE_GUARD=on —
+  // the merge-guard hook armed through the process.env spread and refused
+  // fail-closed on the boolean-flag pin above. Arm the lane INSIDE this
+  // process so the harness env's hermeticity is graded on every machine,
+  // not just on armed lanes.
+  process.env.GH_MERGE_GUARD = "on";
+  try {
+    const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
+      "pr", "merge", "12", "-m",
+    ]);
+    assert.equal(res.status, 0, `harness env must stay unarmed under the ambient arm (stderr: ${res.stderr})`);
+    assert.equal(
+      fs.readFileSync(capture, "utf8").trim().split("\n").pop(), "-m",
+      "-m reaches gh verbatim under the harness env too",
+    );
+  } finally {
+    delete process.env.GH_MERGE_GUARD;
+  }
 });
 
 test("gh shim: `--` after a value flag is not eaten as the value", (t) => {

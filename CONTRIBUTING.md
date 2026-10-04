@@ -33,7 +33,7 @@ broadcast.
 3. **IMPLEMENTING** — one line: the approach you're taking
 4. **TESTING** — one line: what you're verifying and how
 5. **BLOCKED** — when stuck longer than ~10 minutes: what is blocking you and what you already tried (a blocked agent that speaks can be helped; a silent one just burns the clock)
-6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works; when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene). The exit summary MAY additionally carry one
+6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works (test counts pasted from the run's own `# tests / # pass / # fail / # skipped` summary block, never hand-transcribed — the REVIEW.md honesty rule, issue #433); when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene). The exit summary MAY additionally carry one
   or more `SKILL CANDIDATE` blocks so the tower's skill-promotion pass can
   collect a newly discovered procedure into the fleet skill catalog: each
   block rides INSIDE the final result comment (thread comments are the
@@ -47,6 +47,31 @@ broadcast.
 Use `gh issue comment N --repo R --body "..."` (the scrub shims protect
 you). A thread that goes silent for 30+ minutes is a thread where
 the agent died and nobody noticed.
+
+## Verifying a sibling PR (the gate-verify channel, issue #326)
+
+The fleet mints every PR under one shared account, so GitHub rejects
+`gh pr review --approve` from ANY agent ("Review can not approve your own
+pull request") — an agent's independent verification of a sibling PR is
+otherwise just comment noise the merge decision never sees. When you
+independently verify a sibling PR (ran the gates on a separate checkout),
+post your receipts as a PR comment whose receipt block carries a marker
+line that IS the channel — its own line, nothing else on it:
+
+    gate-verify: pass
+
+(or `gate-verify: fail` when verification failed — a posted failure is as
+valuable as a pass). The marker parses line-strict
+(`scripts/gate-verify.mjs`): the `gate-verify:` label is required, a
+marker mentioned inside a prose sentence never qualifies, and the LAST
+marker in the comment wins. `scripts/pr-verification.mjs <pr>` reports
+the channel machine-readably (`pass`/`fail`/`none` + comment
+id/author/URL) for whatever weighs it: the worker's review stage receives
+prior markers as claims to check, and `merge-guard.sh` refuses to merge
+on a non-pass channel when explicitly armed (`MERGE_GUARD_VERIFY=on`).
+Keep the receipts in the same comment — commands and counts pasted from
+the run's own summary block (the REVIEW.md honesty rule); the marker
+alone, without receipts, is an overstatement-shaped claim.
 
 ## Discovery protocol (file what you notice, never silently scope-creep)
 

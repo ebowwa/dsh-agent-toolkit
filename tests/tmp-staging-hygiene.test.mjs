@@ -27,11 +27,12 @@
 // "$stage/...", and cleanup of only the minted path.
 //
 // These pins are PER-SKILL by design (the issue's "corpus or per-skill"
-// acceptance permits per-skill): the corpus-wide scan is deliberately
-// NOT run yet — two more skills carry the same class
-// (gates-step-verbatim-repro /tmp/step.sh, flight-recorder-audit
-// /tmp/s.zst//tmp/s.jsonl) and are filed separately; widening the scan
-// to the whole corpus goes red on them by design the moment they land.
+// acceptance permits per-skill). The corpus-wide scan of the same shape
+// set lives in tests/workdir-collision-contract.test.mjs (issue #351) —
+// it went live only once the last two carriers of the class were healed
+// (gates-step-verbatim-repro by #355, flight-recorder-audit by #364);
+// before that a corpus-wide scan went red on them by design the moment
+// it landed.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
