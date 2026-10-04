@@ -26,11 +26,23 @@
 // for a .git/config with no trailing newline (r2 finding 2), a pin that
 // a non-numeric DOPPLER_FETCH_TIMEOUT_S cannot kill the watchdog
 // (r2 finding 3), and a two-run idempotency pin (r2 finding 4).
+//
+// Issue #389: both watchdog legs originally pinned the bound through
+// TOTAL resolver wall-time (<10s / <30s absolute budgets). That races
+// box load, not the bound — the 1s watchdog cut is a small slice of a
+// leg whose remainder is bash spawns, shims, git-config calls and
+// scheduler inflation, and a full-suite concurrent run red-shifted the
+// 10s budget at 10.7s while isolation ran the same tree green in 5.7s.
+// The legs now carry clock-free kill evidence: the doppler shim logs
+// its hang lifecycle (fetch-start before the sleep, hang-completed
+// after it), so "the fetch was cut mid-hang" is the ABSENCE of the
+// completion line — binary, load-immune — and the elapsed checks that
+// remain are hang-relative runaway tripwires, not bound measurements.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,10 +71,18 @@ const BASH = resolveBin("bash");
 // busybox no-wrap implementations all collapse to the same input, so the
 // wrap-stripping pin bites on every lane (review round-1 finding 6).
 // Real git/tr/awk stay on PATH in this mode.
+//
+// When DOPPLER_SHIM_LOG names a file, the doppler shim appends its hang
+// lifecycle to it: "fetch-start" before the sleep, "hang-completed"
+// after it (issue #389). A watchdog kill lands BETWEEN the lines, so
+// the log's content is direct, clock-free evidence of where the fetch
+// died — cut mid-hang (bounded) vs ran to completion (unbounded).
 const shimPath = () => {
   const dir = mkdtempSync(path.join(tmpdir(), "resolve-push-shims-"));
   const doppler = `#!/bin/sh
+if [ -n "\${DOPPLER_SHIM_LOG:-}" ]; then printf 'fetch-start\\n' >> "\$DOPPLER_SHIM_LOG"; fi
 if [ -n "\${DOPPLER_HANG_S:-}" ]; then sleep "\$DOPPLER_HANG_S"; fi
+if [ -n "\${DOPPLER_SHIM_LOG:-}" ]; then printf 'hang-completed\\n' >> "\$DOPPLER_SHIM_LOG"; fi
 if [ "\${DOPPLER_RC:-0}" != "0" ]; then exit "\$DOPPLER_RC"; fi
 printf '%s' "\${DOPPLER_OUT-}"
 `;
@@ -186,17 +206,45 @@ test("hung doppler fetch is watchdog-bounded (falls back, does not hold the job)
   // watchdog must cut it at DOPPLER_FETCH_TIMEOUT_S and take the typed
   // fallback — the fetch-side twin of the --max-time 15 curl pin below
   // (review round-1 finding 4: the fetch was the one unbounded call).
+  //
+  // Hermetic kill evidence (#389): the shim logs fetch-start before its
+  // hang sleep and hang-completed after it, so a watchdog cut is the
+  // completion line NEVER APPEARING — no clock involved. The old shape
+  // asserted total resolver wall-time <10s, which races box load, not
+  // the bound: the 1s cut is a small slice of a leg whose remainder is
+  // process spawns and scheduler inflation, and a concurrent full-suite
+  // gate red-shifted it to 10.7s while isolation ran green at 5.7s on
+  // the same tree. (The log may even be missing its fetch-start line
+  // under pathological load — a kill that lands before the shim's first
+  // write is still a correct bound — so only the completion line is
+  // asserted against.)
+  const HANG_S = 30;
+  const logDir = mkdtempSync(path.join(tmpdir(), "resolve-push-hang-"));
+  const shimLog = path.join(logDir, "doppler-shim.log");
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "30", DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_HANG_S: String(HANG_S), DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_SHIM_LOG: shimLog,
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 10_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
-  } finally { cleanup(); }
+    const log = existsSync(shimLog) ? readFileSync(shimLog, "utf8") : "";
+    assert.ok(!log.includes("hang-completed"),
+      `the hang ran to completion (shim log: ${JSON.stringify(log)}) — the fetch was not watchdog-cut`);
+    // Runaway tripwire, load-tolerant by construction: the budget sits
+    // between a bounded run (1s bound + spawn overhead — 10.7s observed
+    // under full-suite load) and an unbounded one (the full HANG_S plus
+    // overhead, 30s+), so load inflation cannot flip it while a dead
+    // watchdog still trips it.
+    assert.ok(Date.now() - t0 < (HANG_S - 5) * 1000,
+      `resolver ran ${Date.now() - t0}ms — the fetch held the job past the hang budget`);
+  } finally {
+    cleanup();
+    rmSync(logDir, { recursive: true, force: true });
+  }
 }));
 
 test("credential never appears on any child argv (ps-safe on shared runners)", withCase((repo) => {
@@ -293,17 +341,36 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // the guard's 20s default still fires: the doppler shim sleeps 25s,
   // comfortably past 20, so the ONLY bounded outcome is the watchdog
   // kill + typed fallback.
+  //
+  // #389 companion: the bound evidence is the shim's hang-completed
+  // line never appearing (clock-free), not total wall-time — the old
+  // flat <30s budget sat only 10s above the 20s default and red-shifted
+  // under the same load inflation that flaked the sibling leg. The
+  // elapsed check below is a runaway tripwire only (default 20s + load
+  // allowance); bound-vs-hang discrimination lives in the marker,
+  // because 20s-bound and 25s-hang are too close to separate by clock.
+  const HANG_S = 25;
+  const logDir = mkdtempSync(path.join(tmpdir(), "resolve-push-hang-"));
+  const shimLog = path.join(logDir, "doppler-shim.log");
   const t0 = Date.now();
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "25", DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_HANG_S: String(HANG_S), DOPPLER_FETCH_TIMEOUT_S: "abc",
+    DOPPLER_SHIM_LOG: shimLog,
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 30_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
-  } finally { cleanup(); }
+    const log = existsSync(shimLog) ? readFileSync(shimLog, "utf8") : "";
+    assert.ok(!log.includes("hang-completed"),
+      `the hang ran to completion (shim log: ${JSON.stringify(log)}) — the fetch was not watchdog-cut`);
+    assert.ok(Date.now() - t0 < (HANG_S + 15) * 1000,
+      `resolver ran ${Date.now() - t0}ms — the fetch held the job past the runaway budget`);
+  } finally {
+    cleanup();
+    rmSync(logDir, { recursive: true, force: true });
+  }
 }));
 
 test("resolver is idempotent: a second run replaces the stanza, never stacks it", withCase((repo) => {
