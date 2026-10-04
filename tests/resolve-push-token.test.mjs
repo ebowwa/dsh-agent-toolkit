@@ -182,18 +182,34 @@ test("doppler fetch failure falls back (never breaks the run)", withCase((repo) 
 }));
 
 test("hung doppler fetch is watchdog-bounded (falls back, does not hold the job)", withCase((repo) => {
-  // The doppler CLI never answers (sleeps far past the bound); the
-  // watchdog must cut it at DOPPLER_FETCH_TIMEOUT_S and take the typed
-  // fallback — the fetch-side twin of the --max-time 15 curl pin below
-  // (review round-1 finding 4: the fetch was the one unbounded call).
-  const t0 = Date.now();
+  // The doppler CLI never answers; the watchdog must cut it at
+  // DOPPLER_FETCH_TIMEOUT_S and take the typed fallback — the fetch-side
+  // twin of the --max-time 15 curl pin below (review round-1 finding 4:
+  // the fetch was the one unbounded call).
+  //
+  // Hermetic bound proof, path as the oracle (issue #389): the OUTCOME
+  // ordering between the watchdog kill and the shim's hang conclusively
+  // separates bounded from unbounded — if the bound is honored (1s kill
+  // vs 15s hang) the fetch dies early and the fallback header lands; if
+  // the env var were ignored (kill at the 20s default) or the watchdog
+  // died silently, the shim COMPLETES at 15s, prints DOPPLER_OUT, and
+  // the doppler path WINS (scopes-ok header) — the fallback assertions
+  // below red. No wall-clock assert can do this without racing the box:
+  // the retired `Date.now() - t0 < 10_000` form went red at 10717ms on a
+  // converged tree under full-suite load with the mechanism green
+  // (issue #389 receipt), because a whole-resolver wall measurement
+  // bundles bash boot, spawnSync queueing and three post-kill git
+  // spawns — each multi-second under sibling-agent load — into what the
+  // assert claimed was the watchdog's bound. The 15s hang keeps 14s of
+  // scheduling slack between the two kernel timers (1s vs 15s) while
+  // staying comfortably under the 20s default, so an env-ignored
+  // regression cannot slip through as a slow-but-bounded pass.
   const { r, cleanup } = runResolver(repo, {
-    DOPPLER_HANG_S: "30", DOPPLER_FETCH_TIMEOUT_S: "1",
+    DOPPLER_HANG_S: "15", DOPPLER_FETCH_TIMEOUT_S: "1",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 10_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
@@ -292,15 +308,19 @@ test("non-numeric DOPPLER_FETCH_TIMEOUT_S still bounds the fetch (watchdog survi
   // pin rides "abc" — the case `:-` alone lets through — and asserts
   // the guard's 20s default still fires: the doppler shim sleeps 25s,
   // comfortably past 20, so the ONLY bounded outcome is the watchdog
-  // kill + typed fallback.
-  const t0 = Date.now();
+  // kill + typed fallback. Path is the oracle, not the clock (issue
+  // #389): a kill at 20s vs a 25s hang is conclusively separated by the
+  // fallback header below — a watchdog that died silently would let the
+  // shim complete at 25s and the doppler path would WIN. The retired
+  // `Date.now() - t0 < 30_000` twin of this form left only 10s of slack
+  // for the whole resolver wall time (bash boot + post-kill git spawns
+  // under sibling load) and raced the box exactly like the 1s leg.
   const { r, cleanup } = runResolver(repo, {
     DOPPLER_HANG_S: "25", DOPPLER_FETCH_TIMEOUT_S: "abc",
     DOPPLER_OUT: "doppler-pat", CURL_SCOPES: "repo, workflow",
   });
   try {
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 30_000, `resolver ran ${Date.now() - t0}ms — the fetch was not bounded`);
     assert.match(r.stdout, /doppler fetch failed/);
     assert.equal(headerIn(repo), headerFor("fallback-tok"));
   } finally { cleanup(); }
