@@ -68,7 +68,13 @@ export function preserveUnknownRoutes(normalized, original) {
   if (!isPlainObject(original)) return normalized;
   const out = isPlainObject(normalized) ? { ...normalized } : normalized;
   for (const [key, origVal] of Object.entries(original)) {
-    if (!(key in out)) {
+    // OWN-key test only (issue #330, the FleetTower #791 class): `key in
+    // out` consults the prototype chain, so a user key named like an
+    // Object.prototype member (constructor / toString / hasOwnProperty /
+    // ...) read as "the normalizer set it", was never copied, and
+    // silently dropped from the written file — Object.entries/stringify
+    // below only ever see OWN keys.
+    if (!Object.hasOwn(out, key)) {
       out[key] = clone(origVal);
       continue;
     }
