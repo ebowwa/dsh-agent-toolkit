@@ -66,12 +66,13 @@ const smokes = fs
     ];
   });
 
-test("the #358 classifier: the three dep-reaching smokes are guard-required, the dep-free two are not", () => {
+test("the #358 classifier: the four dep-reaching smokes are guard-required, the dep-free two are not", () => {
   const byDir = Object.fromEntries(smokes.map((s) => [s.dir, s.needsGuard]));
   assert.deepEqual(
     { ...byDir },
     {
       "dsh-queue-priority": false,
+      "dsh-reflex": true,
       "dsh-session-id": false,
       "dsh-stream-watchdog": true,
       "dsh-system-prompt-editor": true,
