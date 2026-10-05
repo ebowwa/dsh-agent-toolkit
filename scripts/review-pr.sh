@@ -14,6 +14,13 @@
 # Fail-closed scrubbing: every text that leaves this script (the posted
 # comment) passes scrub-output.mjs; scrubber failure withholds the review.
 #
+# Fail-closed diff basis (issue #516): the reviewer's diff is computed from
+# the RESOLVED merge-base of base and pr-merge. A merge-base lookup failure
+# (a shallow checkout whose graph cannot connect the two refs) WITHHOLDS the
+# diff — "(diff unavailable)" — instead of silently degrading to a two-dot
+# base→pr-merge diff, which reads every sibling landing since the fork point
+# as an apparent PR reversal (the PR #495 receipt).
+#
 # Env contract:
 #   GH_TOKEN                the worker's PAT (read + comment/label on the repo)
 #   DSH_SHIP_REPO           owner/repo of the PR under review
@@ -98,8 +105,45 @@ fetch_base()   { gh_fetch "refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
 fetch_merge 2>/dev/null \
   || { echo "review-pr: cannot fetch PR #$PR_NUM merge ref" >&2; rm -f "$RULES_TMP"; exit 2; }
 fetch_base 2>/dev/null || true
-DIFF="$(git diff origin/base...origin/pr-merge 2>/dev/null || git diff "$(git merge-base origin/base origin/pr-merge 2>/dev/null || echo origin/base)" origin/pr-merge 2>/dev/null || echo "(diff unavailable)")"
-DIFF_STAT="$(git diff --stat origin/base...origin/pr-merge 2>/dev/null | tail -n 30 || true)"
+# Issue #516: the diff fallback must never change diff SEMANTICS. The old
+# chain's `|| echo origin/base` turned a FAILED merge-base lookup — exactly
+# the shallow-checkout case — into a TWO-DOT base→pr-merge diff, folding
+# every sibling landing since the fork point in as apparent reversals
+# (PR #495: a clean 6-file PR read as 12 files of contract tampering). Fail
+# closed instead, the shipper's own degrade-safe freshness shape
+# (ship-changes.sh: merge-base unresolvable ⇒ NOT verified): resolve the
+# merge-base explicitly; when it cannot be resolved, hand (diff unavailable)
+# and say so in the prompt — never silently degrade to a two-dot diff.
+FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+BASE_TIP="$(git rev-parse origin/base 2>/dev/null || true)"
+DIFF=""
+DIFF_STAT=""
+DIFF_BASIS=""
+if [ -n "$FORK_BASE" ]; then
+  # Two-dot from the RESOLVED merge-base IS the three-dot semantics
+  # (base...pr-merge ≡ merge-base(base, pr-merge)→pr-merge) — computed once,
+  # with no fallback arm left that could silently substitute another range.
+  DIFF="$(git diff "$FORK_BASE" origin/pr-merge 2>/dev/null || true)"
+  DIFF_STAT="$(git diff --stat "$FORK_BASE" origin/pr-merge 2>/dev/null | tail -n 30 || true)"
+  if [ -n "$BASE_TIP" ] && [ "$BASE_TIP" = "$FORK_BASE" ]; then
+    DIFF_BASIS="fork point ${FORK_BASE} — base has NOT advanced since the fork (the diff is the PR's own changes only)"
+  elif [ -n "$BASE_TIP" ]; then
+    DIFF_BASIS="fork point ${FORK_BASE} — base tip ${BASE_TIP} HAS advanced since the fork (the diff is the PR's own changes only; judge nothing about base history here)"
+  else
+    DIFF_BASIS="fork point ${FORK_BASE} — base tip unresolvable (base fetch failed)"
+  fi
+  if [ -z "$DIFF" ] && [ -z "$DIFF_STAT" ]; then
+    DIFF="(diff unavailable — base and pr-merge could not be diffed at the resolved fork point)"
+    DIFF_STAT="(diff stat unavailable)"
+  fi
+else
+  # Fail closed (issue #516): no resolvable merge-base — a shallow graph
+  # that cannot connect base and pr-merge. The PR's own changes CANNOT be
+  # isolated, so the diff is WITHHELD, never degraded to two-dot.
+  DIFF="(diff unavailable — the base/pr-merge graph cannot be connected in this shallow checkout, so the PR's own changes could NOT be isolated; do NOT reconstruct them from branch names or checks output)"
+  DIFF_STAT="(diff stat unavailable — same shallow-graph cause)"
+  DIFF_BASIS="fork point UNRESOLVABLE (shallow graph) — the diff below is WITHHELD, not degraded; ground findings only in what is actually shown, and say the diff was unavailable rather than inferring the change"
+fi
 DIFF_CAP=6000
 DIFF_LINES="$(printf '%s' "$DIFF" | wc -l | tr -d ' ')"
 [ "${DIFF_LINES:-0}" -gt "$DIFF_CAP" ] && DIFF="$(printf '%s' "$DIFF" | head -n "$DIFF_CAP")"
@@ -124,7 +168,9 @@ $(cat "$RULES_TMP")
 
 PR: #$PR_NUM "$PR_TITLE" ($BASE_REF ← $HEAD_REF)
 
-Diff (base...merge, truncated to $DIFF_CAP lines):
+Diff basis (issue #516): $DIFF_BASIS
+
+Diff (fork point→pr-merge when resolvable, truncated to $DIFF_CAP lines):
 $DIFF
 
 Diff stat:
