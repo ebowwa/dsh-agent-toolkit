@@ -24,6 +24,11 @@ import {
   seed,
   walkToFixpoint,
   resolveUnionSpecs,
+  registryPeers,
+  npmViewVersions,
+  npmViewAllVersions,
+  RegistryTransportError,
+  classifyNpmViewFailure,
   localPeers,
   verify,
   linkLocals,
@@ -809,5 +814,236 @@ test("CLI: a spec that loses the readdir race still reaches the seed + verify li
     assert.ok(failed, "the bare fixture stays loud red");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---- registry probe honesty (issue #512) ----------------------------------
+//
+// A registry TRANSPORT failure (npm not runnable, offline/dns-broken
+// cell, registry 5xx, refused connection, auth wall) must never read as
+// "the registry has no version": npm distinguishes the two itself — a
+// genuine no-match exits with `npm error code E404`, every other failure
+// exits with a different npm error code or never runs npm at all — and
+// the pre-#512 `catch { return []; }` collapsed them, so a transient
+// blip died as a false "unsatisfiable spec: X has no registry version"
+// refusal that sent an operator chasing a phantom range. These pins hold
+// the typed-error contract against a FAKE `npm` on PATH (a prepared shim
+// dir replaying the captured receipt shapes): fully hermetic — no
+// registry, no network, no live npm — green on any box.
+
+// A fake `npm` first on PATH: `script` is its sh body (replay a captured
+// receipt, or answer a fixture). Restores PATH and removes the shim dir
+// afterwards. Prepending a runtime-interpolated shim dir to the ambient
+// PATH is tests-lint rule 1's blessed "presence" form.
+function withFakeNpm(script, fn) {
+  const shim = fs.mkdtempSync(path.join(os.tmpdir(), "psd-fake-npm-"));
+  const bin = path.join(shim, "npm");
+  fs.writeFileSync(bin, `#!/bin/sh\n${script}\n`);
+  fs.chmodSync(bin, 0o755);
+  const prev = process.env.PATH;
+  process.env.PATH = `${shim}:${prev}`;
+  try {
+    fn();
+  } finally {
+    process.env.PATH = prev;
+    fs.rmSync(shim, { recursive: true, force: true });
+  }
+}
+
+test("classifyNpmViewFailure holds the captured npm receipt shapes (issue #512)", () => {
+  // genuine no-match: exit 1, `npm error code E404` + "No match found
+  // for version" on stderr (live receipt, npm 10.9.8) — an ANSWER, not
+  // an outage
+  assert.deepEqual(
+    classifyNpmViewFailure({
+      status: 1,
+      code: undefined,
+      stderr:
+        "npm error code E404\nnpm error 404 No match found for version ^999.0.0\n",
+    }),
+    { empty: true },
+    "E404 reads as empty: the registry genuinely has no version in range",
+  );
+  // refused connection: exit 1, ECONNREFUSED (offline/dns-broken cell)
+  assert.deepEqual(
+    classifyNpmViewFailure({
+      status: 1,
+      code: undefined,
+      stderr: "npm error code ECONNREFUSED\nnpm error syscall connect\n",
+    }),
+    { empty: false, spawn: false, npmCode: "ECONNREFUSED", status: 1 },
+    "ECONNREFUSED is transport, never empty",
+  );
+  // registry 5xx class
+  assert.equal(
+    classifyNpmViewFailure({ status: 1, stderr: "npm error code E500\n" })
+      .npmCode,
+    "E500",
+  );
+  // npm missing entirely: spawn ENOENT, no npm stderr at all
+  assert.deepEqual(
+    classifyNpmViewFailure({ status: null, code: "ENOENT", stderr: "" }),
+    { empty: false, spawn: true, npmCode: null, status: null },
+    "a missing npm is transport, never empty",
+  );
+});
+
+test("npmViewVersions: a genuine E404 no-match stays [] — the loud unsatisfiable refusal keeps its true cause (issue #512)", () => {
+  withFakeNpm(
+    'echo "npm error code E404" >&2; ' +
+      'echo "npm error 404 No match found for version ^999.0.0" >&2; exit 1',
+    () => {
+      assert.deepEqual(npmViewVersions("left-pad", "^999.0.0"), []);
+      assert.deepEqual(registryPeers("left-pad", "^999.0.0"), {});
+    },
+  );
+});
+
+test("npmViewVersions/npmViewAllVersions/registryPeers: a transport failure is a typed error, never an empty answer (issue #512)", () => {
+  for (const [label, receipt] of [
+    [
+      "registry 5xx",
+      'echo "npm error code E500" >&2; echo "npm error Internal Server Error" >&2; exit 1',
+    ],
+    [
+      "refused connection",
+      'echo "npm error code ECONNREFUSED" >&2; exit 1',
+    ],
+  ]) {
+    withFakeNpm(receipt, () => {
+      assert.throws(
+        () => npmViewVersions("left-pad", "^1.0.0"),
+        (e) => {
+          assert.ok(
+            e instanceof RegistryTransportError,
+            `${label}: typed error, got ${e?.constructor?.name}: ${e?.message}`,
+          );
+          assert.match(e.message, /registry\/transport failure/);
+          assert.doesNotMatch(e.message, /unsatisfiable/);
+          return true;
+        },
+        label,
+      );
+      assert.throws(
+        () => npmViewAllVersions("left-pad"),
+        RegistryTransportError,
+        `${label}: the all-versions tie-break refuses too`,
+      );
+      assert.throws(
+        () => registryPeers("left-pad", "^1.0.0"),
+        RegistryTransportError,
+        `${label}: the walk's peersFn refuses too`,
+      );
+    });
+  }
+});
+
+test("npmViewVersions: npm not runnable (spawn ENOENT) is a typed transport error, not [] (issue #512)", () => {
+  // fully hermetic PATH: ONE prepared empty dir, runtime-interpolated,
+  // ambient PATH not re-included — nothing outside it is traversed, so
+  // npm is genuinely absent (tests-lint rule 1's sound-absence form)
+  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-npmless-"));
+  const prev = process.env.PATH;
+  process.env.PATH = emptyBin;
+  try {
+    assert.throws(() => npmViewVersions("left-pad", "^1.0.0"), (e) => {
+      assert.ok(e instanceof RegistryTransportError);
+      assert.match(e.message, /npm is not runnable/);
+      return true;
+    });
+  } finally {
+    process.env.PATH = prev;
+    fs.rmSync(emptyBin, { recursive: true, force: true });
+  }
+});
+
+test("npmViewVersions: exit-0 unparseable output refuses to read as an empty registry (issue #512)", () => {
+  withFakeNpm('echo "<html>registry blocked</html>"', () => {
+    assert.throws(() => npmViewVersions("left-pad", "^1.0.0"), (e) => {
+      assert.ok(e instanceof RegistryTransportError);
+      assert.match(e.message, /unparseable/);
+      return true;
+    });
+  });
+});
+
+test("resolveUnionSpecs: a transport failure is never diagnosed as 'unsatisfiable spec' (issue #512)", () => {
+  // the issue's live repro shape: a multi-spec name probed while npm
+  // cannot reach the registry — pre-#512 this died as "unsatisfiable
+  // spec: pkg@^1.0.0 has no registry version", the wrong cause
+  withFakeNpm('echo "npm error code ECONNREFUSED" >&2; exit 1', () => {
+    const u = new Union();
+    u.add("pkg", "^1.0.0", "walk");
+    u.add("pkg", "^2.0.0", "walk");
+    assert.throws(() => resolveUnionSpecs(u), (e) => {
+      assert.ok(e instanceof RegistryTransportError);
+      assert.match(e.message, /registry\/transport failure/);
+      assert.doesNotMatch(e.message, /unsatisfiable spec/);
+      return true;
+    });
+  });
+});
+
+test("the healthy registry path is unchanged: pin the newest version satisfying every range (issue #512)", () => {
+  // the fake npm answers the per-spec probes and the tie-break probe
+  const script = [
+    'case "$2" in',
+    '  left-pad@^1.0.0) echo \'["1.0.0","1.3.0"]\'; exit 0 ;;',
+    '  left-pad@^1.2.0) echo \'["1.2.0","1.3.0"]\'; exit 0 ;;',
+    '  left-pad) echo \'["1.0.0","1.2.0","1.3.0"]\'; exit 0 ;;',
+    '  *) echo "unexpected npm args: $*" >&2; exit 70 ;;',
+    "esac",
+  ].join("\n");
+  withFakeNpm(script, () => {
+    const u = new Union();
+    u.add("left-pad", "^1.0.0", "walk");
+    u.add("left-pad", "^1.2.0", "walk");
+    assert.deepEqual(resolveUnionSpecs(u), ["left-pad@1.3.0"]);
+  });
+});
+
+test("CLI: a transport failure during the walk dies loudly naming the real cause (issue #512)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-cli-"));
+  const shim = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-shim-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/psd-512-fixture-lib": "^1.0.0" },
+      }),
+    );
+    const bin = path.join(shim, "npm");
+    fs.writeFileSync(bin, '#!/bin/sh\necho "npm error code ECONNREFUSED" >&2\nexit 1\n');
+    fs.chmodSync(bin, 0o755);
+    const prev = process.env.PATH;
+    process.env.PATH = `${shim}:${prev}`;
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      const err = String(e.stderr);
+      assert.match(err, /registry\/transport failure/, "the real cause is named");
+      assert.match(err, /ECONNREFUSED/, "npm's own error code is carried");
+      assert.doesNotMatch(err, /unsatisfiable/, "never the wrong cause");
+      assert.doesNotMatch(
+        err,
+        /missing: @deepseek-ai/,
+        "not a wrong-cause verify complaint either — the walk refuses first",
+      );
+    } finally {
+      process.env.PATH = prev;
+    }
+    assert.ok(failed, "a transport failure must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(shim, { recursive: true, force: true });
   }
 });
