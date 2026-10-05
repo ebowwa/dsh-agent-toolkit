@@ -9,16 +9,25 @@
 // Approach:
 //   1. SEED the name->spec union from the tested plugins' dependencies +
 //      peerDependencies (declared in the checkout — stable by construction).
+//      EVERY plugin-declared spec for a name is kept: seed order (readdir)
+//      must not decide which plugin's range reaches the registry (issue
+//      #508 — first-writer-wins silently dropped the loser of the race, so
+//      an unsatisfiable spec could vanish before npm ever saw it).
 //   2. WALK peers to a fixpoint using REGISTRY metadata (`npm view`), not
 //      the installed tree — no npm install happens during the walk, so no
 //      round can rewrite the tree under the next round's feet. The union is
-//      monotone (names are only added) and the merge is deterministic
-//      (plugin-declared ranges win; walk-derived specs merge sorted), so
-//      re-derivation cannot flip-flop.
+//      monotone (entries are only added) and the merge is deterministic
+//      (plugin specs accumulate per name; walk-derived specs stay
+//      subordinate and merge sorted), so re-derivation cannot flip-flop.
 //   3. INSTALL the resolved union once (--no-save --no-package-lock keep
-//      the checkout clean). A fast path skips npm entirely when the tree
-//      already satisfies the closure — a seed-only reconcile would prune
-//      the walked closure and force a pointless rebuild every rerun.
+//      the checkout clean). npm's argv keeps only the LAST spec per name —
+//      `npm i pkg@^4 pkg@^3` installs the last, it does NOT resolve a union
+//      (receipt on npm 10.9.8, issue #508) — so a name two plugins seed is
+//      resolved against the registry FIRST: pin a version satisfying every
+//      declared range, or refuse loudly. A fast path skips npm entirely
+//      when the tree already satisfies the closure — a seed-only reconcile
+//      would prune the walked closure and force a pointless rebuild every
+//      rerun.
 //   4. VERIFY before the suite, fail loudly: every required package
 //      present, every peer requirement of the installed @deepseek-ai/* /
 //      @local/* family met, every @local link intact (npm prunes foreign
@@ -79,28 +88,49 @@ export function allPlugins(root) {
   return out;
 }
 
-// Deterministic merge: by name; a spec already present from a plugin
-// declaration is authoritative (never overwritten); walk-derived specs
-// merge in sorted order so iteration order cannot change the result.
+// Deterministic merge: EVERY plugin-declared spec for a name is kept —
+// seed order (readdir) must not decide which plugin's range reaches the
+// registry (issue #508: first-writer-wins let the loser of that race
+// vanish silently, so an unsatisfiable spec never reached npm and the
+// canary's red coverage was race-dependent). walk-derived specs stay
+// subordinate: a name any plugin declares keeps only plugin ranges (the
+// plugin declaration is authoritative), a name no plugin declares keeps
+// the FIRST walk spec (the walk's sorted iteration makes that
+// deterministic), and re-adding a union's own output cannot change it
+// (the anti-oscillation invariant).
 export class Union {
   constructor() {
-    this.map = new Map(); // name -> { spec, from }
+    this.map = new Map(); // name -> [{ spec, from }]
   }
   add(name, spec, from) {
     const prev = this.map.get(name);
-    if (!prev || (prev.from === "walk" && from === "plugin")) {
-      this.map.set(name, { spec, from });
+    if (from !== "plugin") {
+      // a walk spec never displaces anything: plugin ranges are
+      // authoritative, and walk-vs-walk keeps the first writer
+      if (prev && prev.length) return false;
+      this.map.set(name, [{ spec, from }]);
       return true;
     }
-    return false;
+    if (!prev || !prev.some((e) => e.from === "plugin")) {
+      // first plugin declaration for the name replaces any walk entry
+      this.map.set(name, [{ spec, from }]);
+      return true;
+    }
+    if (prev.some((e) => e.from === "plugin" && e.spec === spec))
+      return false; // exact duplicate — already registered
+    this.map.set(name, [...prev, { spec, from }]);
+    return true;
   }
   get size() {
-    return this.map.size;
+    let n = 0;
+    for (const entries of this.map.values()) n += entries.length;
+    return n;
   }
   specs() {
-    return [...this.map.entries()]
-      .map(([n, { spec }]) => `${n}@${spec}`)
-      .sort();
+    const out = [];
+    for (const [n, entries] of this.map)
+      for (const { spec } of entries) out.push(`${n}@${spec}`);
+    return out.sort();
   }
 }
 
@@ -137,6 +167,93 @@ export function registryPeers(name, spec) {
   }
 }
 
+// npm's argv keeps only the LAST spec per name — `npm i pkg@^4 pkg@^3`
+// installs the last argv spec, it does NOT resolve a union of ranges
+// (receipt on npm 10.9.8, issue #508) — so a name two plugins seed must
+// be resolved HERE, before the install: pin a registry version that
+// satisfies EVERY declared range, or refuse loudly. Single-spec names
+// pass through untouched — zero registry calls on a collision-free tree
+// (the shape of today's checkout). `view` is injectable for the
+// contract pins (tests/plugin-smoke-deps.test.mjs), same seam as the
+// walk's peersFn.
+export function resolveUnionSpecs(
+  union,
+  view = { specVersions: npmViewVersions, allVersions: npmViewAllVersions },
+) {
+  const out = [];
+  for (const [name, entries] of [...union.map.entries()].sort()) {
+    const specs = entries.map((e) => e.spec);
+    if (specs.length === 1) {
+      out.push(`${name}@${specs[0]}`);
+      continue;
+    }
+    let common = null;
+    for (const spec of specs) {
+      const matching = view.specVersions(name, spec);
+      if (!matching.length)
+        throw new Error(
+          `unsatisfiable plugin spec: ${name}@${spec} has no registry ` +
+            `version (seeded alongside ` +
+            `${specs.filter((s) => s !== spec).map((s) => `${name}@${s}`).join(", ")}) ` +
+            `— refusing the install (issue #508)`,
+        );
+      common = common ? common.filter((v) => matching.includes(v)) : matching;
+    }
+    if (!common.length)
+      throw new Error(
+        `unsatisfiable plugin spec union for ${name}: ` +
+          `${specs.map((s) => `${name}@${s}`).join(" + ")} — no registry ` +
+          `version satisfies every plugin declaration; refusing the ` +
+          `install (issue #508)`,
+      );
+    // any common version is correct; the registry's own ascending
+    // version order picks the newest of them
+    let pin = common[common.length - 1];
+    for (const v of view.allVersions(name)) if (common.includes(v)) pin = v;
+    out.push(`${name}@${pin}`);
+  }
+  return out;
+}
+
+// The versions the registry offers under name@spec — [] reads as "none",
+// and resolveUnionSpecs turns that into the loud refusal.
+function npmViewVersions(name, spec) {
+  let raw;
+  try {
+    raw = execFileSync(
+      "npm",
+      ["view", `${name}@${spec}`, "version", "--json"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    return []; // the registry cannot satisfy this spec — resolved loudly above
+  }
+  raw = raw.trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+// The registry's full version list for name, in registry (ascending)
+// order — the tie-break that picks WHICH common version gets pinned.
+function npmViewAllVersions(name) {
+  try {
+    const parsed = JSON.parse(
+      execFileSync("npm", ["view", name, "versions", "--json"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    );
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return []; // degenerate: fall back to the per-spec order's last match
+  }
+}
+
 // The @local/* plugins' peers are declared right in the checkout (their
 // symlink is part of the tree) — no registry round-trip for them.
 export function localPeers(plugins) {
@@ -156,8 +273,8 @@ export function walkToFixpoint(union, plugins, peersFn = registryPeers) {
   for (;;) {
     const before = union.size;
     const sources = [{ ...localPeers(plugins) }];
-    for (const [name, { spec }] of [...union.map.entries()].sort())
-      sources.push(peersFn(name, spec));
+    for (const [name, entries] of [...union.map.entries()].sort())
+      for (const { spec } of entries) sources.push(peersFn(name, spec));
     for (const peers of sources)
       for (const [n, spec] of Object.entries(peers || {}))
         union.add(n, spec, "walk");
@@ -222,8 +339,11 @@ export function verify(root, plugins, union) {
   const nm = path.join(root, "node_modules");
   const problems = [];
   const present = (n) => fs.existsSync(path.join(nm, ...n.split("/")));
-  for (const [n, { spec }] of [...union.map.entries()].sort())
-    if (!present(n)) problems.push(`missing: ${n}@${spec}`);
+  for (const [n, entries] of [...union.map.entries()].sort())
+    if (!present(n))
+      problems.push(
+        `missing: ${n}@${entries.map((e) => e.spec).join(" || ")}`,
+      );
   const familyPkgs = [];
   const dsai = path.join(nm, "@deepseek-ai");
   if (fs.existsSync(dsai))
@@ -287,7 +407,20 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  console.log(`install (${union.size} specs): ${union.specs().join(" ")}`);
+  // npm's argv dedupes specs per name (last one wins), so multi-spec
+  // names are resolved to a single pinned spec first — a name no
+  // registry version can satisfy for every plugin declaration dies HERE,
+  // loudly, before npm runs (issue #508: the red no longer depends on
+  // which plugin won the readdir race).
+  let installSpecs;
+  try {
+    installSpecs = resolveUnionSpecs(union);
+  } catch (e) {
+    die(e.message);
+  }
+  console.log(
+    `install (${installSpecs.length} specs): ${installSpecs.join(" ")}`,
+  );
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
   execFileSync(
     "npm",
@@ -300,7 +433,7 @@ export async function main(argv = process.argv.slice(2)) {
       "--no-package-lock",
       "--no-audit",
       "--no-fund",
-      ...union.specs(),
+      ...installSpecs,
     ],
     { stdio: "inherit" },
   );
