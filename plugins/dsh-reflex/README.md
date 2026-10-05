@@ -1,7 +1,8 @@
 # @local/dsh-reflex
 
 Reflex engine tools for the DeepSeek Harness — a cordis plugin that registers
-nine `reflex_*` session tools plus a `reflex_command` escape hatch, all as
+eight `reflex_*` session tools plus a `reflex_command` escape hatch (nine
+registrations in total), all as
 thin clients for the Reflex command server (JSON over TCP, default
 `127.0.0.1:49173`).
 
