@@ -160,6 +160,19 @@ test("a push failure halts the sweep mid-way (fail-loud, no partial continuation
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("a full 1000-row census page is REFUSED (truncation — heads past the page would be misclassified)", () => {
+  const { dir, bin } = makeDir();
+  writeFileSync(path.join(bin, "refs.txt"), "dsh/issue-999-orphan\n");
+  // A census that fills its page: 1000 headRefName rows.
+  const rows = Array.from({ length: 1000 }, (_, i) => `{"headRefName":"dsh/issue-trunc-${i}"}`);
+  writeFileSync(path.join(bin, "census.json"), `[${rows.join(",")}]`);
+  const proc = run(bin, ["sweep", "--yes"]);
+  assert.equal(proc.status, 1, "a truncated census must refuse, not classify the tail as orphans");
+  assert.match(proc.stderr, /truncated census refused/);
+  assert.doesNotMatch(proc.stderr, /PUSH_DELETE/, "nothing may be deleted on a truncated census");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("only dsh/issue-* refs are candidates — other refs are ignored entirely", () => {
   const { dir, bin } = makeDir();
   writeFileSync(

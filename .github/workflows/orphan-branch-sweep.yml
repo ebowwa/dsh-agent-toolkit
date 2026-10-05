@@ -45,7 +45,11 @@ jobs:
       - uses: actions/checkout@v5
       - name: Sweep confirmed orphan branches (issue 453)
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # The sibling secret convention (fleet-manifest-drift.yml): this
+          # repo has no GH_TOKEN secret — DSH_AGENT_TOOLKIT_REPO_TOKEN is
+          # the write PAT; fall back to the job token (read-only, safe for
+          # the dry-run ticks) when unset.
+          GH_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
           ACTUATE: ${{ inputs.actuate == true }}
         run: |
           set -uo pipefail
@@ -63,7 +67,11 @@ jobs:
             if [ -n "${GH_TOKEN:-}" ]; then
               export GIT_CONFIG_COUNT=1
               export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
-              export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64)"
+              # `tr -d '\n'`: GNU base64 (the Linux dsh cell) wraps at 76
+              # columns — the multi-line header would corrupt the
+              # credential (the resolve-push-token.sh:74 / dsh-worker.sh
+              # idiom, review finding 2 on #497).
+              export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
             fi
             echo "--- actuated sweep (manual dispatch with actuate=true) ---"
             bash scripts/orphan-branch-sweep.sh sweep --yes

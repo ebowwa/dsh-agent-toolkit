@@ -98,11 +98,24 @@ done
 
 # open_head_names REMOTE -> newline-separated head refs of OPEN PRs in this
 # repo. One `gh pr list` call: the heads of every open PR. An unreadable
-# census is a LOUD refusal — never delete blind.
+# census is a LOUD refusal — never delete blind. A census that FILLS its
+# page (exactly 1000 rows) is refused the same way: heads beyond the limit
+# would be misclassified orphans, and deleting them blind is the exact
+# accident the never-delete-blind invariant exists to prevent (review
+# finding on #497).
 open_head_names() {
   local out
   if ! out="$("$GH" pr list --state open --limit 1000 --json headRefName 2>&1)"; then
     echo "orphan-branch-sweep: open-PR census unreadable ($out) — refusing to delete blind" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | grep -q '"headRefName"' || true # empty or unreadable shape — the count below judges truncation
+  # A full page means the census may be truncated: refuse rather than
+  # classify heads past the page as orphans. (gh has no head-count field
+  # in list mode; the row count is the honest proxy. The JSON is ONE
+  # line, so the count is -o | wc -l, not grep -c.)
+  if [ "$(printf '%s' "$out" | grep -o '"headRefName":' | wc -l | tr -d ' ' || true)" -ge 1000 ]; then
+    echo "orphan-branch-sweep: open-PR census filled its 1000-row page — truncated census refused, nothing deleted (heads past the page would be misclassified)" >&2
     return 1
   fi
   # headRefName is a JSON array of {headRefName: "..."}: extract the names.
@@ -174,8 +187,9 @@ fi
 # for a deletion (`git push <remote> --delete <branch>` would also work,
 # but the explicit ref form cannot be misread as a push of local content).
 for b in $ORPHAN_LIST; do
-  if ! git push "$REMOTE" "refs/heads/$b" --delete >/dev/null 2>&1; then
+  if ! push_err="$(git push "$REMOTE" "refs/heads/$b" --delete 2>&1)"; then
     echo "REFUSED deleting $b — stop, nothing further deleted (fail-loud)" >&2
+    printf '%s\n' "$push_err" | sed 's/^/  push: /' >&2
     exit 1
   fi
   echo "deleted $b" >&2
