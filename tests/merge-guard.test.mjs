@@ -112,6 +112,17 @@ const runGuard = (t, mode, args, { legs = [], env = {} } = {}) => {
   // machine. Delete BEFORE the caller-env spread so a deliberate override
   // still wins.
   delete baseEnv.MERGE_GUARD_CHECK;
+  // Same class, second pair of carriers (issue #487): scripts/merge-guard.sh
+  // also reads MERGE_GUARD_VERIFY and MERGE_GUARD_VERIFY_TOOL ("Independent
+  // verification (issue #326) — OPT-IN via MERGE_GUARD_VERIFY=on"). An armed
+  // lane exporting MERGE_GUARD_VERIFY=on rides the same process.env spread
+  // and arms the verify leg under EVERY harness leg — flipping the harness's
+  // own GREEN leg red (the verify leg then needs the real pr-verification
+  // tool against a stubbed gh). "Default" must mean default on every
+  // machine. Delete BEFORE the caller-env spread so a deliberate arm in a
+  // specific test still wins.
+  delete baseEnv.MERGE_GUARD_VERIFY;
+  delete baseEnv.MERGE_GUARD_VERIFY_TOOL;
   const res = spawnSync("bash", [GUARD, mode, ...args], {
     encoding: "utf8",
     cwd: dir,
@@ -217,6 +228,34 @@ test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (
   }
 });
 
+test("guard: an ambient MERGE_GUARD_VERIFY=on cannot arm the verify leg through the harness (issue #487 pin)", (t) => {
+  // The #487 defect is invisible on a clean dev box: the guard reads
+  // MERGE_GUARD_VERIFY and MERGE_GUARD_VERIFY_TOOL ("OPT-IN via
+  // MERGE_GUARD_VERIFY=on", issue #326) — on a lane that exports
+  // MERGE_GUARD_VERIFY=on the arm rode runGuard's process.env spread, the
+  // verify leg ran under EVERY harness leg, and the harness's own GREEN leg
+  // went red (it then needs the real pr-verification tool against a stubbed
+  // gh). Arm the lane INSIDE this process — both names, the tool pointing at
+  // a path that cannot exist — so the harness env's hermeticity is graded on
+  // every machine, not just on mis-configured lanes (the #479/#483 pin
+  // shape, applied to the guard's verify opt-in).
+  process.env.MERGE_GUARD_VERIFY = "on";
+  process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
+  try {
+    const { res } = runGuard(t, "check", ["434"], { legs: [leg()] });
+    assert.equal(res.status, 0, `the ambient verify arm must not flip the GREEN leg (stderr: ${res.stderr})`);
+    assert.match(res.stdout, /GREEN/);
+    assert.doesNotMatch(
+      `${res.stdout}${res.stderr}`,
+      /independent verification/i,
+      "the verify leg must not run at all under the harness",
+    );
+  } finally {
+    delete process.env.MERGE_GUARD_VERIFY;
+    delete process.env.MERGE_GUARD_VERIFY_TOOL;
+  }
+});
+
 // --- 2. ONE snapshot: the no-poll pin ---------------------------------------
 
 test("guard: exactly ONE check-runs call on the refusal path — no polling", (t) => {
@@ -240,10 +279,20 @@ test("guard source: no sleep/poll loop anywhere in the guard", () => {
 test("guard: unresolvable PR refuses (exit 2), never passes", (t) => {
   const dir = fixture(t);
   writeFileSync(path.join(dir, "pr-fail"), "1");
+  // Raw process.env spread (issue #487): the ambient MERGE_GUARD_* names must
+  // not reach the guard's grading here either — same delete-before-spread
+  // contract runGuard enforces.
+  const env = {
+    ...process.env,
+    MG_STUB_DIR: dir,
+    MERGE_GUARD_GH: path.join(dir, "gh"),
+  };
+  delete env.MERGE_GUARD_VERIFY;
+  delete env.MERGE_GUARD_VERIFY_TOOL;
   const res = spawnSync("bash", [GUARD, "check", "434"], {
     encoding: "utf8",
     cwd: dir,
-    env: { ...process.env, MG_STUB_DIR: dir, MERGE_GUARD_GH: path.join(dir, "gh") },
+    env,
   });
   assert.equal(res.status, 2);
   assert.match(res.stderr, /cannot resolve PR/);
@@ -252,10 +301,16 @@ test("guard: unresolvable PR refuses (exit 2), never passes", (t) => {
 test("guard: missing gh binary refuses (exit 2)", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "merge-guard-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = {
+    ...process.env,
+    MERGE_GUARD_GH: "/nonexistent/merge-guard-gh",
+  };
+  delete env.MERGE_GUARD_VERIFY;
+  delete env.MERGE_GUARD_VERIFY_TOOL;
   const res = spawnSync("bash", [GUARD, "check", "434"], {
     encoding: "utf8",
     cwd: dir,
-    env: { ...process.env, MERGE_GUARD_GH: "/nonexistent/merge-guard-gh" },
+    env,
   });
   assert.equal(res.status, 2);
   assert.match(res.stderr, /missing\/not executable/);
