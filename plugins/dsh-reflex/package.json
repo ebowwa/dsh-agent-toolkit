@@ -6,6 +6,6 @@
   "main": "./lib/index.js",
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": ">=0.1.0"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7"
   }
 }

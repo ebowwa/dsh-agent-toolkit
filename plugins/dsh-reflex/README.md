@@ -14,6 +14,13 @@ grants apply); this plugin is a stateless client and duplicates nothing.
 `reflex_ax` · `reflex_command` (verbatim passthrough for the full engine
 grammar).
 
+**Last-error surface:** when the engine is unreachable or a call fails, the
+tool's own `{ok:false, errors}` payload is echoed into a persistent
+`tool:reflex_last_error` system-prompt section (latest error, replaced in
+place) — so the model sees the failure even after the per-call result scrolls
+away. Hosts without a `systemPrompt` service get the tools without the
+section.
+
 ## Install (dsh profile)
 1. Profile dir `~/.dsh/profiles/reflex/`:
    - `package.json` — bundles `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`,

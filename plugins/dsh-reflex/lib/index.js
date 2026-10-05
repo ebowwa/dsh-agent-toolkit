@@ -9,7 +9,9 @@
 // It intentionally duplicates nothing — the engine's powers come from the
 // Gauge host's TCC grants, and this client stays identity-free.
 //
-// Cordis plugin: registers session tools into the `tools` registry.
+// Cordis plugin: registers session tools into the `tools` registry, and
+// surfaces the latest engine-side failure into the `systemPrompt` registry
+// as a persistent `tool:reflex_last_error` section (issue #502).
 //
 //#endregion
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -17,8 +19,8 @@ import { connect } from "node:net";
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = "reflex-tools";
-/** The session-scoped `tools` registry. */
-export const inject = ["tools"];
+/** The session-scoped `tools` + `systemPrompt` registries. */
+export const inject = ["tools", "systemPrompt"];
 
 /** Normalize untrusted config into the shapes the client reads. */
 export function normalizeConfig(config = {}) {
@@ -73,11 +75,10 @@ function request(config, payload, timeoutMs) {
 
 async function reflexCall(config, payload) {
 	const result = await request(config, payload, config.timeoutMs);
-	const systemPrompt = undefined;
-	if (result.ok === false && systemPrompt !== undefined) {
+	if (result.ok === false && config.systemPrompt !== undefined) {
 		// surface engine-side failures in the system prompt area the model reads
 		// first — one section, always the latest error, replaced in place.
-		systemPrompt.section({
+		config.systemPrompt.section({
 			name: "tool:reflex_last_error",
 			order: 113,
 			text: `reflex: last ${result.command} attempt failed — ${JSON.stringify(result.errors ?? []).slice(0, 300)}`
@@ -283,6 +284,10 @@ function commandTool(config) {
 /** Register every Reflex tool into the session `tools` registry. */
 export function apply(ctx, config) {
 	const resolved = normalizeConfig(config);
+	// the last-error surface is best-effort: a host that provides the
+	// systemPrompt service gets the persistent tool:reflex_last_error section;
+	// one without it still gets every tool (reflexCall's guard is the line).
+	if (typeof ctx.systemPrompt?.section === "function") resolved.systemPrompt = ctx.systemPrompt;
 	ctx.tools.register(
 		statusTool(resolved),
 		windowsTool(resolved),
