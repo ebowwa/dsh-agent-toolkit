@@ -22,9 +22,29 @@
 #
 # Env contract:
 #   MERGE_GUARD_CHECK   the check-run name that gates merges (default
-#                       "gates" — the job name in this repo's gates.yml;
-#                       the check-run name is the JOB name, per the rollup
-#                       {"name":"gates"} in the #434 receipts)
+#                       "gates" — this repo's gates.yml job name; the
+#                       check-run name is the JOB name, per the rollup
+#                       {"name":"gates"} in the #434 receipts).
+#                       EXPLICIT vs DEFAULT is the whole contract since
+#                       FleetTower issue #1132: consumer repos name their
+#                       gates jobs differently (guard-tests,
+#                       notebooks-gist-reconcile), so a hardcoded default
+#                       refused EVERY merge on EVERY green head of those
+#                       repos. An EXPLICIT name is an assertion — it counts
+#                       only when a run carries it, never falling back (the
+#                       #1132 workaround `GH_MERGE_GUARD_CHECK=<job>` keeps
+#                       all guard semantics intact). The DEFAULT is
+#                       repo-agnostic: when NO run named 'gates' grades the
+#                       head, the guard grades the head by the #434
+#                       semantics that actually matter — at least one
+#                       completed+success check run ON THE HEAD SHA and no
+#                       red conclusion (failure/cancelled/timed_out/
+#                       action_required/startup_failure/stale) anywhere on
+#                       it passes, loudly naming what graded the head;
+#                       reds-present or nothing-green refuses, naming the
+#                       explicit-name escape. Wrong-SHA stays refuse in
+#                       every path — a stale green is not green (issue
+#                       #434).
 #   MERGE_GUARD_GH      gh binary to use. The gh-scrub-shim passes the REAL
 #                       gh here so the guard can never recurse into the shim
 #                       (inside an agent session PATH resolves `gh` to the
@@ -53,6 +73,7 @@
 set -uo pipefail
 
 CHECK="${MERGE_GUARD_CHECK:-gates}"
+CHECK_EXPLICIT="${MERGE_GUARD_CHECK:+1}"
 
 refuse() { echo "merge-guard: REFUSED — $*" >&2; exit 1; }
 unresolvable() { echo "merge-guard: REFUSED (unresolvable) — $*" >&2; exit 2; }
@@ -105,17 +126,34 @@ RUNS_JSON="$("$GH_BIN" api "repos/$REPO_PATH/commits/$PR_SHA/check-runs" 2>&1)" 
 
 # ONE snapshot, filtered to (check name == head SHA) pairs; the highest id
 # wins if the check was re-run on this head (latest attempt is the truth).
-VERDICT="$(printf '%s' "$RUNS_JSON" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" node -e '
+# FleetTower issue #1132: when NO run carries the default name, the verdict
+# falls back to the head-wide rollup grade (see the env contract above); an
+# EXPLICIT name never falls back.
+VERDICT="$(printf '%s' "$RUNS_JSON" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
 let s = "";
 process.stdin.on("data", (d) => (s += d)).on("end", () => {
   let j;
   try { j = JSON.parse(s); } catch { console.log("UNPARSEABLE"); return; }
   const runs = (j.check_runs || []).filter(
-    (r) => r.name === process.env.MERGE_GUARD_CHECK && r.head_sha === process.env.MERGE_GUARD_SHA,
+    (r) => r.head_sha === process.env.MERGE_GUARD_SHA,
   );
-  if (!runs.length) { console.log("ABSENT"); return; }
-  const latest = runs.reduce((a, b) => (b.id > a.id ? b : a));
-  console.log((latest.status || "?") + " " + (latest.conclusion || "none"));
+  const named = runs.filter((r) => r.name === process.env.MERGE_GUARD_CHECK);
+  if (named.length) {
+    const latest = named.reduce((a, b) => (b.id > a.id ? b : a));
+    console.log("NAMED " + (latest.status || "?") + " " + (latest.conclusion || "none"));
+    return;
+  }
+  if (process.env.MERGE_GUARD_EXPLICIT === "1") { console.log("ABSENT"); return; }
+  const RED = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"]);
+  const greens = runs.filter((r) => r.status === "completed" && r.conclusion === "success");
+  const reds = runs.filter((r) => RED.has(r.conclusion));
+  const detail = runs.map((r) => (r.name || "?") + "=" + (r.status || "?") + "/" + (r.conclusion || "none")).join(" ");
+  if (greens.length && !reds.length) {
+    console.log("ANYGREEN " + greens.map((r) => r.name).join(","));
+    return;
+  }
+  if (reds.length) { console.log("ROLLUPRED " + detail); return; }
+  console.log("ABSENT " + detail);
 });')"
 
 # Independent verification (issue #326) — OPT-IN via MERGE_GUARD_VERIFY=on.
@@ -139,16 +177,27 @@ verify_gate() {
 }
 
 case "$VERDICT" in
-  ABSENT)
-    refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM — the workflow never ran on this head; landing it is exactly the #422 receipt (issue #434)";;
-  "completed success")
+  "NAMED completed success")
     echo "merge-guard: GREEN — '$CHECK' completed/success on PR #$PR_NUM head ${PR_SHA:0:7}"
     verify_gate
     [ "$MODE" = "check" ] && exit 0
     exec "$GH_BIN" pr merge "$@"
     ;;
+  ANYGREEN\ *)
+    echo "merge-guard: GREEN — no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM (this repo's gates jobs do not carry the default name — the FleetTower #1132 class), but the head IS graded green by: ${VERDICT#ANYGREEN } — completed/success ON this head SHA, no red on it (issue #434 semantics)"
+    verify_gate
+    [ "$MODE" = "check" ] && exit 0
+    exec "$GH_BIN" pr merge "$@"
+    ;;
+  ROLLUPRED\ *)
+    refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM and the head carries red check run(s): ${VERDICT#ROLLUPRED } — a red head is not a green one (the #784 class); if the red job is advisory and a green sibling is the real gate, assert it explicitly with MERGE_GUARD_CHECK=<green job> — an explicit name never falls back (FleetTower issue #1132)";;
   UNPARSEABLE)
     unresolvable "check-runs response for PR #$PR_NUM head ${PR_SHA:0:7} did not parse — refusing rather than trusting an unreadable rollup (issue #434)";;
+  NAMED\ *)
+    refuse "'$CHECK' on PR #$PR_NUM head ${PR_SHA:0:7} is {status=$(printf '%s' "$VERDICT" | cut -d' ' -f2) conclusion=$(printf '%s' "$VERDICT" | cut -d' ' -f3)} — queued/in-progress/cancelled/failed/absent are NOT green (issue #434); the guard takes ONE snapshot and does NOT poll until green";;
+  ABSENT*)
+    ABSENT_DETAIL="${VERDICT#ABSENT}"
+    refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM and no other check graded it green either${ABSENT_DETAIL:+ [${ABSENT_DETAIL}]} — the workflow never ran green on this head; landing it is exactly the #422 receipt (issue #434)";;
   *)
-    refuse "'$CHECK' on PR #$PR_NUM head ${PR_SHA:0:7} is {status=$(printf '%s' "$VERDICT" | cut -d' ' -f1) conclusion=$(printf '%s' "$VERDICT" | cut -d' ' -f2)} — queued/in-progress/cancelled/failed/absent are NOT green (issue #434); the guard takes ONE snapshot and does NOT poll until green";;
+    unresolvable "verdict '$VERDICT' is not a shape this guard knows — refusing rather than guessing (issue #434)";;
 esac

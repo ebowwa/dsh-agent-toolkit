@@ -13,7 +13,14 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   on its head SHA must not merge, and the guard takes ONE snapshot (never a
   poll-until-green loop). The receipt: PR #422 merged while its gates run
   sat queued and never ran — zero completed CI runs graded the head it
-  landed. Branch protection with required status checks is the owner-side
+  landed. Since FleetTower issue #1132, an ABSENT run under the DEFAULT
+  name (`gates`) means the guard grades the head by the rollup instead of
+  refusing: consumer repos name their gates jobs differently, and a
+  hardcoded default refused every merge on every green head of those repos
+  — the fallback passes only ≥1 completed/success run ON the head SHA with
+  no red conclusion on it, and an EXPLICIT `MERGE_GUARD_CHECK` keeps the
+  strict assertion (no fallback). Branch protection with required status
+  checks is the owner-side
   backstop; bypassing or disarming the guard to land a change is a defect
   of the same class as skipping gates.
 - Workflow files pass `scripts/workflow-lint.mjs` (gates enforces it): a
