@@ -55,7 +55,10 @@ export DSH_SCRUB_EXTRA_HOSTS="${EXTRA_SCRUB_HOSTS:-}"
 
 # gh may sit outside the runner service PATH on self-hosted cells (secondsee
 # lane-lottery, 2026-08-26): probe the driver's persistent prefix + brew
-# prefixes before giving up (identical list to the driver's CELL_PROBE_DIRS).
+# prefixes before giving up (the gh-relevant subset of the driver's
+# CELL_PROBE_DIRS — the driver additionally probes bun's install dir for the
+# agent session, issue #522, and publishes every addition to GITHUB_PATH,
+# which this later step already inherits).
 # The reply is the user-facing output channel, so a missing gh downgrades to
 # a warning instead of a bare 127.
 command -v gh >/dev/null 2>&1 \

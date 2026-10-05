@@ -298,6 +298,8 @@ test("driver: the cell-bin probe default still probes the LEGACY prefix (same du
     "the new persistent prefix ($CELL_BIN) must be probed first");
   assert.match(line, /\.dsh-bot-bin/,
     "cells provisioned into the legacy prefix must be found without re-provisioning over the network");
+  assert.match(line, /\$HOME\/\.bun\/bin/,
+    "bun's official install dir must be on the probe list (issue #522: the only bun on air8 was ~/.bun/bin/bun, so gate recipes died 'bun: command not found' rc=127 in the agent session)");
 });
 
 test("workflows: dsh-bot-ref stays a declared alias and every checkout resolves it", () => {
