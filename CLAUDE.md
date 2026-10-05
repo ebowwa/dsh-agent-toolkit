@@ -38,6 +38,14 @@ run straight off the tree on Node.
      converges the peer closure, installs once, and verifies the tree;
      reruns are no-ops); without it those smokes fail environmentally,
      not substantively.
+     **Inside an agent session, gate with the bounded runner**
+     (`node scripts/test-gate.mjs`, issue #398): the bare invocation has
+     no per-suite bound, so one suite wedged by an ambient seam holds the
+     whole gate until the cell's external kill with zero diagnostics. The
+     bounded runner grades the same suites with a per-suite watchdog
+     (`DSH_TEST_GATE_TIMEOUT_S`, default 120s) and reports HANG with the
+     pinpoint recipe — a suite that cannot run hermetically fails loud
+     naming the seam, never hangs the gate.
 - **Review findings cite rules.** `REVIEW.md` is this repo's review
   contract; the review stage reads it (and this file) as ground truth, and
   every finding must cite a rule from it. The review contract is

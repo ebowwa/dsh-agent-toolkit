@@ -373,3 +373,41 @@ test("milestone carry degrades, never fails the ship: ticket without a milestone
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+// --- the ambient-shim strip itself is a pinned contract (issue #398) ------
+//
+// ambientPathWithoutDriverShims is THE defense that keeps this suite
+// hermetic inside an agent session (the session PATH front-carries the
+// driver's per-process "$TMPDIR/dsh-shim.<pid>" scrub-shim dir; an
+// env-less shim resolves `git` to a loud failure and degrades every ship
+// leg to UNVERIFIED). Until now the helper existed but nothing pinned its
+// behavior — a refactor that dropped the filter (or ate non-shim dirs)
+// would only red ambiently, on a session box, never on clean CI. Pin it
+// directly: drop exactly the dsh-shim.* dirs, keep everything else in
+// order, and treat a missing/empty PATH as empty (the never-hang corollary
+// of #398: the strip itself must not be the wedge).
+test("ambientPathWithoutDriverShims drops exactly the driver-shim dirs, keeps the rest (issue #398 pin)", () => {
+  const sep = path.delimiter;
+  const stripped = ambientPathWithoutDriverShims(
+    ["/usr/bin", path.join(tmpdir(), "dsh-shim.30564"), "/opt/homebrew/bin", path.join(tmpdir(), "dsh-shim.99999")].join(sep),
+  );
+  assert.equal(stripped, ["/usr/bin", "/opt/homebrew/bin"].join(sep),
+    "every dsh-shim.* dir must be dropped, the rest kept in order");
+
+  // shim-named dirs anywhere in the entry go too (basename match), while
+  // ordinary dirs — including ones merely CONTAINING 'dsh-shim' deeper in
+  // the name — stay (the filter is startsWith on the BASENAME, pinned so a
+  // widening of the match cannot silently strip lane dirs).
+  const partial = ambientPathWithoutDriverShims(
+    [path.join(tmpdir(), "not-a-dsh-shim-dir"), path.join(tmpdir(), "dsh-shim.1")].join(sep),
+  );
+  assert.match(partial, /not-a-dsh-shim-dir/, "non-shim dirs must survive the strip");
+  assert.doesNotMatch(partial, /dsh-shim\.1($|,)/, "shim dirs must go");
+
+  assert.equal(ambientPathWithoutDriverShims(""), "", "empty PATH in, empty PATH out");
+  // undefined falls back to the LIVE ambient PATH (the default param) — pin
+  // that this degrades to the stripped ambient, never a throw, and that the
+  // strip holds whatever the ambient carries
+  assert.doesNotThrow(() => ambientPathWithoutDriverShims(undefined), "undefined PATH must fall back to the ambient default, never throw");
+  assert.doesNotMatch(ambientPathWithoutDriverShims(undefined), /dsh-shim\./, "the fallback strip must drop ambient shim dirs too");
+});

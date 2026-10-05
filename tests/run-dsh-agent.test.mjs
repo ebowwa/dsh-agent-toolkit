@@ -63,6 +63,22 @@ const HERMETIC_ENV = (() => {
   for (const key of Object.keys(env)) {
     if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
   }
+  // Drop the transient driver-shim PATH dirs too (issue #398): inside an
+  // agent session the driver (run-dsh-agent.sh §2c) front-carries a
+  // per-process "$TMPDIR/dsh-shim.<pid>" dir on PATH, so every spawn built
+  // from this env resolved `git`/`gh` through the AMBIENT scrub shims
+  // instead of this suite's stub bins — the driver under test was coupled
+  // to the session's shim state, and each leg paid the shim's own
+  // subprocess hop. ship-changes.test.mjs has carried exactly this strip
+  // since the gates-run 34803136058 follow-up (its
+  // ambientPathWithoutDriverShims); this suite — which spawns the driver
+  // itself — was the one missing it. Keep the rest of the ambient PATH:
+  // tests-lint forbids hard-coding system dirs, and lane-installed CLIs
+  // (node, the real dsh the composition legs consult) must still resolve.
+  env.PATH = (env.PATH || "")
+    .split(path.delimiter)
+    .filter((dir) => dir !== "" && !path.basename(dir).startsWith("dsh-shim."))
+    .join(path.delimiter);
   env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
   return env;
 })();
@@ -944,7 +960,44 @@ test("DSH_SUBAGENT_MODEL without provider/model fails closed before any launch",
   assert.equal(args, "", "dsh must never be launched on a malformed override");
 });
 
-test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+// --- real-dsh consults are BOUNDED (issue #398) ---------------------------
+//
+// The composition/boot drift guards below consult the REAL `dsh` when the
+// box has one. The old skip-probe — `spawnSync("dsh", ["--version"])` with
+// NO timeout, resolved through the raw ambient PATH — was the
+// never-a-verdict seam of issue #398: inside an agent session `dsh` is the
+// real agent CLI, and any ambient stall (provider throttle wave, loaded
+// cell) left the probe running forever at FILE LOAD time — before a single
+// test ran, so the file produced no verdict at all and the gate loop
+// wedged until the cell's external kill, with zero diagnostics. Bound the
+// resolution: strip the transient driver-shim dirs (same rule as
+// HERMETIC_ENV above), probe the FIRST `dsh` on the stripped PATH with a
+// hard timeout — the same binary a bare `dsh` invocation would resolve —
+// and record a named skip reason when the probe fails: a skip IS a
+// verdict, and it names the seam instead of hanging.
+const DSH_PROBE_TIMEOUT_MS = 15_000;
+const REAL_DSH = (() => {
+  const dirs = (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter((dir) => dir !== "" && !path.basename(dir).startsWith("dsh-shim."));
+  for (const dir of dirs) {
+    const candidate = path.join(dir, "dsh");
+    if (!existsSync(candidate)) continue;
+    try {
+      if (spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: DSH_PROBE_TIMEOUT_MS }).status === 0) {
+        return candidate;
+      }
+    } catch {
+      // unreadable dir / unexecutable file — not a resolvable dsh
+    }
+  }
+  return null;
+})();
+const REAL_DSH_SKIP = REAL_DSH
+  ? false
+  : `real dsh not resolvable on the shim-stripped PATH (or its bounded ${DSH_PROBE_TIMEOUT_MS / 1000}s --version probe failed) — issue #398: the real-dsh consult degrades to a named skip, never an unbounded ambient spawn`;
+
+test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: REAL_DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5-turbo" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped");
@@ -952,7 +1005,7 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
   // Isolated real composition: fresh DSH_HOME (dsh scaffolds the profile),
   // so nothing touches this runner's own harness home.
   const isoHome = mkdtempSync(path.join(tmpdir(), "dsh-dump-home-"));
-  const dumpEnv = { ...HERMETIC_ENV, DSH_HOME: isoHome, PATH: process.env.PATH };
+  const dumpEnv = { ...HERMETIC_ENV, DSH_HOME: isoHome };
   delete dumpEnv.DSH_MODEL;
   delete dumpEnv.DSH_SUBAGENT_MODEL;
   try {
@@ -977,7 +1030,7 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
     // Drift guard: the restated provider/toolName/backgroundMode must equal
     // the profile's own defaults (no --patch). If dsh-headless ever changes
     // them, this red run forces the stamp to move in the same commit.
-    const def = spawnSync("dsh", ["--profile", "headless", "--dump-default-config"], {
+    const def = spawnSync(REAL_DSH, ["--profile", "headless", "--dump-default-config"], {
       encoding: "utf8",
       env: dumpEnv,
       timeout: 60_000,
@@ -1063,7 +1116,7 @@ test("DSH_SUBAGENT_MODEL rejects YAML metacharacters and malformed shapes before
 // credential lookup, so with no API key in env it dies fast at credential
 // resolution — and reaching that step IS the pass condition. Skipped when
 // the dsh CLI is absent (lanes without it keep the stub-level coverage).
-test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: REAL_DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5.2" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
@@ -1075,7 +1128,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
+    const boot = spawnSync(REAL_DSH, ["--profile", "headless", "--patch", overlay, "reply ok"], {
       encoding: "utf8",
       timeout: 120_000,
       cwd,
@@ -1111,7 +1164,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
 // settings.yaml applies to the booted tree (a --dump-config cannot show
 // it: it prints layer views without resolving them). Skipped when the dsh
 // CLI is absent.
-test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: REAL_DSH_SKIP }, () => {
   // Children overridden to a provider DIFFERENT from settings' zai so the
   // two halves are distinguishable in the credential-resolution error.
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "opencode-go2/deepseek-v4-flash" });
@@ -1122,7 +1175,7 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
+    const boot = spawnSync(REAL_DSH, ["--profile", "headless", "--patch", overlay, "reply ok"], {
       encoding: "utf8",
       timeout: 120_000,
       cwd,
@@ -1392,7 +1445,7 @@ test("DSH_WEB_SEARCH_BROWSER_BROWSERS pins the browser list into the overlay; me
 // with no credentials in env the run must die at credential resolution —
 // reaching that step proves the restated web/tool-web rows and the
 // insert-listed @local provider tree all passed the real plugins' validation.
-test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: REAL_DSH_SKIP }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "dsh-web-boot-"));
   const { home } = runLauncher(WEB_BASE(makePluginCopy(dir)));
   const overlay = path.join(home, "web-search-browser.patch.yml");
@@ -1402,7 +1455,7 @@ test("the stamped web overlay boots: the insert-listed provider tree loads (skip
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
+    const boot = spawnSync(REAL_DSH, ["--profile", "headless", "--patch", overlay, "reply ok"], {
       encoding: "utf8",
       timeout: 120_000,
       cwd,
