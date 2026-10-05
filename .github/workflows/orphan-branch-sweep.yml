@@ -1,0 +1,81 @@
+# orphan-branch-sweep.yml — the scheduled half of the branch-hygiene
+# sweep (issue #453, branch-hygiene contract #127). The contract is the
+# session-side rule (run-dsh-agent.sh stamps it into every task: zero
+# orphan branches, delete-on-close-without-merge); THIS workflow is the
+# retrospective reap — sessions leak anyway (a dead cell before the PR
+# step, a close without --delete-branch), and the receipts on #453
+# measured ~60 remote dsh/issue branches against a main whose PR merges
+# auto-clean. The sweep deletes only CONFIRMED orphans: a remote
+# dsh/issue-* branch with NO open PR behind it (census = gh pr list), and
+# the sweep refuses loudly when the census is unreadable — deleting blind
+# is the accident the tool exists to prevent.
+#
+# Scheduled like cell-disk-guard.yml (the repo-hygiene belt): weekly on
+# the dsh cell, dispatchable by hand. Always a DRY RUN by default — the
+# workflow only actuates on an explicit manual dispatch with
+# inputs.actuate=true, so a schedule tick can never delete branches the
+# maintainers did not confirm. The dry-run output (the orphan list) is
+# the durable receipt; the actuated run names every deletion.
+
+name: orphan-branch-sweep
+
+on:
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      actuate:
+        description: "Delete the confirmed orphans (default: dry-run only)"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orphan-branch-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: [self-hosted, dsh]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Sweep confirmed orphan branches (issue 453)
+        env:
+          # The sibling secret convention (fleet-manifest-drift.yml): this
+          # repo has no GH_TOKEN secret — DSH_AGENT_TOOLKIT_REPO_TOKEN is
+          # the write PAT; fall back to the job token (read-only, safe for
+          # the dry-run ticks) when unset.
+          GH_TOKEN: ${{ secrets.DSH_AGENT_TOOLKIT_REPO_TOKEN || github.token }}
+          ACTUATE: ${{ inputs.actuate == true }}
+        run: |
+          set -uo pipefail
+          echo "--- remote dsh/issue-* branch census ---"
+          git ls-remote --heads origin 'refs/heads/dsh/issue-*' | wc -l || true
+          echo "--- confirmed orphans (dry run: the receipt) ---"
+          bash scripts/orphan-branch-sweep.sh list
+          if [ "${ACTUATE:-false}" = "true" ]; then
+            # The actuated push needs a WRITE credential: checkout's
+            # GITHUB_TOKEN is contents:read. The credential rides the git
+            # config ENV seam (REVIEW.md credential law — never a
+            # userinfo URL, never `-c` on argv, never a `-H` header): the
+            # GIT_CONFIG_COUNT/KEY_n/VALUE_n env family, then plain
+            # `git push` inside the sweep.
+            if [ -n "${GH_TOKEN:-}" ]; then
+              export GIT_CONFIG_COUNT=1
+              export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+              # `tr -d '\n'`: GNU base64 (the Linux dsh cell) wraps at 76
+              # columns — the multi-line header would corrupt the
+              # credential (the resolve-push-token.sh:74 / dsh-worker.sh
+              # idiom, review finding 2 on #497).
+              export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
+            fi
+            echo "--- actuated sweep (manual dispatch with actuate=true) ---"
+            bash scripts/orphan-branch-sweep.sh sweep --yes
+          else
+            echo "--- dry run — schedule ticks never delete; dispatch with actuate=true to reap ---"
+            bash scripts/orphan-branch-sweep.sh sweep
+          fi
