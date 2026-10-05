@@ -103,6 +103,18 @@ const runGuard = (t, { legs = [leg()], comments = [], armed = false, apiFail = f
     PR_VERIFICATION_GH: path.join(channel, "gh"),
     MERGE_GUARD_VERIFY_TOOL: tool ?? path.join(ROOT, "scripts", "pr-verification.mjs"),
   };
+  // #498 — the FIFTH carrier of the #483/#487/#490 env-construction class:
+  // the verified names ride the process.env spread. MERGE_GUARD_VERIFY is
+  // ambient-only here (set below ONLY for a deliberate arm), so a lane
+  // exporting it arms every UNARMED leg — delete it before the conditional
+  // so an unarmed leg on such a lane grades unarmed, while the deliberate
+  // `armed` below still wins (exactly the #487 fix's contract in
+  // tests/merge-guard.test.mjs). MERGE_GUARD_VERIFY_TOOL is deliberately
+  // constructed in the literal (default or passed), never ambient, so it
+  // needs no delete. Without the VERIFY delete the "UNARMED default" leg
+  // consults the channel on an armed lane and reds (live repro on the
+  // #489 head: 6 pass / 1 fail).
+  delete env.MERGE_GUARD_VERIFY;
   if (armed) env.MERGE_GUARD_VERIFY = "on";
   const r = spawnSync("bash", [GUARD, "merge", "326", "--squash"], {
     encoding: "utf8", env, cwd: gates,
