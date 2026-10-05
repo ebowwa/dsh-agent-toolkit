@@ -1,0 +1,89 @@
+# smoke-deps-canary — the fresh-runner canary for the plugin smoke-dep
+# closure (issue #506).
+#
+# gates' "Install plugin smoke-test deps" step carries an install-once
+# fast path: on the self-hosted cell a CONVERGED node_modules skips npm
+# entirely, so gates stays green on a tree no fresh clone can reproduce.
+# Issue #506 is the receipt: dsh-reflex's unsatisfiable '>=0.1.0' peer
+# spec ETARGETed every fresh install the moment its smoke landed (the
+# installer seeds only TESTED plugins — plugins/*/test existing is what
+# pulls a package.json into the union), while the cell's gates never
+# exercised npm at all. This job is the truth-teller:
+#
+#   1. MINT a pristine tree — `git archive HEAD` (tracked files only,
+#      no node_modules by construction) — so the install-once fast path
+#      CANNOT fire: the installer must walk the live registry and run
+#      the real npm install.
+#   2. INSTALL the closure there — the exact installer gates runs.
+#   3. RUN the plugin smokes against the freshly installed tree (the
+#      dep-sensitive suites; the unit tests read tracked files only, so
+#      gates' unit leg already grades them tree-independently).
+#
+# Red = a plugin spec the registry cannot satisfy, a registry that lost
+# versions, or a smoke that only passes on a stale tree — named loudly
+# by npm's own ETARGET output instead of masked by a warm cell.
+#
+# Triggers mirror fleet-manifest-drift.yml's fence shape: PRs touching
+# the closure's own inputs are graded fresh BEFORE merge (a spec edit or
+# a newly added plugin smoke is exactly the shape that landed #506), and
+# the daily schedule catches REGISTRY-side drift (unpublishes, moved
+# dist-tags, new transitive peers) that no checkout edit could trigger.
+# workflow_dispatch re-runs it on demand — the tower fires it on PR head
+# branches, the same pattern as gates.
+
+name: smoke-deps-canary
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/*/package.json'
+      - 'plugins/*/test/**'
+      - 'scripts/install-plugin-smoke-deps.mjs'
+      - '.github/workflows/smoke-deps-canary.yml'
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-deps-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: [self-hosted, dsh]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Mint the pristine tree
+        # Tracked files only — node_modules cannot exist here, so the
+        # installer's install-once fast path (the exact masking this
+        # canary exists to defeat) is structurally unreachable.
+        run: |
+          set -euo pipefail
+          pristine="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/smoke-deps-canary-XXXXXX")"
+          git archive HEAD | tar -x -C "$pristine"
+          [ -d "$pristine/plugins" ] || {
+            echo "::error::pristine mint produced no plugins/ — git archive failed"
+            exit 1
+          }
+          if [ -e "$pristine/node_modules" ]; then
+            echo "::error::pristine tree carries node_modules — the canary's premise is that it cannot"
+            exit 1
+          fi
+          echo "PRISTINE=$pristine" >> "$GITHUB_ENV"
+      - name: Install the smoke-dep closure into it (the real npm leg)
+        # The pristine tree has no convergence witness on either seam,
+        # so this is always the full path — registry walk, real npm
+        # install, post-install verify — never the install-once skip.
+        run: |
+          set -euo pipefail
+          cd "$PRISTINE"
+          node scripts/install-plugin-smoke-deps.mjs
+      - name: Run the plugin smokes on the fresh tree
+        run: |
+          set -euo pipefail
+          cd "$PRISTINE"
+          node --test plugins/*/test/smoke.mjs
