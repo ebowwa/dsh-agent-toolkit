@@ -35,6 +35,16 @@ const oneLine = s =>
 
 const emitJson = obj => process.stdout.write(JSON.stringify(obj) + "\n");
 
+// Render one argument VALUE for a tool line. Structured values (an array of
+// todo records, a nested object) MUST go through JSON.stringify: handing
+// them to `oneLine` alone minted `[object Object],[object Object],…` into
+// the Actions-log trace — and from there into the node's 300-char stderr
+// tail, the terminal-detail prose, the claims-ledger `result`, and the
+// fleet-digest `done:` rows (ebowwa/FleetTower#1233: five done rows read
+// `todos: [object Object]×7`). Strings keep the old path byte-for-byte.
+const renderValue = value =>
+  typeof value === "string" ? value : JSON.stringify(value) ?? "";
+
 function previewArguments(raw) {
   let args;
   try {
@@ -43,10 +53,10 @@ function previewArguments(raw) {
     return oneLine(raw);
   }
   for (const key of ["description", "command", "prompt", "file_path", "pattern", "query", "url", "content"]) {
-    if (args[key] !== undefined && args[key] !== "") return `${key}: ${oneLine(args[key])}`;
+    if (args[key] !== undefined && args[key] !== "") return `${key}: ${oneLine(renderValue(args[key]))}`;
   }
   const first = Object.keys(args)[0];
-  return first ? `${first}: ${oneLine(args[first])}` : "";
+  return first ? `${first}: ${oneLine(renderValue(args[first]))}` : "";
 }
 
 import readline from "node:readline";
