@@ -24,6 +24,7 @@ import {
   seed,
   walkToFixpoint,
   resolveUnionSpecs,
+  localPeers,
   verify,
   linkLocals,
   closureSeamsAbsent,
@@ -56,13 +57,18 @@ test("seed comes from tested plugins only and is deterministic", () => {
   );
 });
 
-test("the union merge dedupes by name; plugin ranges are authoritative", () => {
+test("the union merge keeps every distinct spec per walk-only name; plugin ranges are authoritative", () => {
   const u = new Union();
   assert.equal(u.add("p", "^1.0.0", "walk"), true);
-  assert.equal(u.add("p", "^9.0.0", "walk"), false, "dedupe by name");
-  assert.equal(u.size, 1);
+  assert.equal(
+    u.add("p", "^9.0.0", "walk"),
+    true,
+    "a distinct walk range ACCUMULATES (issue #510) — the dropped range's transitive peers must reach the closure",
+  );
+  assert.equal(u.add("p", "^9.0.0", "walk"), false, "an exact duplicate is still a no-op");
+  assert.equal(u.size, 2);
   assert.equal(u.add("p", "^2.0.0", "plugin"), true, "plugin spec wins over walk");
-  assert.deepEqual(u.specs(), ["p@^2.0.0"]);
+  assert.deepEqual(u.specs(), ["p@^2.0.0"], "the plugin declaration replaces the walk-accumulated name");
   // idempotent + name-monotone: re-deriving a union from specs it produced
   // cannot change it (the anti-oscillation invariant)
   const again = new Union();
@@ -128,11 +134,16 @@ test("union merge: plugin specs accumulate per name; walk stays subordinate (iss
   assert.equal(w.add("q", "^1.0.0", "walk"), true);
   assert.equal(
     w.add("q", "^9.0.0", "walk"),
+    true,
+    "walk-vs-walk ACCUMULATES distinct ranges (issue #510 — first-writer-wins dropped the loser's transitive peers)",
+  );
+  assert.equal(
+    w.add("q", "^9.0.0", "walk"),
     false,
-    "walk-vs-walk keeps the first writer (the walk iterates sorted, so it is deterministic)",
+    "an exact duplicate stays a no-op (the walk iterates sorted, so re-derivation is deterministic)",
   );
   assert.equal(w.add("q", "^2.0.0", "plugin"), true, "plugin still wins over walk");
-  assert.deepEqual(w.specs(), ["q@^2.0.0"], "the plugin spec replaces the walk entry");
+  assert.deepEqual(w.specs(), ["q@^2.0.0"], "the plugin spec replaces the walk entries");
 });
 
 test("resolveUnionSpecs pins a version satisfying EVERY plugin range (issue #508)", () => {
@@ -167,7 +178,7 @@ test("resolveUnionSpecs refuses LOUDLY: empty intersection and per-spec no-match
         specVersions: (n, s) => (s === "^1.0.0" ? ["1.0.0", "1.9.0"] : ["2.0.0"]),
         allVersions: () => ["1.0.0", "1.9.0", "2.0.0"],
       }),
-    /unsatisfiable plugin spec union for pkg.*pkg@\^1\.0\.0 \+ pkg@\^2\.0\.0/s,
+    /unsatisfiable spec union for pkg.*pkg@\^1\.0\.0 \+ pkg@\^2\.0\.0/s,
     "no common version — the refusal names the name and BOTH specs",
   );
   const none = new Union();
@@ -179,7 +190,7 @@ test("resolveUnionSpecs refuses LOUDLY: empty intersection and per-spec no-match
         specVersions: (n, s) => (s === ">=9.0.0" ? [] : ["1.0.0"]),
         allVersions: () => ["1.0.0"],
       }),
-    /unsatisfiable plugin spec: pkg@>=9\.0\.0 has no registry version/,
+    /unsatisfiable spec: pkg@>=9\.0\.0 has no registry version/,
     "a spec the registry cannot satisfy at all refuses before npm ever runs",
   );
 });
@@ -194,6 +205,164 @@ test("verify names the WHOLE union of a multi-spec name, not the race winner (is
   assert.ok(missing, `the missing line exists: ${problems.join("; ")}`);
   assert.match(missing, /\^1\.0\.0/, "the first plugin's range is named");
   assert.match(missing, />=9\.0\.0/, "the second plugin's range is named too");
+});
+
+// ---- issue #510: localPeers is not last-writer-wins; walk specs accumulate
+
+test("localPeers keeps EVERY @local plugin's spec per name — plugin order decides nothing (issue #510)", () => {
+  const a = plugin("@local/a", {}, { "@deepseek-ai/lib1": "^1.0.0" });
+  const b = plugin("@local/b", {}, {
+    "@deepseek-ai/lib1": "^2.0.0",
+    "@deepseek-ai/lib2": "^2.0.0",
+  });
+  const c = plugin("@local/c", {}, { "@deepseek-ai/lib1": "^1.0.0" }); // exact dup spec
+  const one = localPeers([a, b, c]);
+  const two = localPeers([c, b, a]);
+  assert.deepEqual(one, two, "plugin order (the readdir race) cannot change the collected peers");
+  assert.deepEqual(
+    one["@deepseek-ai/lib1"],
+    ["^1.0.0", "^1.0.0", "^2.0.0"],
+    "BOTH distinct ranges survive — Object.assign's last-writer-wins is gone (issue #510); exact dups dedupe later in Union.add",
+  );
+  assert.deepEqual(one["@deepseek-ai/lib2"], ["^2.0.0"], "disjoint peer names still collect");
+  assert.deepEqual(localPeers([plugin("@local/d")]), {}, "a plugin with no peers contributes nothing");
+  assert.deepEqual(localPeers([plugin("@deepseek-ai/not-local", {}, { x: "^1" })]), {}, "non-@local plugins are ignored");
+});
+
+test("the #510 receipt shape: two WALKED ranges of one name both reach the closure (issue #510)", () => {
+  // two seeded packages' registry metadata carry DIFFERENT ranges of the
+  // same walk-only name p — pre-#510 Union.add's walk-vs-walk rule kept
+  // only the first writer, so p@^2.0.0's whole transitive set (r@^2)
+  // silently vanished from the closure
+  const plugins = [
+    plugin("@local/a", { m: "^1.0.0" }), // m@^1.0.0 seeded
+    plugin("@local/b", { n: "^1.0.0" }), // n@^1.0.0 seeded
+  ];
+  const graph = {
+    "m@^1.0.0": { p: "^1.0.0" },
+    "n@^1.0.0": { p: "^2.0.0" }, // the second range of walk-only p
+    "p@^1.0.0": { r: "^1.0.0" },
+    "p@^2.0.0": { r: "^2.0.0" },
+  };
+  const peersFn = (n, spec) => graph[`${n}@${spec}`] ?? {};
+  const union = seed(plugins);
+  walkToFixpoint(union, plugins, peersFn);
+  for (const want of [
+    "m@^1.0.0",
+    "n@^1.0.0",
+    "p@^1.0.0",
+    "p@^2.0.0",
+    "r@^1.0.0",
+    "r@^2.0.0",
+  ])
+    assert.ok(
+      union.specs().includes(want),
+      `the closure must keep BOTH walked ranges' transitive peers: want ${want} in [${union.specs().join(" ")}]`,
+    );
+});
+
+test("the localPeers merge point: BOTH @local ranges reach the walk closure — neither merge point alone suffices (issue #510)", () => {
+  // sources[0] of the walk is localPeers' merged object — pre-#510
+  // Object.assign kept only the LAST @local plugin's range, and even
+  // with both collected the walk-vs-walk rule dropped the second, so
+  // this pin goes red unless BOTH merge points move together
+  const seeded = [plugin("@local/a", { m: "^1.0.0" })]; // seed: m only
+  const walked = [
+    plugin("@local/a", {}, { p: "^1.0.0" }), // localPeers must carry BOTH p ranges
+    plugin("@local/b", {}, { p: "^2.0.0" }), // (the readdir-later one used to win outright)
+  ];
+  const graph = {
+    "m@^1.0.0": {},
+    "p@^1.0.0": { r: "^1.0.0" },
+    "p@^2.0.0": { r: "^2.0.0" },
+  };
+  const peersFn = (n, spec) => graph[`${n}@${spec}`] ?? {};
+  const union = seed(seeded);
+  walkToFixpoint(union, walked, peersFn);
+  for (const want of ["p@^1.0.0", "p@^2.0.0", "r@^1.0.0", "r@^2.0.0"])
+    assert.ok(
+      union.specs().includes(want),
+      `both @local ranges and their transitives must land: want ${want} in [${union.specs().join(" ")}]`,
+    );
+  // the reverse plugin order converges to the SAME union
+  const flipped = seed(seeded);
+  walkToFixpoint(flipped, [...walked].reverse(), peersFn);
+  assert.deepEqual(flipped.specs(), union.specs(), "readdir order decides nothing end-to-end");
+});
+
+test("union merge: distinct walk specs accumulate under a walk-only name, spec-sorted (issue #510)", () => {
+  const u = new Union();
+  assert.equal(u.add("p", "^2.0.0", "walk"), true);
+  assert.equal(u.add("p", "^1.0.0", "walk"), true, "a second distinct walk range is KEPT");
+  assert.equal(u.add("p", "^1.0.0", "walk"), false, "an exact duplicate is a no-op");
+  assert.deepEqual(
+    u.map.get("p").map((e) => e.spec),
+    ["^1.0.0", "^2.0.0"],
+    "per-name entries are spec-sorted, not arrival-ordered",
+  );
+  const v = new Union();
+  v.add("p", "^1.0.0", "walk");
+  v.add("p", "^2.0.0", "walk");
+  assert.equal(v.add("p", "^9.0.0", "plugin"), true, "a plugin declaration still absorbs the walk-accumulated name");
+  assert.deepEqual(v.specs(), ["p@^9.0.0"], "plugin ranges are authoritative over accumulated walk specs");
+  const w = new Union();
+  w.add("q", "^1.0.0", "plugin");
+  assert.equal(w.add("q", "^2.0.0", "walk"), false, "a walk spec never adds under a plugin-declared name");
+});
+
+test("resolveUnionSpecs resolves walk-accumulated names: pin the common version (issue #510)", () => {
+  const u = new Union();
+  u.add("pkg", "^1.0.0", "walk");
+  u.add("pkg", ">=1.2.0 <2.0.0", "walk");
+  const registry = {
+    "pkg@^1.0.0": ["1.0.0", "1.2.0", "1.5.0"],
+    "pkg@>=1.2.0 <2.0.0": ["1.2.0", "1.5.0"],
+  };
+  const install = resolveUnionSpecs(u, {
+    specVersions: (n, s) => registry[`${n}@${s}`] ?? [],
+    allVersions: () => ["1.0.0", "1.2.0", "1.5.0"],
+  });
+  assert.deepEqual(
+    install,
+    ["pkg@1.5.0"],
+    "a walk-accumulated multi-spec name installs ONE pinned version both ranges accept",
+  );
+});
+
+test("resolveUnionSpecs refuses a walk-accumulated name with no common version, loudly (issue #510)", () => {
+  const u = new Union();
+  u.add("pkg", "^1.0.0", "walk");
+  u.add("pkg", "^2.0.0", "walk");
+  assert.throws(
+    () =>
+      resolveUnionSpecs(u, {
+        specVersions: (n, s) => (s === "^1.0.0" ? ["1.0.0", "1.9.0"] : ["2.0.0"]),
+        allVersions: () => ["1.0.0", "1.9.0", "2.0.0"],
+      }),
+    /unsatisfiable spec union for pkg.*pkg@\^1\.0\.0 \+ pkg@\^2\.0\.0/s,
+    "an unmaterializable walk-accumulated union refuses loudly — silently dropping a range was the #510 bug",
+  );
+});
+
+test("re-walking a converged walk-accumulated union adds nothing (anti-oscillation, issue #510)", () => {
+  const plugins = [
+    plugin("@local/a", { m: "^1.0.0" }),
+    plugin("@local/b", { n: "^1.0.0" }),
+  ];
+  const graph = {
+    "m@^1.0.0": { p: "^1.0.0" },
+    "n@^1.0.0": { p: "^2.0.0" },
+    "p@^1.0.0": { r: "^1.0.0" },
+    "p@^2.0.0": { r: "^1.0.0" },
+  };
+  const peersFn = (n, spec) => graph[`${n}@${spec}`] ?? {};
+  const union = seed(plugins);
+  walkToFixpoint(union, plugins, peersFn);
+  const once = union.specs();
+  assert.ok(once.includes("p@^1.0.0") && once.includes("p@^2.0.0"), once.join(" "));
+  const rounds = walkToFixpoint(union, plugins, peersFn);
+  assert.equal(rounds, 0, "already converged — zero further rounds");
+  assert.deepEqual(union.specs(), once, "re-walking changes nothing");
 });
 
 const splitSpec = (spec) => {
