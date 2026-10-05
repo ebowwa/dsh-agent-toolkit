@@ -36,6 +36,17 @@ const configTopNames = () =>
     .map((d) => d.name)
     .sort();
 
+// plugins/* like the #417 receipt loop, at DIRECTORY granularity (issue
+// #457): the README maps plugins one purpose row per plugin DIR (50 files
+// under plugins/ carry no individual rows, and shouldn't — a per-file
+// leg would demand a row for PR_BODY.md). Every top-level dir basename
+// must sit in a File cell.
+const pluginDirs = () =>
+  readdirSync(path.join(ROOT, "plugins"), { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+
 // The File column (first cell) of every README table row — this is what
 // "has a row in the file map" means; a name riding prose inside another
 // row's purpose cell does not count.
@@ -83,19 +94,37 @@ test("the file map names every config entry (the #417 receipt loop)", () => {
   );
 });
 
-test("a prose mention is not a row — every workflow, script, and config entry sits in a File cell (the lane-plugins.json promotion, #417)", () => {
+test("a prose mention is not a row — every workflow, script, config entry, and plugin dir sits in a File cell (the lane-plugins.json promotion, #417)", () => {
   const cells = fileMapFileCells();
   const missing = [
     ...basenames(".github/workflows").map((n) => [".github/workflows", n]),
     ...basenames("scripts").map((n) => ["scripts", n]),
     ...configTopNames().map((n) => ["config", n]),
+    ...pluginDirs().map((n) => [`plugins/${n}/`, n]),
   ]
     .filter(([, n]) => !hasRow(n, cells))
-    .map(([d, n]) => `${d}/${n}`);
+    .map(([d, n]) => `${d}/`);
   assert.deepEqual(
     missing,
     [],
-    "files named somewhere in README prose but missing a file-map row of their own (the #417 lane-plugins.json class — a purpose cell mentioning a sibling is not a row): " +
+    "files named somewhere in README prose but missing a file-map row of their own (the #417 lane-plugins.json class — a purpose cell mentioning a sibling is not a row; the #457 dir-leg — a plugin dir basename must sit in a File cell, a row's purpose cell naming it does not count): " +
+      missing.join(", "),
+  );
+});
+
+test("every plugin dir basename sits in a README File cell (the #457 dir-leg)", () => {
+  // The #417 row-leg checks basename-in-FILE-cell per FILE; plugins/ is
+  // mapped at DIRECTORY granularity (one purpose row per plugin dir), so
+  // the dir-leg checks the top-level dir basenames — not the ~50 files
+  // beneath them (a per-file leg would demand rows for
+  // plugins/dsh-flight-recorder/PR_BODY.md, the wrong shape). Red when a
+  // plugin DIR loses its row, exactly like the other classes.
+  const cells = fileMapFileCells();
+  const missing = pluginDirs().filter((n) => !hasRow(n, cells));
+  assert.deepEqual(
+    missing,
+    [],
+    "plugins/* dirs with no README.md file-map row (CLAUDE.md promises 'every plugin'; issue #457 — the plugins class was the one promised class the #417 fence never fenced): " +
       missing.join(", "),
   );
 });
