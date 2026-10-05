@@ -21,6 +21,20 @@
 # base→pr-merge diff, which reads every sibling landing since the fork point
 # as an apparent PR reversal (the PR #495 receipt).
 #
+# Recover, then fail closed (issue #519): the fetches below run --depth 1
+# and the worker's per-task clone is --depth 1 too (dsh-worker.sh), so base
+# and pr-merge arrive as disconnected shallow roots BY CONSTRUCTION on the
+# standard production flow — the merge-base lookup exits 1 on essentially
+# every review, and #516's fail-closed arm would withhold the diff on every
+# one of them. When the lookup fails, the checkout is deepened in bounded
+# steps (deepen 1, 2, 4 — cumulative shallow boundary depth 8) until the
+# fork point resolves or the budget is spent; an unresolvable graph still
+# ends at the SAME withheld terminal state #516 shipped — deepening buys
+# availability, never different diff semantics. And when the fork point
+# RESOLVES but the diff runs clean and comes back empty, that is an EMPTY
+# PR and is reported as one — never as an unavailable diff (the issue #519
+# adjacent nit).
+#
 # Env contract:
 #   GH_TOKEN                the worker's PAT (read + comment/label on the repo)
 #   DSH_SHIP_REPO           owner/repo of the PR under review
@@ -102,6 +116,16 @@ gh_fetch() { # <refspec:local-ref>
 }
 fetch_merge() { gh_fetch "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"; }
 fetch_base()   { gh_fetch "refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
+# Issue #519: widen the shallow boundary of BOTH fetched refs by <depth>
+# commits — the recover arm for the disconnected graph the --depth 1
+# fetches construct. Same env-borne auth seam as gh_fetch.
+gh_deepen() { # <depth>
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
+    git -c credential.helper= fetch -q --deepen="$1" origin \
+      "refs/heads/${BASE_REF}:refs/remotes/origin/base" \
+      "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"
+}
 fetch_merge 2>/dev/null \
   || { echo "review-pr: cannot fetch PR #$PR_NUM merge ref" >&2; rm -f "$RULES_TMP"; exit 2; }
 fetch_base 2>/dev/null || true
@@ -115,16 +139,41 @@ fetch_base 2>/dev/null || true
 # merge-base explicitly; when it cannot be resolved, hand (diff unavailable)
 # and say so in the prompt — never silently degrade to a two-dot diff.
 FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+DEEPEN_STEPS=""
+# Issue #519: the --depth 1 fetches above (and the worker's --depth 1 clone)
+# disconnect base and pr-merge by construction — the lookup exits 1 on the
+# standard production flow, and #516's fail-closed arm would withhold the
+# diff on every review. Recover, bounded: widen the shallow boundary in
+# steps until the fork point resolves or the small budget is spent (the
+# common fresh-fork case resolves at the first step). A graph the budget
+# still cannot connect falls through to the SAME withheld terminal state
+# below — deepening changes the budget, never the fail-closed semantics.
+if [ -z "$FORK_BASE" ]; then
+  for DEEPEN_STEP in 1 2 4; do
+    gh_deepen "$DEEPEN_STEP" 2>/dev/null || true
+    FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+    if [ -n "$FORK_BASE" ]; then
+      DEEPEN_STEPS="$DEEPEN_STEP"
+      break
+    fi
+  done
+fi
 BASE_TIP="$(git rev-parse origin/base 2>/dev/null || true)"
 DIFF=""
 DIFF_STAT=""
 DIFF_BASIS=""
+DIFF_STAT_ALL=""
 if [ -n "$FORK_BASE" ]; then
   # Two-dot from the RESOLVED merge-base IS the three-dot semantics
   # (base...pr-merge ≡ merge-base(base, pr-merge)→pr-merge) — computed once,
   # with no fallback arm left that could silently substitute another range.
-  DIFF="$(git diff "$FORK_BASE" origin/pr-merge 2>/dev/null || true)"
-  DIFF_STAT="$(git diff --stat "$FORK_BASE" origin/pr-merge 2>/dev/null | tail -n 30 || true)"
+  # RC-captured (issue #519): an EMPTY result from a clean diff is a real
+  # empty diff and must stay distinguishable from a FAILED diff.
+  DIFF="$(git diff "$FORK_BASE" origin/pr-merge 2>/dev/null)" \
+    && DIFF_RC=0 || DIFF_RC=1
+  DIFF_STAT_ALL="$(git diff --stat "$FORK_BASE" origin/pr-merge 2>/dev/null)" \
+    && STAT_RC=0 || STAT_RC=1
+  DIFF_STAT="$(printf '%s' "$DIFF_STAT_ALL" | tail -n 30 || true)"
   if [ -n "$BASE_TIP" ] && [ "$BASE_TIP" = "$FORK_BASE" ]; then
     DIFF_BASIS="fork point ${FORK_BASE} — base has NOT advanced since the fork (the diff is the PR's own changes only)"
   elif [ -n "$BASE_TIP" ]; then
@@ -132,14 +181,28 @@ if [ -n "$FORK_BASE" ]; then
   else
     DIFF_BASIS="fork point ${FORK_BASE} — base tip unresolvable (base fetch failed)"
   fi
-  if [ -z "$DIFF" ] && [ -z "$DIFF_STAT" ]; then
+  if [ -n "$DEEPEN_STEPS" ]; then
+    DIFF_BASIS="$DIFF_BASIS — the shallow checkout was deepened in bounded steps to resolve this fork point (issue #519: final deepen step $DEEPEN_STEPS); anything the budget cannot still connect stays withheld"
+  fi
+  if [ "$DIFF_RC" = "1" ] || [ "$STAT_RC" = "1" ]; then
+    # The fork RESOLVED but the diff itself failed — genuinely unavailable.
     DIFF="(diff unavailable — base and pr-merge could not be diffed at the resolved fork point)"
     DIFF_STAT="(diff stat unavailable)"
+  elif [ -z "$DIFF" ] && [ -z "$DIFF_STAT_ALL" ]; then
+    # Issue #519 adjacent nit: the fork point resolved and BOTH diffs ran
+    # clean — an empty result is an EMPTY PR (pr-merge == base at the fork),
+    # not an unavailable diff. The old text asserted a failure that never
+    # happened; say the truth instead.
+    DIFF="(the diff is EMPTY — pr-merge carries no tree change over base at the resolved fork point ${FORK_BASE}; this is an empty PR, not a withheld diff — verify the emptiness is intended)"
+    DIFF_STAT="(empty diff — no file changes)"
+    DIFF_BASIS="$DIFF_BASIS — the diff ran clean and is EMPTY (an empty PR, not a withheld one)"
   fi
 else
-  # Fail closed (issue #516): no resolvable merge-base — a shallow graph
-  # that cannot connect base and pr-merge. The PR's own changes CANNOT be
-  # isolated, so the diff is WITHHELD, never degraded to two-dot.
+  # Fail closed (issue #516, still the terminal state under #519): no
+  # resolvable merge-base even after the bounded deepening above — a shallow
+  # graph that cannot connect base and pr-merge within the budget. The PR's
+  # own changes CANNOT be isolated, so the diff is WITHHELD, never degraded
+  # to two-dot.
   DIFF="(diff unavailable — the base/pr-merge graph cannot be connected in this shallow checkout, so the PR's own changes could NOT be isolated; do NOT reconstruct them from branch names or checks output)"
   DIFF_STAT="(diff stat unavailable — same shallow-graph cause)"
   DIFF_BASIS="fork point UNRESOLVABLE (shallow graph) — the diff below is WITHHELD, not degraded; ground findings only in what is actually shown, and say the diff was unavailable rather than inferring the change"
