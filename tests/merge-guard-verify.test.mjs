@@ -17,6 +17,9 @@
 //      gates refuse before the channel is ever read (the channel is a
 //      second signal on an already-green head, never a CI substitute).
 //   6. ARMED + missing verify tool → unresolvable, not a silent pass.
+//   7. An ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs
+//      (issue #503 — the sibling merge-guard.test.mjs #483 pin, ported
+//      to THIS file's own process/env).
 //
 // Hermetic: the gates-side stub gh (MERGE_GUARD_GH) serves check runs and
 // records `pr merge` argv (the merge-guard.test.mjs pattern); the
@@ -103,6 +106,16 @@ const runGuard = (t, { legs = [leg()], comments = [], armed = false, apiFail = f
     PR_VERIFICATION_GH: path.join(channel, "gh"),
     MERGE_GUARD_VERIFY_TOOL: tool ?? path.join(ROOT, "scripts", "pr-verification.mjs"),
   };
+  // The legs pin a `gates`-named check run (scripts/merge-guard.sh reads
+  // CHECK="${MERGE_GUARD_CHECK:-gates}"): an ambient MERGE_GUARD_CHECK=<other>
+  // on a lane would ride the process.env spread, flip the guard's filter to a
+  // name no leg carries, and turn every green leg red (issue #503 — the
+  // env-construction flavor of the lane-leak class, the sibling
+  // merge-guard.test.mjs #483 delete applied to THIS harness; this file is a
+  // separate process from the sibling, so the sibling's delete never masks
+  // it). The harness never arms the name deliberately — it has no
+  // MERGE_GUARD_CHECK literal at all — so the delete is unconditional.
+  delete env.MERGE_GUARD_CHECK;
   if (armed) env.MERGE_GUARD_VERIFY = "on";
   const r = spawnSync("bash", [GUARD, "merge", "326", "--squash"], {
     encoding: "utf8", env, cwd: gates,
@@ -177,4 +190,40 @@ test("Ordering: RED gates refuse BEFORE the channel is ever read", (t) => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /NOT green \(issue #434\)/);
   assert.equal(channelCalls(channel).length, 0, "the channel is a second signal on an already-green head");
+});
+
+test("an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (issue #503 pin)", (t) => {
+  // The #503 defect is invisible on a clean dev box: the legs above pin a
+  // `gates`-named check, but the guard reads CHECK="${MERGE_GUARD_CHECK:-gates}"
+  // — on a lane that exports MERGE_GUARD_CHECK=<other> the name rode
+  // runGuard's process.env spread, the filter matched no leg, and every
+  // green leg went red (the exact #483 receipt, in this file's separate
+  // process — the sibling merge-guard.test.mjs #483 pin never masked it).
+  // Arm the lane INSIDE this process so the harness env's hermeticity is
+  // graded on every machine, not just on mis-configured lanes (the
+  // sibling #483 pin shape, applied to this harness's own legs). Both
+  // directions pin: the UNARMED leg still merges silently, and the ARMED
+  // legs still grade through the real filter.
+  process.env.MERGE_GUARD_CHECK = "ci/ambient-not-gates";
+  try {
+    const unarmed = runGuard(t, { comments: [] });
+    assert.equal(unarmed.r.status, 0, `the harness 'gates' default must beat the ambient name (stderr: ${unarmed.r.stderr})`);
+    assert.ok(merged(unarmed.gates)?.length, "unarmed: pr merge ran");
+    assert.equal(channelCalls(unarmed.channel).length, 0, "unarmed: the channel is never consulted");
+
+    const armedPass = runGuard(t, {
+      armed: true,
+      comments: [marker(1, "independent run: 443/443\ngate-verify: pass\n")],
+    });
+    assert.equal(armedPass.r.status, 0, `armed: the leg still grades (stdout: ${armedPass.r.stdout} stderr: ${armedPass.r.stderr})`);
+    assert.match(armedPass.r.stdout, /independent verification GREEN/, "armed: the pass marker still graded");
+    assert.ok(merged(armedPass.gates)?.length, "armed: pr merge ran");
+
+    const armedFail = runGuard(t, { armed: true, comments: [marker(1, "gate-verify: fail\n")] });
+    assert.equal(armedFail.r.status, 1, "armed: the fail marker still grades");
+    assert.match(armedFail.r.stderr, /NOT pass/, "armed: refusal is the arm's verdict, not a lost leg");
+    assert.equal(merged(armedFail.gates), null, "armed: nothing merged");
+  } finally {
+    delete process.env.MERGE_GUARD_CHECK;
+  }
 });
