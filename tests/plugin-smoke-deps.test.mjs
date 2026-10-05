@@ -23,6 +23,7 @@ import {
   Union,
   seed,
   walkToFixpoint,
+  resolveUnionSpecs,
   verify,
   linkLocals,
   closureSeamsAbsent,
@@ -68,6 +69,131 @@ test("the union merge dedupes by name; plugin ranges are authoritative", () => {
   for (const spec of u.specs()) again.add(...splitSpec(spec), "walk");
   assert.equal(again.size, u.size, "re-adding its own output is a no-op");
   assert.deepEqual(again.specs(), u.specs());
+});
+
+// ---- issue #508: the seed must not be first-writer-wins per name --------
+
+test("every plugin spec for a name survives the seed — readdir order decides nothing (issue #508)", () => {
+  const first = plugin("@local/a", {}, { "@deepseek-ai/lib1": "^1.0.0" });
+  const second = plugin("@local/b", {}, { "@deepseek-ai/lib1": ">=9.0.0" });
+  const one = seed([first, second]);
+  const two = seed([second, first]);
+  assert.deepEqual(one.specs(), two.specs(), "seed order cannot change the union");
+  assert.deepEqual(
+    one.specs(),
+    ["@deepseek-ai/lib1@>=9.0.0", "@deepseek-ai/lib1@^1.0.0"].sort(),
+    "BOTH plugin specs are registered — the loser of the readdir race reaches npm",
+  );
+  assert.deepEqual(seed([first, second]).specs(), one.specs(), "re-seeding is a no-op");
+});
+
+test("the #508 receipt shape: an unsatisfiable spec seeded after a satisfiable one stays in the union", () => {
+  // dsh-system-prompt-editor (sorts first) seeds dsh-tools@^0.1.0-rc.7;
+  // a plugin sorted after seeding an unsatisfiable dsh-tools spec used to
+  // have that spec silently dropped — the installer went green on a
+  // broken closure and the #507 canary's red coverage was race-dependent
+  const editor = plugin(
+    "@local/editor",
+    {},
+    { "@deepseek-ai/dsh-tools": "^0.1.0-rc.7" },
+  );
+  const negprobe = plugin(
+    "@local/negprobe",
+    {},
+    { "@deepseek-ai/dsh-tools": ">=0.1.0" },
+  );
+  const union = seed([editor, negprobe]);
+  assert.ok(
+    union.specs().includes("@deepseek-ai/dsh-tools@>=0.1.0"),
+    `the unsatisfiable spec must reach the install surface: ${union.specs().join(" ")}`,
+  );
+});
+
+test("union merge: plugin specs accumulate per name; walk stays subordinate (issue #508)", () => {
+  const u = new Union();
+  assert.equal(u.add("p", "^1.0.0", "plugin"), true);
+  assert.equal(
+    u.add("p", "^2.0.0", "plugin"),
+    true,
+    "a second plugin's spec for the same name is KEPT, not dropped",
+  );
+  assert.equal(u.add("p", "^2.0.0", "plugin"), false, "an exact duplicate is a no-op");
+  assert.equal(
+    u.add("p", "^9.0.0", "walk"),
+    false,
+    "a walk spec cannot add itself under a plugin-declared name",
+  );
+  assert.deepEqual(u.specs(), ["p@^1.0.0", "p@^2.0.0"].sort());
+  const w = new Union();
+  assert.equal(w.add("q", "^1.0.0", "walk"), true);
+  assert.equal(
+    w.add("q", "^9.0.0", "walk"),
+    false,
+    "walk-vs-walk keeps the first writer (the walk iterates sorted, so it is deterministic)",
+  );
+  assert.equal(w.add("q", "^2.0.0", "plugin"), true, "plugin still wins over walk");
+  assert.deepEqual(w.specs(), ["q@^2.0.0"], "the plugin spec replaces the walk entry");
+});
+
+test("resolveUnionSpecs pins a version satisfying EVERY plugin range (issue #508)", () => {
+  const u = new Union();
+  u.add("pkg", "^1.0.0", "plugin");
+  u.add("pkg", ">=1.2.0 <2.0.0", "plugin");
+  u.add("solo", "^3.0.0", "plugin");
+  const registry = {
+    "pkg@^1.0.0": ["1.0.0", "1.2.0", "1.5.0"],
+    "pkg@>=1.2.0 <2.0.0": ["1.2.0", "1.5.0"],
+  };
+  const calls = [];
+  const install = resolveUnionSpecs(u, {
+    specVersions: (n, s) => (calls.push(`${n}@${s}`), registry[`${n}@${s}`] ?? []),
+    allVersions: () => ["1.0.0", "1.2.0", "1.5.0"],
+  });
+  assert.deepEqual(
+    install,
+    ["pkg@1.5.0", "solo@^3.0.0"],
+    "multi-spec names resolve to ONE pinned spec both ranges accept; single-spec names pass through untouched",
+  );
+  assert.deepEqual(calls, ["pkg@^1.0.0", "pkg@>=1.2.0 <2.0.0"], "single-spec names cost zero registry calls");
+});
+
+test("resolveUnionSpecs refuses LOUDLY: empty intersection and per-spec no-match (issue #508)", () => {
+  const disjoint = new Union();
+  disjoint.add("pkg", "^1.0.0", "plugin");
+  disjoint.add("pkg", "^2.0.0", "plugin");
+  assert.throws(
+    () =>
+      resolveUnionSpecs(disjoint, {
+        specVersions: (n, s) => (s === "^1.0.0" ? ["1.0.0", "1.9.0"] : ["2.0.0"]),
+        allVersions: () => ["1.0.0", "1.9.0", "2.0.0"],
+      }),
+    /unsatisfiable plugin spec union for pkg.*pkg@\^1\.0\.0 \+ pkg@\^2\.0\.0/s,
+    "no common version — the refusal names the name and BOTH specs",
+  );
+  const none = new Union();
+  none.add("pkg", ">=9.0.0", "plugin");
+  none.add("pkg", "^1.0.0", "plugin");
+  assert.throws(
+    () =>
+      resolveUnionSpecs(none, {
+        specVersions: (n, s) => (s === ">=9.0.0" ? [] : ["1.0.0"]),
+        allVersions: () => ["1.0.0"],
+      }),
+    /unsatisfiable plugin spec: pkg@>=9\.0\.0 has no registry version/,
+    "a spec the registry cannot satisfy at all refuses before npm ever runs",
+  );
+});
+
+test("verify names the WHOLE union of a multi-spec name, not the race winner (issue #508)", () => {
+  const first = plugin("@local/a", {}, { "@deepseek-ai/lib1": "^1.0.0" });
+  const second = plugin("@local/b", {}, { "@deepseek-ai/lib1": ">=9.0.0" });
+  const plugins = [first, second];
+  const union = seed(plugins);
+  const problems = verify("/nonexistent-root-508", plugins, union);
+  const missing = problems.find((p) => p.startsWith("missing: @deepseek-ai/lib1@"));
+  assert.ok(missing, `the missing line exists: ${problems.join("; ")}`);
+  assert.match(missing, /\^1\.0\.0/, "the first plugin's range is named");
+  assert.match(missing, />=9\.0\.0/, "the second plugin's range is named too");
 });
 
 const splitSpec = (spec) => {
@@ -447,6 +573,71 @@ test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
       directFailed = true;
     }
     assert.ok(directFailed, "direct --dry-run on the bare fixture stays red");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// End-to-end through the real CLI (issue #508): two TESTED plugins seeding
+// the same package name, the satisfiable seeder sorting FIRST — pre-fix
+// first-writer-wins dropped the second plugin's spec entirely, so both the
+// seed line and the verify line carried only the race winner's range and
+// an unsatisfiable closure could pre-flight GREEN. The union now carries
+// every plugin spec, in both printed lines, regardless of readdir order.
+test("CLI: a spec that loses the readdir race still reaches the seed + verify lines (issue #508)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-508-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib508": "^1.0.0" },
+      }),
+    );
+    fs.mkdirSync(path.join(tmp, "plugins", "b", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "b", "package.json"),
+      JSON.stringify({
+        name: "@local/b",
+        peerDependencies: { "@deepseek-ai/lib508": ">=9.0.0" },
+      }),
+    );
+    let failed = false;
+    try {
+      execFileSync("node", [script, "--dry-run"], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      const out = String(e.stdout);
+      const err = String(e.stderr);
+      assert.match(
+        out,
+        /seed \(2 specs\)/,
+        "BOTH specs seeded — the race winner no longer replaces the loser",
+      );
+      assert.match(out, /@deepseek-ai\/lib508@\^1\.0\.0/);
+      assert.match(
+        out,
+        /@deepseek-ai\/lib508@>=9\.0\.0/,
+        "the readdir LOSER is in the printed union",
+      );
+      const missing = err
+        .split("\n")
+        .find((l) => l.includes("missing: @deepseek-ai/lib508@"));
+      assert.ok(missing, `the verify names the gap: ${err}`);
+      assert.match(missing, /\^1\.0\.0/, "the winner's range is named");
+      assert.match(
+        missing,
+        />=9\.0\.0/,
+        "the loser's range is named too — the verify reports the whole union",
+      );
+    }
+    assert.ok(failed, "the bare fixture stays loud red");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
