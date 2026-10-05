@@ -20,7 +20,11 @@
 //      (plugin specs accumulate per name; walk-derived specs accumulate
 //      under a walk-only name and merge sorted — issue #510: the walk
 //      must not drop a second range's transitive peers), so re-derivation
-//      cannot flip-flop.
+//      cannot flip-flop. A probe that fails TRANSPORT (npm not runnable,
+//      offline/dns-broken cell, registry 5xx) dies loudly as a typed
+//      RegistryTransportError — it is never read as "no registry version",
+//      so a blip cannot masquerade as an unsatisfiable-spec refusal that
+//      names the wrong cause (issue #512).
 //   3. INSTALL the resolved union once (--no-save --no-package-lock keep
 //      the checkout clean). npm's argv keeps only the LAST spec per name —
 //      `npm i pkg@^4 pkg@^3` installs the last, it does NOT resolve a union
@@ -159,27 +163,106 @@ export function seed(plugins) {
   return union;
 }
 
-export function registryPeers(name, spec) {
+// --- registry probes, honestly classified (issue #512) ---------------------
+//
+// A registry probe fails in two unrelated ways, and npm distinguishes them
+// itself (live receipts, npm 10.9.8):
+//   - genuine "no version matches this spec": exit 1, stderr
+//     `npm error code E404` / "No match found for version <spec>";
+//   - TRANSPORT trouble: npm not runnable (spawn ENOENT), offline or
+//     dns-broken cell, registry 5xx, refused connection, auth wall —
+//     exit 1 with any OTHER `npm error code` (ECONNREFUSED, E500, E401,
+//     ...), or no npm process at all.
+// Collapsing both into an empty answer (the pre-#512 `catch { return
+// []; }`) made a transient blip die as a false "unsatisfiable spec"
+// refusal that named the wrong cause. Per REVIEW.md (Honesty), failures
+// surface as typed errors with context instead.
+export class RegistryTransportError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RegistryTransportError";
+  }
+}
+
+// The decision table over a caught execFileSync error — pure and exported
+// so the contract pins can hold it against the captured receipt shapes
+// without a registry: `{ empty: true }` ONLY for the E404 no-match; every
+// other failure reports its shape for a typed transport error.
+export function classifyNpmViewFailure(e) {
+  const stderr = String(e?.stderr ?? "");
+  const npmCode = /^[ \t]*npm error code (\S+)/m.exec(stderr)?.[1] ?? null;
+  if (npmCode === "E404") return { empty: true };
+  return {
+    empty: false,
+    spawn: npmCode === null && e?.code === "ENOENT",
+    npmCode,
+    status: e?.status ?? null,
+  };
+}
+
+// Run one `npm view ... --json` probe: `{ raw }` on success, `{ empty }`
+// for a genuine registry no-match, RegistryTransportError for everything
+// else — an outage never reads as an empty registry (issue #512). stderr
+// is CAPTURED (never discarded): it carries npm's own error code, exactly
+// the signal the classification reads.
+function npmViewRaw(args, what) {
   let raw;
   try {
-    raw = execFileSync(
-      "npm",
-      ["view", `${name}@${spec}`, "peerDependencies", "--json"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    raw = execFileSync("npm", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    const c = classifyNpmViewFailure(e);
+    if (c.empty) return c;
+    const cause = c.spawn
+      ? "npm is not runnable here (spawn ENOENT)"
+      : `npm exited ${c.status ?? "without a status"}` +
+        (c.npmCode
+          ? ` with npm error code ${c.npmCode}`
+          : " with no npm error code");
+    const stderrHead =
+      String(e?.stderr ?? "")
+        .trim()
+        .split("\n")
+        .slice(0, 3)
+        .join(" | ") || "(none captured)";
+    throw new RegistryTransportError(
+      `${cause} while probing ${what} — a registry/transport failure, ` +
+        `NOT an empty registry match; refusing to diagnose it as one ` +
+        `(issue #512). npm stderr: ${stderrHead}`,
     );
-  } catch {
-    return {}; // unresolvable here; the verify phase names it loudly
   }
-  raw = raw.trim();
+  return { raw };
+}
+
+// npm stdout that exited 0 but is not the JSON we asked for cannot
+// honestly read as "the registry has nothing" either (issue #512).
+function parseNpmJsonOrThrow(raw, what) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new RegistryTransportError(
+      `npm view ${what} --json exited 0 but emitted unparseable output — ` +
+        `refusing to read that as an empty registry answer (issue #512): ` +
+        JSON.stringify(raw.trim().slice(0, 120)),
+    );
+  }
+}
+
+export function registryPeers(name, spec) {
+  const r = npmViewRaw(
+    ["view", `${name}@${spec}`, "peerDependencies", "--json"],
+    `${name}@${spec} peerDependencies`,
+  );
+  if (r.empty)
+    return {}; // genuinely no registry version under this spec — the verify phase names what that starves
+  const raw = r.raw.trim();
   if (!raw || raw === "undefined" || raw === "{}") return {};
   // `npm view` on a range matching several versions returns an array of
   // per-version objects — take the newest (last).
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed.at(-1) ?? {}) : parsed;
-  } catch {
-    return {};
-  }
+  const parsed = parseNpmJsonOrThrow(raw, `${name}@${spec} peerDependencies`);
+  return Array.isArray(parsed) ? (parsed.at(-1) ?? {}) : parsed;
 }
 
 // npm's argv keeps only the LAST spec per name — `npm i pkg@^4 pkg@^3`
@@ -232,42 +315,36 @@ export function resolveUnionSpecs(
 }
 
 // The versions the registry offers under name@spec — [] reads as "none",
-// and resolveUnionSpecs turns that into the loud refusal.
-function npmViewVersions(name, spec) {
-  let raw;
-  try {
-    raw = execFileSync(
-      "npm",
-      ["view", `${name}@${spec}`, "version", "--json"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    );
-  } catch {
-    return []; // the registry cannot satisfy this spec — resolved loudly above
-  }
-  raw = raw.trim();
+// and resolveUnionSpecs turns that into the loud refusal. [] is produced
+// ONLY by a genuine registry no-match; a transport failure throws
+// RegistryTransportError instead, so a blip can never be diagnosed as
+// "unsatisfiable spec" (issue #512).
+export function npmViewVersions(name, spec) {
+  const r = npmViewRaw(
+    ["view", `${name}@${spec}`, "version", "--json"],
+    `${name}@${spec} version`,
+  );
+  if (r.empty) return [];
+  const raw = r.raw.trim();
   if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    return [];
-  }
+  const parsed = parseNpmJsonOrThrow(raw, `${name}@${spec} version`);
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 // The registry's full version list for name, in registry (ascending)
 // order — the tie-break that picks WHICH common version gets pinned.
-function npmViewAllVersions(name) {
-  try {
-    const parsed = JSON.parse(
-      execFileSync("npm", ["view", name, "versions", "--json"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }),
-    );
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return []; // degenerate: fall back to the per-spec order's last match
-  }
+// A genuine "no such package" (E404 — the package vanished between the
+// per-spec probe and this one) degrades to [] with the fallback below;
+// a TRANSPORT failure would silently degrade the pin choice under a
+// blip, so it throws instead (issue #512).
+export function npmViewAllVersions(name) {
+  const r = npmViewRaw(
+    ["view", name, "versions", "--json"],
+    `${name} version list`,
+  );
+  if (r.empty) return []; // degenerate: fall back to the per-spec order's last match
+  const parsed = parseNpmJsonOrThrow(r.raw, `${name} versions`);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 // The @local/* plugins' peers are declared right in the checkout (their
@@ -415,7 +492,16 @@ export async function main(argv = process.argv.slice(2)) {
 
   const union = seed(plugins);
   console.log(`seed (${union.size} specs): ${union.specs().join(" ")}`);
-  const rounds = walkToFixpoint(union, plugins);
+  let rounds;
+  try {
+    rounds = walkToFixpoint(union, plugins);
+  } catch (e) {
+    // A walk-time registry probe that died on transport (issue #512)
+    // exits HERE with its real cause — not later, as a wrong-cause
+    // verify "missing:" complaint. The WALK_CAP non-convergence error
+    // gets the same clean exit instead of a raw stack.
+    die(e.message);
+  }
   console.log(
     rounds === 0
       ? `peer walk: seed already converged (${union.size} specs)`
