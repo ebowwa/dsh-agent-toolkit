@@ -547,10 +547,16 @@ CELL_BIN="${DSH_CELL_BIN:-$HOME/.dsh-agent-toolkit-bin}"
 # Probe order: the persistent cell prefix, the LEGACY cell prefix cells were
 # provisioned into before the rename (same dual fallback the gh guards keep —
 # drift BLOCK run 34803136038), the brew prefixes a mac/linux runner service
-# PATH may have regressed away from, and doppler's own default.
+# PATH may have regressed away from, and the per-tool official install dirs
+# (bun's ~/.bun/bin, then doppler's ~/.doppler/bin). bun is not a driver
+# requirement, but the gate recipes agents run in consumer repos begin with
+# `bun install` (issue #522: on air8 the ONLY bun was ~/.bun/bin/bun while
+# `which bun` rc=1'd inside the agent session — every REVIEW.md gate died
+# `bun: command not found` rc=127 before its first step), so the probe list
+# must heal it onto PATH zero-network alongside gh/doppler.
 # CELL_PROBE_DIRS is a TEST SEAM (space list) — callers never set
 # it; the offline suite needs to rule out the dev machine's real prefixes.
-CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
+CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.bun/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
 CELL_ADDED_PREFIXES=""
 cell_probe_prefixes() {
   local p

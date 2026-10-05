@@ -397,3 +397,67 @@ esac
     assert.ok(!existsSync(path.join(cellBin, "gh")), "the redirect-created empty artifact must be removed, not linger");
   } finally { clean(t); }
 });
+
+// --- issue #522: bun's official install dir on the DEFAULT probe list -----
+// The probe heals a regressed service PATH zero-network, but its default
+// list omitted ~/.bun/bin: on air8 (macOS lane, 2026-10-05) the ONLY bun
+// was ~/.bun/bin/bun while `which bun` rc=1'd inside the dsh agent session
+// (bunx rode a separate ~/.local/bin install, so the box looked
+// bun-capable) — every gate recipe beginning `bun install` died rc=127
+// before its first step. The probe runs in ensure_cell_tools BEFORE the
+// dsh-shim dir is minted to the front of the agent PATH, so the addition
+// survives the prepend and reaches the agent session.
+
+test("default probe list finds bun in ~/.bun/bin: a lane whose only bun is the official install dir resolves it zero-network (issue #522)", () => {
+  // The default list lives in TOP-LEVEL source (not inside a function), so
+  // the function-extraction seams cannot reach it: lift the CELL_BIN/
+  // CELL_PROBE_DIRS assignment lines from the source itself and run the
+  // REAL cell_probe_prefixes against them with HOME pointed at the fixture.
+  const src = readFileSync(SCRIPT, "utf8");
+  const defaults = src.split("\n")
+    .filter((l) => /^(CELL_BIN|CELL_PROBE_DIRS)=/.test(l))
+    .join("\n");
+  assert.match(defaults, /^CELL_PROBE_DIRS="\$\{CELL_PROBE_DIRS:-/m, "the default assignments must be lift-able from the source");
+  assert.match(defaults, /\.bun\/bin/, "the lifted default list itself must carry bun's install dir");
+
+  const stubHome = mkdtempSync(path.join(tmpdir(), "celltools-bunhome-"));
+  // Absence by NAME (the node9-stub rule): a stub name no ambient PATH dir
+  // carries, so the real brew prefixes the default list also probes cannot
+  // satisfy the resolution — only $HOME/.bun/bin can.
+  writeTool(path.join(stubHome, ".bun", "bin"), "bun522-stub");
+  // args splices straight after `cell_probe_prefixes `, so `&&` chains the
+  // resolution probe onto the same run; ADDED echoes what the probe healed.
+  // An unresolved stub prints an EMPTY RESOLVED value (the || form would
+  // never fire — printf succeeds even when command -v finds nothing).
+  const args = '&& printf \'RESOLVED=%s\\n\' "$(command -v bun522-stub)"; printf \'ADDED=%s\\n\' "$CELL_ADDED_PREFIXES"';
+  // The PRE-FIX list (the regression input): the same fixture MUST resolve
+  // to nothing under it, or this test proves nothing.
+  const preFix = 'CELL_PROBE_DIRS="$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin"';
+
+  try {
+    let fixed, control;
+    try {
+      // HOME is overridden BEFORE the lifted defaults so $HOME/.bun/bin
+      // expands to the fixture inside the assignment itself.
+      fixed = runFn({ fn: "cell_probe_prefixes", args, extra: `HOME='${stubHome}'\n${defaults}` });
+      assert.equal(fixed.r.status, 0, fixed.r.stderr);
+      assert.match(
+        fixed.r.stdout,
+        new RegExp(`RESOLVED=${stubHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.bun/bin/bun522-stub`),
+        "the default probe list must put bun's official install dir on PATH",
+      );
+      assert.match(fixed.r.stdout, new RegExp(`ADDED=.*${stubHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.bun/bin`),
+        "the probe must have healed the dir in (CELL_ADDED_PREFIXES), not found it already on PATH");
+
+      control = runFn({ fn: "cell_probe_prefixes", args, extra: `HOME='${stubHome}'\n${preFix}` });
+      assert.equal(control.r.status, 0, control.r.stderr);
+      assert.match(control.r.stdout, /RESOLVED=\n/,
+        "the pre-fix list must leave the stub unresolved (empty RESOLVED) — this test fails without the issue #522 fix");
+      assert.doesNotMatch(control.r.stdout, new RegExp(stubHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        "the pre-fix probe must not have touched the bun dir at all");
+    } finally {
+      if (fixed) clean(fixed);
+      if (control) clean(control);
+    }
+  } finally { rmSync(stubHome, { recursive: true, force: true }); }
+});

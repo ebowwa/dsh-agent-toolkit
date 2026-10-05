@@ -91,7 +91,10 @@ fi
 
 # gh may sit outside the runner service PATH on self-hosted cells (secondsee
 # lane-lottery, 2026-08-26): probe the driver's persistent prefix + brew
-# prefixes before giving up. Identical list to the driver's CELL_PROBE_DIRS.
+# prefixes before giving up. The gh-relevant subset of the driver's
+# CELL_PROBE_DIRS — the driver additionally probes bun's install dir for the
+# agent session (issue #522) and publishes every addition to GITHUB_PATH,
+# which this later step already inherits.
 command -v gh >/dev/null 2>&1 \
   || export PATH="${DSH_CELL_BIN:-${HOME:-/root}/.dsh-agent-toolkit-bin:${HOME:-/root}/.dsh-bot-bin}:/opt/homebrew/bin:/usr/local/bin:$HOME/.doppler/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 
