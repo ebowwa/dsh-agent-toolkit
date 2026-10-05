@@ -17,8 +17,10 @@
 //      the installed tree — no npm install happens during the walk, so no
 //      round can rewrite the tree under the next round's feet. The union is
 //      monotone (entries are only added) and the merge is deterministic
-//      (plugin specs accumulate per name; walk-derived specs stay
-//      subordinate and merge sorted), so re-derivation cannot flip-flop.
+//      (plugin specs accumulate per name; walk-derived specs accumulate
+//      under a walk-only name and merge sorted — issue #510: the walk
+//      must not drop a second range's transitive peers), so re-derivation
+//      cannot flip-flop.
 //   3. INSTALL the resolved union once (--no-save --no-package-lock keep
 //      the checkout clean). npm's argv keeps only the LAST spec per name —
 //      `npm i pkg@^4 pkg@^3` installs the last, it does NOT resolve a union
@@ -94,9 +96,11 @@ export function allPlugins(root) {
 // vanish silently, so an unsatisfiable spec never reached npm and the
 // canary's red coverage was race-dependent). walk-derived specs stay
 // subordinate: a name any plugin declares keeps only plugin ranges (the
-// plugin declaration is authoritative), a name no plugin declares keeps
-// the FIRST walk spec (the walk's sorted iteration makes that
-// deterministic), and re-adding a union's own output cannot change it
+// plugin declaration is authoritative), while under a walk-ONLY name
+// every DISTINCT walk spec accumulates (issue #510 — keeping only the
+// first writer dropped the losing range's transitive peers from the
+// closure); the entries per name are kept spec-sorted so arrival order
+// decides nothing, and re-adding a union's own output cannot change it
 // (the anti-oscillation invariant).
 export class Union {
   constructor() {
@@ -105,10 +109,21 @@ export class Union {
   add(name, spec, from) {
     const prev = this.map.get(name);
     if (from !== "plugin") {
-      // a walk spec never displaces anything: plugin ranges are
-      // authoritative, and walk-vs-walk keeps the first writer
-      if (prev && prev.length) return false;
-      this.map.set(name, [{ spec, from }]);
+      // a walk spec never displaces a plugin declaration (plugin ranges
+      // are authoritative); under a walk-only name distinct specs
+      // accumulate (issue #510), exact duplicates are no-ops
+      if (!prev || !prev.length) {
+        this.map.set(name, [{ spec, from }]);
+        return true;
+      }
+      if (prev.some((e) => e.from === "plugin")) return false;
+      if (prev.some((e) => e.spec === spec)) return false;
+      this.map.set(
+        name,
+        [...prev, { spec, from }].sort((a, b) =>
+          a.spec < b.spec ? -1 : a.spec > b.spec ? 1 : 0,
+        ),
+      );
       return true;
     }
     if (!prev || !prev.some((e) => e.from === "plugin")) {
@@ -169,13 +184,14 @@ export function registryPeers(name, spec) {
 
 // npm's argv keeps only the LAST spec per name — `npm i pkg@^4 pkg@^3`
 // installs the last argv spec, it does NOT resolve a union of ranges
-// (receipt on npm 10.9.8, issue #508) — so a name two plugins seed must
-// be resolved HERE, before the install: pin a registry version that
-// satisfies EVERY declared range, or refuse loudly. Single-spec names
-// pass through untouched — zero registry calls on a collision-free tree
-// (the shape of today's checkout). `view` is injectable for the
-// contract pins (tests/plugin-smoke-deps.test.mjs), same seam as the
-// walk's peersFn.
+// (receipt on npm 10.9.8, issue #508) — so a name carrying multiple
+// specs (two plugins' seed, or walk-accumulated ranges — issue #510)
+// must be resolved HERE, before the install: pin a registry version
+// that satisfies EVERY declared range, or refuse loudly. Single-spec
+// names pass through untouched — zero registry calls on a
+// collision-free tree (the shape of today's checkout). `view` is
+// injectable for the contract pins (tests/plugin-smoke-deps.test.mjs),
+// same seam as the walk's peersFn.
 export function resolveUnionSpecs(
   union,
   view = { specVersions: npmViewVersions, allVersions: npmViewAllVersions },
@@ -192,19 +208,19 @@ export function resolveUnionSpecs(
       const matching = view.specVersions(name, spec);
       if (!matching.length)
         throw new Error(
-          `unsatisfiable plugin spec: ${name}@${spec} has no registry ` +
-            `version (seeded alongside ` +
+          `unsatisfiable spec: ${name}@${spec} has no registry ` +
+            `version (declared alongside ` +
             `${specs.filter((s) => s !== spec).map((s) => `${name}@${s}`).join(", ")}) ` +
-            `— refusing the install (issue #508)`,
+            `— refusing the install (issues #508, #510)`,
         );
       common = common ? common.filter((v) => matching.includes(v)) : matching;
     }
     if (!common.length)
       throw new Error(
-        `unsatisfiable plugin spec union for ${name}: ` +
+        `unsatisfiable spec union for ${name}: ` +
           `${specs.map((s) => `${name}@${s}`).join(" + ")} — no registry ` +
-          `version satisfies every plugin declaration; refusing the ` +
-          `install (issue #508)`,
+          `version satisfies every declared range; refusing the ` +
+          `install (issues #508, #510)`,
       );
     // any common version is correct; the registry's own ascending
     // version order picks the newest of them
@@ -255,13 +271,29 @@ function npmViewAllVersions(name) {
 }
 
 // The @local/* plugins' peers are declared right in the checkout (their
-// symlink is part of the tree) — no registry round-trip for them.
+// symlink is part of the tree) — no registry round-trip for them. EVERY
+// @local plugin's spec per name is collected (issue #510: Object.assign
+// was last-writer-wins across @local plugins, so the range that lost the
+// readdir race — and its whole transitive peer set — never reached the
+// walk); the value shape is name -> specs[], spec-sorted so plugin order
+// decides nothing.
 export function localPeers(plugins) {
   const peers = {};
   for (const { pkg } of plugins)
     if (pkg.name?.startsWith("@local/"))
-      Object.assign(peers, pkg.peerDependencies || {});
+      for (const [n, spec] of Object.entries(pkg.peerDependencies || {}))
+        peers[n] = [...(peers[n] ?? []), spec];
+  for (const specs of Object.values(peers)) specs.sort();
   return peers;
+}
+
+// Peer sources arrive in two shapes: localPeers() collects EVERY spec
+// per name (name -> specs[]), while the registry's peersFn answers
+// name -> spec — normalize both to [name, spec] pairs for the walk.
+function peerEntries(peers) {
+  return Object.entries(peers || {}).flatMap(([n, v]) =>
+    (Array.isArray(v) ? v : [v]).map((spec) => [n, spec]),
+  );
 }
 
 // Walk the peer closure to a fixpoint. The name union is monotone (names
@@ -272,12 +304,11 @@ export function walkToFixpoint(union, plugins, peersFn = registryPeers) {
   let rounds = 0;
   for (;;) {
     const before = union.size;
-    const sources = [{ ...localPeers(plugins) }];
+    const sources = [localPeers(plugins)];
     for (const [name, entries] of [...union.map.entries()].sort())
       for (const { spec } of entries) sources.push(peersFn(name, spec));
     for (const peers of sources)
-      for (const [n, spec] of Object.entries(peers || {}))
-        union.add(n, spec, "walk");
+      for (const [n, spec] of peerEntries(peers)) union.add(n, spec, "walk");
     // @local/* peers resolve via symlinks, never npm — keep them out of
     // the npm union, the walk already read them from the checkout.
     for (const n of [...union.map.keys()])
