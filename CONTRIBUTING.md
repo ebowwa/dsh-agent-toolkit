@@ -122,10 +122,11 @@ The blessed pattern is a **fake `npm` executable on PATH**: a prepared
 shim dir whose `npm` script replays the captured receipt (or answers a
 fixture), PATH-prepended for the test's duration (tests-lint rule 1's
 blessed presence form), PATH restored and the shim removed in a
-`finally`. Deterministic, no sockets, green on any box — see
-`withFakeNpm` in `tests/plugin-smoke-deps.test.mjs` (issue #512's
-typed-error pins replay the captured E404 / ECONNREFUSED receipt shapes
-this way). When a pin genuinely needs npm to observe a *refused*
+`finally`. Deterministic, no sockets, green on any box. (No merged
+reference implementation exists yet: the drafted `withFakeNpm` helper
+lived in closed-unmerged PR #514, so the first test that needs this
+pattern lands the helper with it — until then, follow the recipe above
+directly.) When a pin genuinely needs npm to observe a *refused*
 connection, point it at a closed loopback port — that leg behaves (fast
 `ECONNREFUSED`) where a listening stub hangs.
 
