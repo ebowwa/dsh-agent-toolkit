@@ -408,19 +408,35 @@ TASK="${TASK}
 ## Freshness preflight — re-check the base before you mint the PR (factory#840)
 
 Your clone may be HOURS behind the trunk by the time you ship; another
-agent's mirror/sibling PR may have landed your fix in that window. Before
-\`gh pr create\`, against your PR base branch BASE (the dominant branch you
-were told to open against):
+agent's mirror/sibling PR may have landed your fix in that window — and
+under a bounded-deepen clone your visible origin/BASE can be a STALE tip
+rev-parse still resolves, so the whole check grades a phantom (#524: PR
+#495 shipped \"rebased on origin/main (366a954)\" while its fork point was
+0f46679, #517-era). Before \`gh pr create\`, against your PR base branch
+BASE (the dominant branch you were told to open against):
 1. git fetch origin BASE   # add --unshallow first if merge-base fails below
 2. mb=\$(git merge-base HEAD origin/BASE); tip=\$(git rev-parse origin/BASE)
-3. behind=\$(git rev-list --count \$mb..\$tip) — if behind > 0:
+3. PROVE the tip is CONNECTED before trusting any count (issue #524):
+   git merge-base --is-ancestor \$mb \$tip
+   exit 1 means the shallow boundary severs the path — widen bounded and
+   re-prove: for d in 1 2 4; do git fetch --deepen=\$d origin BASE; then
+   re-run step 2 and this check; break when it exits 0. Still exit 1 ⇒
+   currency CANNOT be proven: deepen fully (--unshallow), and until it
+   proves, claim \"freshness UNVERIFIED (tip <sha>)\" instead of
+   fresh/rebased — NEVER rebase onto, or declare fresh against, a tip you
+   cannot connect.
+4. behind=\$(git rev-list --count \$mb..\$tip) — if behind > 0:
    git rebase origin/BASE   # then re-run your TARGETED gates before shipping
-4. Same-scope check (even when behind == 0):
+5. Same-scope check (even when behind == 0):
    comm -12 <(git diff --name-only \$mb \$tip | sort) <(git diff --name-only origin/BASE...HEAD | sort)
    — non-empty means a base commit since your branch point touched files you
    also touch. Read those commits: if one already carries your fix, DO NOT
    ship a duplicate — adopt the landed PR as vehicle of record and post the
    empty-scope disposition instead.
+6. The PR body STATES what the preflight graded: \"freshness: origin/BASE @
+   <sha7>, behind=<n>\" — or the UNVERIFIED shape from step 3. A claim
+   without the tip SHA cannot be audited by review (#524's \"rebased on
+   origin/main (366a954)\" misdescribed a tip that was not the trunk).
 A shipped PR whose merge-base is stale past a same-scope landing reads as a
 duplicate and its as-merge tree may not compile; the rebase is cheap, the
 wasted review round is not."

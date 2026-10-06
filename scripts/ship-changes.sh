@@ -157,8 +157,11 @@ ship_milestone() {
 # and its as-merge tree did not compile). Before the PR opens, compare the
 # head branch's merge-base against the LIVE base tip:
 #
-#   - fresh (merge-base == tip): nothing, silently — the common case must
-#     stay zero-cost;
+#   - fresh (merge-base == tip): a one-line disclosure of the graded tip in
+#     the ship note (issue #524: a freshness claim a reviewer cannot audit
+#     is exactly the #495 shape — "rebased on origin/main (366a954)"
+#     described a tip that was not the trunk). Still zero EXTRA git cost —
+#     the tip is already in hand;
 #   - stale (behind > 0): rebase the head onto the base tip and re-push with
 #     --force-with-lease, so the tree GitHub will merge is the tree that can
 #     still be gated. The rebase runs ONLY on the CURRENT branch (the caller
@@ -168,13 +171,25 @@ ship_milestone() {
 #   - same-scope overlap (a base commit since the branch point touched a file
 #     the head branch also touched): a loud note even when the rebase was
 #     clean — adjacent auto-merged hunks are exactly how a duplicate fix
-#     compiles locally but not as-merge (#830's duplicate object keys).
+#     compiles locally but not as-merge (#830's duplicate object keys);
+#   - UNPROVEN currency (issue #524, the ship-side twin of #519): a
+#     bounded-deepen clone can hold a base tip its truncated graph cannot
+#     CONNECT to the branch — rev-parse resolves happily and the behind
+#     count then grades a phantom (#495 shipped "rebased on origin/main
+#     (366a954)" while its fork point was #517-era 0f46679). The preflight
+#     proves the ancestry (git merge-base --is-ancestor traverses real
+#     objects and exits 1 when the shallow boundary severs the path) and
+#     widens the shallow boundary with #519's bounded 1/2/4 --deepen ladder
+#     until the connection is provable; a graph the ladder still cannot
+#     connect ships UNVERIFIED and the cure is SKIPPED — no rebase onto an
+#     unproven tip, no fresh claim against one.
 #
 # Degrade-safe: any unresolvable piece (no base, fetch failure, merge-base
-# failure — shallow history is the usual cause) ships exactly as before with
-# an UNVERIFIED-freshness warning; the guard must never fail a ship.
+# failure, unprovable connection — shallow history is the usual cause)
+# ships exactly as before with an UNVERIFIED-freshness warning; the guard
+# must never fail a ship.
 freshness_preflight() {
-  local head_b="$1" base="${DSH_SHIP_BASE:-}" mb tip behind overlap
+  local head_b="$1" base="${DSH_SHIP_BASE:-}" mb tip behind overlap step tip7
   if [ -z "$base" ]; then
     base="$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || true)"
   fi
@@ -183,19 +198,49 @@ freshness_preflight() {
     echo "freshness UNVERIFIED (base unresolvable)"
     return 0
   fi
-  if ! git fetch origin "$base" --quiet 2>/dev/null; then
+  # The explicit +refspec (the review side's gh_deepen shape) so the fetch
+  # WRITES refs/remotes/origin/<base> even on a single-branch --depth clone
+  # (the worker's production shape: a bare `git fetch origin <base>` fills
+  # only FETCH_HEAD there, and the tip read below resolves nothing).
+  if ! git fetch origin "+refs/heads/$base:refs/remotes/origin/$base" --quiet 2>/dev/null; then
     echo "freshness: fetch of origin/$base failed — NOT verified" >&2
     echo "freshness UNVERIFIED (fetch of origin/$base failed)"
     return 0
   fi
   mb="$(git merge-base "$head_b" "origin/$base" 2>/dev/null || true)"
   tip="$(git rev-parse "origin/$base" 2>/dev/null || true)"
+  # Issue #524 (the ship-side twin of #519): the merge-base must RESOLVE and
+  # the ancestry it will rest on must be PROVABLE in the local graph before
+  # any count grades it. Recover bounded, #519's ladder: widen the shallow
+  # boundary in steps and re-resolve until both hold. Deepening changes the
+  # budget, never the semantics — a graph the ladder still cannot connect
+  # falls through to the same UNVERIFIED degrades below, and the cure is
+  # skipped: no rebase onto, no fresh claim against, an unproven tip.
+  if [ -z "$mb" ] || [ -z "$tip" ] \
+     || ! git merge-base --is-ancestor "$mb" "$tip" 2>/dev/null; then
+    for step in 1 2 4; do
+      git fetch --deepen="$step" origin "+refs/heads/$base:refs/remotes/origin/$base" --quiet 2>/dev/null || true
+      mb="$(git merge-base "$head_b" "origin/$base" 2>/dev/null || true)"
+      tip="$(git rev-parse "origin/$base" 2>/dev/null || true)"
+      if [ -n "$mb" ] && [ -n "$tip" ] \
+         && git merge-base --is-ancestor "$mb" "$tip" 2>/dev/null; then
+        break
+      fi
+    done
+  fi
   if [ -z "$mb" ] || [ -z "$tip" ]; then
     echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) — NOT verified" >&2
     echo "freshness UNVERIFIED (merge-base unresolvable)"
     return 0
   fi
+  if ! git merge-base --is-ancestor "$mb" "$tip" 2>/dev/null; then
+    echo "::warning::freshness cannot PROVE currency: the merge-base of $head_b vs origin/$base is not connected to the fetched tip in this truncated graph (the deepen ladder failed to connect it) — no rebase attempted; run git fetch --unshallow and re-check" >&2
+    echo "freshness UNVERIFIED (unconnected base tip ${tip:0:7} — shallow graph)"
+    return 0
+  fi
+  tip7="${tip:0:7}"
   if [ "$mb" = "$tip" ]; then
+    echo "fresh (origin/$base @ $tip7, behind=0)"
     return 0
   fi
   behind="$(git rev-list --count "$mb..origin/$base" 2>/dev/null || echo '?')"
@@ -203,19 +248,19 @@ freshness_preflight() {
   if [ "$(git branch --show-current 2>/dev/null)" = "$head_b" ]; then
     if git rebase "origin/$base" >/dev/null 2>&1; then
       if git push --force-with-lease origin "$head_b" >/dev/null 2>&1; then
-        echo "rebased onto origin/$base (was $behind behind)"
+        echo "rebased onto origin/$base @ $tip7 (was $behind behind)"
       else
         echo "::warning::rebased $head_b onto origin/$base but the force-with-lease re-push FAILED — remote head is stale, the PR may show the pre-rebase tree" >&2
-        echo "rebased locally but re-push FAILED ($head_b was $behind behind)"
+        echo "rebased locally but re-push FAILED ($head_b was $behind behind origin/$base @ $tip7)"
       fi
     else
       git rebase --abort >/dev/null 2>&1 || true
       echo "::warning::$head_b is $behind behind origin/$base and the rebase CONFLICTED (aborted clean) — fix round must rebase before merge" >&2
-      echo "rebase CONFLICTED ($head_b was $behind behind origin/$base)"
+      echo "rebase CONFLICTED ($head_b was $behind behind origin/$base @ $tip7)"
     fi
   else
-    echo "::warning::$head_b is $behind behind origin/$base and is not the checked-out branch — no rebase attempted; update before merge" >&2
-    echo "stale, no rebase attempted ($head_b was $behind behind origin/$base)"
+    echo "::warning::$head_b is $behind behind origin/$base @ $tip7 and is not the checked-out branch — no rebase attempted; update before merge" >&2
+    echo "stale, no rebase attempted ($head_b was $behind behind origin/$base @ $tip7)"
   fi
   if [ -n "$overlap" ]; then
     echo "::warning::same-scope overlap since the branch point: $overlap — base commits touched files this branch also touches; verify the PR does not duplicate already-landed work (factory#830)" >&2
