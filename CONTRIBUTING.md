@@ -103,6 +103,33 @@ working a claim, if you observe one:
    call, part of the file step; the milestone's open/closed counts are
    the chain's progress bar.
 
+## Hermetic npm behavior pins (the fake-npm shim, never a stub registry)
+
+When a test or pin needs npm's observable behavior (error codes, stderr
+receipt shapes, exit statuses), do NOT spin a local HTTP stub registry
+and point npm at it. On every box class we tested (fleet macOS arm64,
+GitHub-hosted ubuntu, GitHub-hosted macos-14), npm's fetch layer
+(make-fetch-happen) never opens a TCP connection to a local server: the
+stub sits idle while the request dies as `FETCH_ERROR` /
+`request-timeout` (~5s with `--fetch-timeout`, an indefinite stall on
+default flags). node's own `fetch`/`http.get` hit the same stub in
+milliseconds, and npm round-trips both the real registry (fast `E404`)
+and a *closed* loopback port (fast `ECONNREFUSED`) — it is specifically
+the npm-client ↔ local-listening-server case. Receipts and the upstream
+report: #515, npm/cli#10077.
+
+The blessed pattern is a **fake `npm` executable on PATH**: a prepared
+shim dir whose `npm` script replays the captured receipt (or answers a
+fixture), PATH-prepended for the test's duration (tests-lint rule 1's
+blessed presence form), PATH restored and the shim removed in a
+`finally`. Deterministic, no sockets, green on any box. (No merged
+reference implementation exists yet: the drafted `withFakeNpm` helper
+lived in closed-unmerged PR #514, so the first test that needs this
+pattern lands the helper with it — until then, follow the recipe above
+directly.) When a pin genuinely needs npm to observe a *refused*
+connection, point it at a closed loopback port — that leg behaves (fast
+`ECONNREFUSED`) where a listening stub hangs.
+
 The driver stamps this contract into every task it assembles
 (`scripts/run-dsh-agent.sh`), so every lane agent inherits it; the
 reference text lives in [.agents/README.md](.agents/README.md) and the
