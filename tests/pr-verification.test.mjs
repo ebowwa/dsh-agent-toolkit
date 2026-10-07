@@ -5,8 +5,10 @@
 // per-PR surface for whatever weighs independent verification into a merge
 // decision. Pins, in the repo's test-as-contract style:
 //
-//   1. LAST marker wins, by COMMENT ORDER (ascending id — the thread's
-//      final word), not by array order from the API (sorting is ours).
+//   1. LAST marker wins in the MERGED time-ordered stream (comments +
+//      formal review bodies, issue #560): ts primary, id tiebreak WITHIN
+//      a channel only; a same-second tie ACROSS channels goes to the
+//      formal review (issue #571 — the two id spaces never compare).
 //   2. Exit-code contract: 0 pass / 1 no passing verification (fail or
 //      none — the stdout token names which) / 2 unresolvable fail-closed.
 //   3. Provenance, not bodies: the comment body (unscrubbed agent text)
@@ -225,6 +227,43 @@ test("a PENDING review is not a submitted verdict — its marker is skipped", (t
   const r = run(dir);
   assert.equal(r.status, 1);
   assert.equal(r.stdout, "none\n");
+});
+
+// --- issue #571: the same-second razor in the merged stream ----------------
+
+test("same-second comment/review pair: the review wins the tie — ids never compare ACROSS channels (issue #571)", (t) => {
+  // GitHub stamps created_at/submitted_at at SECOND resolution, so this
+  // pair ties on ts; and the comment id (900) is HIGHER than the review id
+  // (101). The two id spaces are disjoint sequences, so an id cross-tiebreak
+  // would sort the comment last and report its pass as the final word —
+  // the arbitrary order the issue pins shut.
+  const tie = "2026-10-07T06:00:00Z";
+  const dir = fixture(t, [
+    comment(900, "sibling", "gate-verify: pass\n", { created_at: tie }),
+  ], { reviews: [review(101, "verifier", "gate-verify: fail\n", tie)] });
+  const r = run(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^fail .*#review-101/, "the formal review is the same-second final word; the higher comment id does not outrank it");
+
+  // Mirror: a same-second review pass outranks a comment fail too — the
+  // policy is a channel preference, not a verdict bias.
+  const mirror = fixture(t, [
+    comment(901, "sibling", "gate-verify: fail\n", { created_at: tie }),
+  ], { reviews: [review(102, "verifier", "gate-verify: pass\n", tie)] });
+  const r2 = run(mirror);
+  assert.equal(r2.status, 0);
+  assert.match(r2.stdout, /^pass .*#review-102/, "the same-second review pass is the final word");
+});
+
+test("same-second WITHIN one channel still orders by id — one id space orders truly (issue #571)", (t) => {
+  const tie = "2026-10-07T06:00:00Z";
+  const dir = fixture(t, [
+    comment(900, "sibling", "gate-verify: pass\n", { created_at: tie }),
+    comment(910, "sibling", "gate-verify: fail\n", { created_at: tie }),
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^fail .*#issuecomment-910/, "within the comments channel the higher id is the later post");
 });
 
 test("unresolvable reviews API exits 2 (fail-closed, like the comments API)", (t) => {

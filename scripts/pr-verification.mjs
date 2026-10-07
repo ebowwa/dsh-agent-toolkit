@@ -109,10 +109,20 @@ if (reviews.status !== 0 || !Array.isArray(reviewList)) {
   unresolvable(`reviews API failed for ${owner}/${repo}#${pr.number}: ${(reviews.stderr || "").trim().slice(0, 200)}`);
 }
 // One stream: comments (created_at) + submitted reviews (submitted_at).
-// ts is the primary sort key (epoch ms; absent/invalid → 0), id the
-// tiebreak. A PENDING review is not yet a submitted verdict — skipped.
+// ts is the primary sort key (epoch ms; absent/invalid → 0). A PENDING
+// review is not yet a submitted verdict — skipped.
+// Same-second ties (issue #571): GitHub stamps created_at/submitted_at at
+// SECOND resolution, and issue-comment ids and review ids are two
+// disjoint, globally distinct sequences — an id compared ACROSS channels
+// on a ts tie orders the pair arbitrarily relative to posting time, and
+// last-marker-wins would then report the semantically EARLIER marker as
+// the channel's final word. Pinned policy: WITHIN a channel the ids are
+// one sequence and order truly (id tiebreak); ACROSS channels a ts tie
+// goes to the formal review — submitted_at is the later, more deliberate
+// act, so the review sorts last and wins last-marker-wins.
 const entries = [
   ...list.map(c => ({
+    channel: "comment",
     body: c?.body,
     id: c?.id,
     ts: Date.parse(c?.created_at ?? "") || 0,
@@ -121,12 +131,17 @@ const entries = [
   ...reviewList
     .filter(r => r?.state !== "PENDING")
     .map(r => ({
+      channel: "review",
       body: r?.body,
       id: r?.id,
       ts: Date.parse(r?.submitted_at ?? "") || 0,
       provenance: { id: r?.id ?? null, author: r?.user?.login ?? "unknown", url: r?.html_url ?? null },
     })),
-].sort((a, b) => ((a.ts ?? 0) - (b.ts ?? 0)) || ((a.id ?? 0) - (b.id ?? 0)));
+].sort((a, b) =>
+  ((a.ts ?? 0) - (b.ts ?? 0)) ||
+  (a.channel === b.channel
+    ? (a.id ?? 0) - (b.id ?? 0)            // one id space — ids order truly
+    : (a.channel === "review" ? 1 : -1))); // cross-channel same-second: the review is the final word
 
 // 3. Parse each body through gate-verify.mjs (line-strict); the last body
 //    carrying a marker in the merged stream wins. Bodies stay on disk in a
