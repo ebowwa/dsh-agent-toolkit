@@ -34,14 +34,15 @@ const comment = (id, login, body, over = {}) => ({
   id, user: { login }, body, html_url: `https://github.com/owner/repo/pull/7#issuecomment-${id}`, ...over,
 });
 
-/** Fixture dir: a stub gh serving pr-view.json + comments.json. */
-const fixture = (t, comments, { prFail = false, apiFail = false } = {}) => {
+/** Fixture dir: a stub gh serving pr-view.json + comments.json + reviews.json. */
+const fixture = (t, comments, { prFail = false, apiFail = false, reviews = [], reviewsFail = false } = {}) => {
   const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(path.join(dir, "pr-view.json"), JSON.stringify({
     number: 7, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/7",
   }));
   writeFileSync(path.join(dir, "comments.json"), JSON.stringify(comments));
+  writeFileSync(path.join(dir, "reviews.json"), JSON.stringify(reviews));
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$PV_STUB_DIR/gh.log"
 if [ "$1" = "--version" ]; then echo "stub gh"; exit 0; fi
@@ -52,7 +53,13 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   [ -f "$PV_STUB_DIR/api-fail" ] && { echo "stub: api fails" >&2; exit 1; }
-  cat "$PV_STUB_DIR/comments.json"
+  case "$3" in
+    */issues/7/comments) cat "$PV_STUB_DIR/comments.json" ;;
+    */pulls/7/reviews)
+      [ -f "$PV_STUB_DIR/reviews-fail" ] && { echo "stub: reviews api fails" >&2; exit 1; }
+      cat "$PV_STUB_DIR/reviews.json" ;;
+    *) echo "stub: unexpected api path: $3" >&2; exit 64 ;;
+  esac
   exit 0
 fi
 echo "stub: unexpected call: $*" >&2
@@ -61,8 +68,14 @@ exit 64
   chmodSync(path.join(dir, "gh"), 0o755);
   if (prFail) writeFileSync(path.join(dir, "pr-fail"), "1");
   if (apiFail) writeFileSync(path.join(dir, "api-fail"), "1");
+  if (reviewsFail) writeFileSync(path.join(dir, "reviews-fail"), "1");
   return dir;
 };
+
+const review = (id, login, body, submittedAt, state = "SUBMITTED", over = {}) => ({
+  id, user: { login }, body, state, submitted_at: submittedAt,
+  html_url: `https://github.com/owner/repo/pull/7#review-${id}`, ...over,
+});
 
 const run = (dir, args = [], env = {}) =>
   spawnSync(process.execPath, [TOOL, "7", ...args], {
@@ -174,4 +187,56 @@ test("log shows the paginated comments call (an early-page marker must never be 
   run(dir);
   const log = readFileSync(path.join(dir, "gh.log"), "utf8");
   assert.match(log, /api --paginate repos\/owner\/repo\/issues\/7\/comments/);
+});
+
+// --- issue #560: formal review bodies are a marker channel too -------------
+
+test("a marker riding a FORMAL REVIEW BODY is visible (issue #560)", (t) => {
+  const dir = fixture(t, [], { reviews: [review(101, "verifier", "ran the gates independently\ngate-verify: pass\n", "2026-10-07T06:00:00Z")] });
+  const r = run(dir, ["--json"]);
+  assert.equal(r.status, 0);
+  const j = JSON.parse(r.stdout);
+  assert.equal(j.verdict, "pass");
+  assert.equal(j.markers, 1);
+  assert.deepEqual(j.comment, { id: 101, author: "verifier", url: "https://github.com/owner/repo/pull/7#review-101" });
+});
+
+test("last-marker-wins is TIME-ordered across BOTH channels, not per-channel", (t) => {
+  // comment id 300 carries pass but is OLDER; the newer review fail is the
+  // final word. And the reverse order too: a newer comment overrides an
+  // older review pass.
+  const older = fixture(t, [
+    comment(300, "sibling", "gate-verify: pass\n", { created_at: "2026-10-07T05:00:00Z" }),
+  ], { reviews: [review(101, "verifier", "gate-verify: fail\n", "2026-10-07T06:00:00Z")] });
+  const r1 = run(older);
+  assert.equal(r1.status, 1);
+  assert.match(r1.stdout, /^fail .*#review-101/, "the newer review fail wins over the older comment pass");
+
+  const newer = fixture(t, [
+    comment(301, "sibling", "gate-verify: pass\n", { created_at: "2026-10-07T07:00:00Z" }),
+  ], { reviews: [review(101, "verifier", "gate-verify: fail\n", "2026-10-07T06:00:00Z")] });
+  const r2 = run(newer);
+  assert.equal(r2.status, 0);
+  assert.match(r2.stdout, /^pass .*#issuecomment-301/, "the newer comment pass wins over the older review fail");
+});
+
+test("a PENDING review is not a submitted verdict — its marker is skipped", (t) => {
+  const dir = fixture(t, [], { reviews: [review(102, "verifier", "gate-verify: fail\n", "2026-10-07T06:00:00Z", "PENDING")] });
+  const r = run(dir);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, "none\n");
+});
+
+test("unresolvable reviews API exits 2 (fail-closed, like the comments API)", (t) => {
+  const dir = fixture(t, [], { reviewsFail: true });
+  const r = run(dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /reviews API failed/);
+});
+
+test("log shows the paginated reviews call (issue #560 channel)", (t) => {
+  const dir = fixture(t, []);
+  run(dir);
+  const log = readFileSync(path.join(dir, "gh.log"), "utf8");
+  assert.match(log, /api --paginate repos\/owner\/repo\/pulls\/7\/reviews/);
 });

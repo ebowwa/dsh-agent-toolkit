@@ -8,7 +8,9 @@
 // agent ("Review can not approve your own pull request"). An agent that
 // ran the gates on a sibling PR posts a comment carrying a line-strict
 // `gate-verify: pass|fail` marker (scripts/gate-verify.mjs); this script
-// walks the PR's comments in order and reports the LAST marker with its
+// walks the PR's comments AND formal review bodies in order (issue #560:
+// a `gh pr review --comment` body is not an issue comment) and reports
+// the LAST marker with its
 // provenance — machine-consumable, so "a second agent independently
 // verified this branch" stops being comment noise.
 //
@@ -86,22 +88,54 @@ const [owner, repo] = repoPath.slice(1);
 // 2. Comments in ascending order (oldest first) — the LAST marker in the
 //    thread is the verification's final word. Paginated: a marker on an
 //    early page must never be shadowed out of the read by a long thread.
+//    FORMAL REVIEW BODIES TOO (issue #560): a `gh pr review --comment
+//    --body-file` submission is NOT an issue comment — its body lives on
+//    repos/{owner}/{repo}/pulls/N/reviews and the issue-comments endpoint
+//    above never sees it, so a verifier following the formal-review shape
+//    produced a marker this aggregator silently dropped from the merge
+//    decision. Both channels are walked and merged into ONE time-ordered
+//    stream (created_at / submitted_at, id tiebreak) before
+//    last-marker-wins is applied.
 const comments = gh(["api", "--paginate", `repos/${owner}/${repo}/issues/${pr.number}/comments`]);
 let list = null;
 try { list = JSON.parse(comments.stdout); } catch { /* guarded below */ }
 if (comments.status !== 0 || !Array.isArray(list)) {
   unresolvable(`comments API failed for ${owner}/${repo}#${pr.number}: ${(comments.stderr || "").trim().slice(0, 200)}`);
 }
-list.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+const reviews = gh(["api", "--paginate", `repos/${owner}/${repo}/pulls/${pr.number}/reviews`]);
+let reviewList = null;
+try { reviewList = JSON.parse(reviews.stdout); } catch { /* guarded below */ }
+if (reviews.status !== 0 || !Array.isArray(reviewList)) {
+  unresolvable(`reviews API failed for ${owner}/${repo}#${pr.number}: ${(reviews.stderr || "").trim().slice(0, 200)}`);
+}
+// One stream: comments (created_at) + submitted reviews (submitted_at).
+// ts is the primary sort key (epoch ms; absent/invalid → 0), id the
+// tiebreak. A PENDING review is not yet a submitted verdict — skipped.
+const entries = [
+  ...list.map(c => ({
+    body: c?.body,
+    id: c?.id,
+    ts: Date.parse(c?.created_at ?? "") || 0,
+    provenance: { id: c?.id ?? null, author: c?.user?.login ?? "unknown", url: c?.html_url ?? null },
+  })),
+  ...reviewList
+    .filter(r => r?.state !== "PENDING")
+    .map(r => ({
+      body: r?.body,
+      id: r?.id,
+      ts: Date.parse(r?.submitted_at ?? "") || 0,
+      provenance: { id: r?.id ?? null, author: r?.user?.login ?? "unknown", url: r?.html_url ?? null },
+    })),
+].sort((a, b) => ((a.ts ?? 0) - (b.ts ?? 0)) || ((a.id ?? 0) - (b.id ?? 0)));
 
-// 3. Parse each comment body through gate-verify.mjs (line-strict); the
-//    last comment carrying a marker wins. Bodies stay on disk in a temp
-//    file and are never echoed.
+// 3. Parse each body through gate-verify.mjs (line-strict); the last body
+//    carrying a marker in the merged stream wins. Bodies stay on disk in a
+//    temp file and are never echoed.
 const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
 try {
   const tool = path.join(path.dirname(path.resolve(process.argv[1] ?? ".")), "gate-verify.mjs");
   let last = null;
-  for (const c of list) {
+  for (const c of entries) {
     if (typeof c?.body !== "string" || c.body === "") continue;
     const f = path.join(dir, "comment.txt");
     writeFileSync(f, c.body);
@@ -111,11 +145,7 @@ try {
     if (marker === "PASS" || marker === "FAIL") {
       last = {
         verdict: marker.toLowerCase(),
-        comment: {
-          id: c.id ?? null,
-          author: c?.user?.login ?? "unknown",
-          url: c?.html_url ?? null,
-        },
+        comment: { ...c.provenance },
       };
     }
   }
