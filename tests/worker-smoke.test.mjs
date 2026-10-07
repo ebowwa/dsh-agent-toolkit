@@ -239,3 +239,103 @@ esac`);
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+// --- issue #581 pins: the ack scan reads the LAST page, not the first ---
+//
+// The list-issue-comments endpoint returns comments ASCENDING and ignores
+// `direction` on this route, so a bare `?per_page=100` fetches the thread's
+// OLDEST 100 comments. The ack is posted at trigger time — among the
+// NEWEST comments — so past 100 thread comments the ack was structurally
+// outside the fetched page and every trigger posted a fresh ack. The fix
+// probes the Link header's rel="last" and scans THAT page.
+
+// Lift the two helpers out of the worker script (no main guard — sourcing
+// it whole would run a sweep; the functions are column-0 definitions, so a
+// sed range extracts them cleanly). The shim emulates `gh api` per route;
+// it answers the jq'd ack-id directly (the jq program is unchanged by this
+// fix — the pin targets the page routing, asserted off the gh call log).
+const runAckComment = (shimBody) => {
+  const f = fixture();
+  writeFileSync(path.join(f.shim, "gh"), `#!/usr/bin/env bash
+echo "gh: $*" >> "$GH_LOG"
+${shimBody}
+`);
+  spawnSync("chmod", ["+x", path.join(f.shim, "gh")]);
+  const ghLog = f.ghLog;
+  const res = spawnSync("bash", ["-c",
+    'eval "$(sed -n \'/^last_comments_page()/,/^}/p; /^ack_comment()/,/^}/p\' "' + WORKER + '")"\n' +
+    'ACK_MARKER="dsh:ack"\n' +
+    'ack_comment owner/repo 7',
+  ], { encoding: "utf8", env: f.env({ GH_LOG: ghLog }) });
+  const log = existsSync(ghLog) ? readFileSync(ghLog, "utf8") : "";
+  rmSync(f.dir, { recursive: true, force: true });
+  return { ...res, log };
+};
+
+test("ack scan pages to the LAST page (rel=last) — the ack lives among the newest comments (#581)", () => {
+  const res = runAckComment(`case " $* " in
+  *" -i "*)
+    printf 'HTTP/2 200\\r\\nlink: <https://api.github.com/repos/owner/repo/issues/7/comments?per_page=100&page=3>; rel="last"\\r\\n\\r\\n'
+    exit 0 ;;
+  *"page=3"*)
+    # the LAST page: carries the newest ack (pre-jq'd: the newest ack id)
+    echo 300
+    exit 0 ;;
+  *)
+    echo 0 ;;
+esac`);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout.trim(), "300");
+  assert.match(res.log, /comments\?per_page=100&page=3/);
+});
+
+test("past 100 comments the scan reads the LAST page — a stale first-page ack cannot satisfy it (#581)", () => {
+  const res = runAckComment(`case " $* " in
+  *" -i "*)
+    printf 'HTTP/2 200\\r\\nlink: <https://api.github.com/repos/owner/repo/issues/7/comments?per_page=100&page=2>; rel="last"\\r\\n\\r\\n'
+    exit 0 ;;
+  *"page=2"*)
+    # last page: no ack here (pre-jq'd empty result)
+    echo 0
+    exit 0 ;;
+  *)
+    # page 1 (the old buggy window): only a STALE ack lives here
+    echo 1
+    exit 0 ;;
+esac`);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout.trim(), "0", "a stale first-page ack must not satisfy the scan");
+  // the scan fetched the LAST page; the only first-page hit is the -i
+  // header probe, never a comment-body scan of it
+  assert.match(res.log, /comments\?per_page=100&page=2/);
+  assert.doesNotMatch(res.log, /^gh: api repos\/owner\/repo\/issues\/7\/comments\?per_page=100 --jq/m);
+});
+
+test("single-page thread (no Link header) falls back to page 1 and still finds the ack", () => {
+  const res = runAckComment(`case " $* " in
+  *" -i "*)
+    printf 'HTTP/2 200\\r\\n\\r\\n'
+    exit 0 ;;
+  *"page=1"*)
+    echo 42
+    exit 0 ;;
+  *)
+    echo 0 ;;
+esac`);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout.trim(), "42");
+});
+
+test("a garbage Link header degrades to page 1 — never a crash or a wrong page", () => {
+  const res = runAckComment(`case " $* " in
+  *" -i "*)
+    printf 'HTTP/2 200\\r\\nlink: nonsense\\r\\n\\r\\n'
+    exit 0 ;;
+  *"page=1"*)
+    echo 42
+    exit 0 ;;
+  *)
+    echo 0 ;;
+esac`);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout.trim(), "42");
+});

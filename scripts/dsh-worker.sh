@@ -431,12 +431,36 @@ trusted_task() {
   printf '%s' "$body" > "$out"
 }
 
+# last_comments_page <repo> <num> — the LAST page number of the thread's
+# issue-comment list. The list-issue-comments endpoint returns comments
+# ASCENDING (oldest first) and ignores `direction` on this route, so the
+# thread's newest comments — where a trigger's ack lives — sit on the last
+# page, never the first: a bare `?per_page=100` fetches the thread's
+# OLDEST 100 comments, and past 100 comments an ack scan on that window
+# misses every ack (fresh ack per trigger, issue #581). The page count
+# comes from the Link header's rel="last" (absent on a single page → 1).
+last_comments_page() {
+  local repo="$1" num="$2" page
+  page="$(gh api -i "repos/${repo}/issues/${num}/comments?per_page=100" 2>/dev/null \
+    | tr -d '\r' \
+    | sed -n 's/^[Ll]ink:.*[?&]page=\([0-9][0-9]*\)>; rel="last".*/\1/p' \
+    | tail -1)"
+  case "$page" in
+    ''|*[!0-9]*) page=1 ;;
+  esac
+  echo "$page"
+}
+
 # ack_comment <repo> <num> — the id of the LAST comment carrying the ack
 # marker (the newest trigger's ack; the older arc-editing convention of the
-# CI flow collapses to "edit the newest ack in place" here).
+# CI flow collapses to "edit the newest ack in place" here). Scans the LAST
+# page of the thread (see last_comments_page): ascending order puts the
+# ack on the final page, and once a thread passes 100 comments the first
+# page no longer contains it (#581).
 ack_comment() {
-  local repo="$1" num="$2"
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
+  local repo="$1" num="$2" page
+  page="$(last_comments_page "$repo" "$num")"
+  gh api "repos/${repo}/issues/${num}/comments?per_page=100&page=${page}" \
     --jq "[.[] | select((.body // \"\") | contains(\"${ACK_MARKER}\")) | .id][-1] // 0" 2>/dev/null || echo 0
 }
 
