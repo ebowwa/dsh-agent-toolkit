@@ -19,6 +19,14 @@
 // never mask, an honest failure).
 //
 // Pins for these contracts (offline, stub commands): tests/live-boot-probe.test.mjs.
+//
+// The live dump-config legs ride the same probe (issue #595 —
+// session-query-mount / search-compose-mount): their red surfaces at the
+// STATUS assert rather than at a match, but the shape is identical — the
+// success signal (the composed config on stdout) and the failure signal
+// (the warn-and-skip / load diagnostic on stderr) are both OUTPUT, so
+// both-streams-empty is exactly "neither a composed config nor a
+// diagnostic": starvation, retried once; any diagnostic is a verdict.
 
 import { spawnSync } from "node:child_process";
 

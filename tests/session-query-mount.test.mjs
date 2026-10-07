@@ -187,13 +187,25 @@ test("the live-half gate pins its own contract: backend packages absent → skip
 
 test("the three overlays compose into the real profile (live: needs dsh + the box backend packages)", { skip: LIVE_SKIP_REASON }, () => {
   const { home, patches } = stampOverlays();
-  const dump = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"], {
-    encoding: "utf8",
-    env: { ...HERMETIC_ENV, DSH_HOME: home },
-    timeout: 90_000,
+  // Starvation retry (issue #595): the dump-config leg carries the same
+  // under-load starvation exposure #594 fixed for the boot leg below — a
+  // starved child terminates empty and reds HERE, at the status assert
+  // (nonzero/null), not at a match. The dump's starvation shape is the same
+  // both-streams-empty discriminator bootProbe pins: the composed config
+  // (stdout) and the diagnostic (stderr) are both OUTPUT, so both streams
+  // empty is exactly "neither a composed config nor a diagnostic" — a
+  // starvation artifact, retried once; a diagnostic-bearing attempt is a
+  // verdict and returns immediately. Pins: tests/live-boot-probe.test.mjs.
+  const { boot: dump, attemptsRan, starvationRetried } = bootProbe({
+    command: "dsh",
+    args: ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"],
+    options: { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 90_000 },
   });
-  assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
-  assert.match(dump.stdout, /- id: session-query-sqlite\n\s+name: ['"]@deepseek-ai\/dsh-session-query-sqlite['"]\n\s+config:\n\s+openAt: first-search/, "backend row ON in the composed tree");
+  const dumpLoad = starvationRetried
+    ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #595)`
+    : "";
+  assert.equal(dump.status, 0, `dump-config must compose${dumpLoad}, stderr: ${dump.stderr}`);
+  assert.match(dump.stdout, /- id: session-query-sqlite\n\s+name: ['"]@deepseek-ai\/dsh-session-query-sqlite['"]\n\s+config:\n\s+openAt: first-search/, `backend row ON in the composed tree${dumpLoad}`);
   assert.doesNotMatch(dump.stdout, /openAt: never/, "shipped-off default must not survive the restatement");
   assert.match(dump.stdout, /- id: tool-session-query\n\s+name: ['"]@deepseek-ai\/dsh-tool-session-query['"]/, "tool row resolved (not warn-and-skipped)");
   assert.match(dump.stdout, /root: .*\/\.dsh\/sessions/, "corpus rooted at the shared store");

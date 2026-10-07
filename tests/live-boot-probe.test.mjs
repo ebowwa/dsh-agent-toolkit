@@ -23,8 +23,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { bootProbe, starvedBoot } from "./lib/live-boot.mjs";
+
+const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 
 // A stub that appends one mark to the counter file EVERY time it runs, so a
 // pin can count attempts exactly. `node -e` puts the first trailing arg at
@@ -137,5 +140,24 @@ test("sanity: the stub mechanism spawns at all in this environment", () => {
     assert.equal(count(counter), 1, "one mark per run");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The live legs must RIDE the probe (issue #595): a bare spawnSync("dsh")
+// live leg re-introduces the under-load starvation red this helper exists
+// for. The only bare dsh spawnSync a mount suite may carry is the fast
+// `--version` presence probe (sub-second, no load exposure) — every real
+// leg (boot AND dump-config) goes through bootProbe, whose retry is already
+// pinned above.
+test("the live legs ride the probe — no bare spawnSync(\"dsh\") in the mount suites (issue #595)", () => {
+  for (const f of ["session-query-mount.test.mjs", "search-compose-mount.test.mjs"]) {
+    const src = readFileSync(join(TESTS_DIR, f), "utf8");
+    assert.match(src, /import \{ bootProbe \} from "\.\/lib\/live-boot\.mjs"/, `${f} imports the shared probe`);
+    const bare = [...src.matchAll(/spawnSync\(\s*"dsh"/g)];
+    assert.equal(
+      bare.length,
+      1,
+      `${f}: only the --version presence probe may spawn dsh bare (found ${bare.length} bare spawnSync("dsh") — the live legs go through bootProbe, issue #595)`,
+    );
   }
 });
