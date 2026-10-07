@@ -20,6 +20,16 @@
 #   (completion removes dsh/running; a fresh dsh/queued from a newer
 #   trigger comment is left in place for the next sweep)
 #
+# Carrier census at claim time (issue #549 — the machine half of the #414
+# carrier dedup): a claimed ISSUE item runs scripts/carrier-census.sh. An
+# open GREEN carrier PR referencing the thread stand-downs the mint — the
+# ack degrades to a typed `dsh:carrier-standdown` no-op naming the carrier,
+# and NO agent round is spent. A red/pending carrier still mints (the
+# census must not mask a broken carrier), but the task text names the
+# carrier so the agent verifies/repairs instead of re-deriving from
+# scratch. Fail-open: an unresolved census mints plain — a broken census
+# must never eat a task.
+#
 # Usage:
 #   dsh-worker.sh --once   one sweep: claim + process every queued item
 #   dsh-worker.sh --loop   sweep forever (service mode; --tick N between)
@@ -637,6 +647,53 @@ process_item() {
     rm -rf "$rundir"
     return 0
   fi
+  # --- carrier census (issue #549): the machine half of the #414 carrier
+  # dedup. An issue whose fix already rides an open GREEN carrier PR must
+  # not mint another agent round — the mint degrades to a typed no-op
+  # naming the carrier. A red/pending carrier still mints (the census must
+  # not mask a broken carrier), but the task text names the carrier so the
+  # agent verifies/repairs instead of re-deriving from scratch. The census
+  # is FAIL-OPEN: any unresolved answer mints plain. PR-thread items skip
+  # the census — a PR's own /dsh re-triggers are iteration on that PR, not
+  # new-work mints.
+  CARRIER_NOTE=""
+  if [ "$is_pr" != "true" ]; then
+    CENSUS_JSON="$(bash "$DSH_AGENT_TOOLKIT_DIR/scripts/carrier-census.sh" "$repo" "$num" 2>/dev/null || true)"
+    CARRIER_VERDICT="$(printf '%s' "$CENSUS_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).verdict||"unresolved"))}catch{process.stdout.write("unresolved")}})' 2>/dev/null || echo unresolved)"
+    CARRIER_NUM="$(printf '%s' "$CENSUS_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const c=JSON.parse(s).carrier;process.stdout.write(Number.isInteger(c)&&c>0?String(c):"0")}catch{process.stdout.write("0")}})' 2>/dev/null || echo 0)"
+    CARRIER_WHY="$(printf '%s' "$CENSUS_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).reason||""))}catch{process.stdout.write("")}})' 2>/dev/null || true)"
+    case "$CARRIER_VERDICT" in
+      green)
+        if [ "$CARRIER_NUM" -gt 0 ] 2>/dev/null; then
+          echo "worker: carrier census on $repo #$num — GREEN carrier #$CARRIER_NUM — stand-down, no agent round"
+          ACK_ID="$(ack_comment "$repo" "$num")"
+          [ "$ACK_ID" = "0" ] && ACK_ID=""
+          {
+            printf '<!-- dsh:carrier-standdown -->\n'
+            printf "**dsh agent** — carrier stand-down: no agent round was minted for this trigger. This thread's fix already rides open carrier PR #%s, whose head checks are green (%s).\n\n" "$CARRIER_NUM" "$CARRIER_WHY"
+            printf 'The open-PR carrier census (issue #549) degraded this `/dsh` mint to this typed no-op. A fresh trigger mints an agent round again only when the carrier turns red or closes — that mint then names the carrier in the task so the agent verifies or repairs it instead of re-deriving the fix.\n'
+          } > "$rundir/carrier-standdown.md"
+          if [ -n "$ACK_ID" ]; then
+            gh api "repos/${repo}/issues/comments/${ACK_ID}" -X PATCH \
+              -f body="$(cat "$rundir/carrier-standdown.md")" >/dev/null 2>&1 || true
+          else
+            gh api "repos/${repo}/issues/${num}/comments" \
+              -f body="$(cat "$rundir/carrier-standdown.md")" >/dev/null 2>&1 || true
+          fi
+          rm -rf "$rundir"
+          return 0
+        fi
+        ;; # green without a carrier number cannot happen — falls through to mint
+      *)
+        if [ "$CARRIER_NUM" -gt 0 ] 2>/dev/null; then
+          echo "worker: carrier census on $repo #$num — carrier #$CARRIER_NUM is ${CARRIER_VERDICT} — minting with the carrier named in the task"
+          CARRIER_NOTE="$(printf 'CARRIER NOTE (worker census, issue #549): this thread already carries open PR #%s — census verdict: %s (%s). Verify and repair or extend that carrier instead of re-deriving the fix from scratch; if it is beyond repair, say so on its thread and reference it from your replacement PR.' "$CARRIER_NUM" "$CARRIER_VERDICT" "$CARRIER_WHY")"
+        else
+          echo "worker: carrier census on $repo #$num — no open carrier — minting"
+        fi
+        ;;
+    esac
+  fi
   gh api -X POST "repos/${repo}/issues/${num}/labels" -f labels[]="$RUN_LABEL" >/dev/null 2>&1 || true
 
   # --- thread context + task + ack pointer --------------------------------
@@ -666,6 +723,12 @@ process_item() {
     return 0
   fi
   THREAD_CONTEXT="$(cat "$rundir/ctx/thread-context.txt" 2>/dev/null || true)"
+  # CARRIER NOTE (issue #549): a red/pending open carrier was seen at claim
+  # time — the mint proceeds, but the agent must see the carrier so it
+  # verifies/repairs instead of re-deriving the same fix from scratch.
+  if [ -n "$CARRIER_NOTE" ]; then
+    TASK="$(printf '%s\n\n%s' "$TASK" "$CARRIER_NOTE")"
+  fi
   ACK_ID="$(ack_comment "$repo" "$num")"
   [ "$ACK_ID" = "0" ] && ACK_ID=""
 
