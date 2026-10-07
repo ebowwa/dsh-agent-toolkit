@@ -77,6 +77,28 @@ function runShim(t, shim, scrubBody, argv, opts = {}) {
   // env-construction flavor of the REVIEW.md lane-leak class). "Unset" must
   // mean unset on every machine.
   delete env.GH_MERGE_GUARD;
+  // The guard's verify leg is the second front (issue #558, the seventh
+  // carrier — the same shape the stdin-form helper closed in its #551 fix):
+  // the shim's guard invocation only PREFIXES assignments to the inherited
+  // env (assignments add, they never strip — the #490 receipt), so an
+  // ambient MERGE_GUARD_VERIFY=on / MERGE_GUARD_VERIFY_TOOL rides this
+  // spread into any future armed merge leg's guard call and arms the verify
+  // leg under the stubbed fixture. Inert today (every current argv through
+  // this helper is a non-scrub or scrub-pinned leg and the hook never arms
+  // through it), but "unset must mean unset" for every name the shim/guard
+  // chain reads, not only the currently load-bearing one.
+  delete env.MERGE_GUARD_VERIFY;
+  delete env.MERGE_GUARD_VERIFY_TOOL;
+  // Same belt for the check-run name pair (the #551 fix shape, applied to
+  // this helper): GH_MERGE_GUARD_CHECK is the #1132 explicit-name
+  // passthrough (the shim forwards it -> MERGE_GUARD_CHECK only under an
+  // armed hook, where an explicit name is an assertion that never falls
+  // back) and MERGE_GUARD_CHECK is the name merge-guard.sh itself reads — an
+  // ambient explicit name flips CHECK_EXPLICIT and turns a future armed
+  // merge leg's rollup fallback into a hard ABSENT refusal (the #553 receipt
+  // shape).
+  delete env.GH_MERGE_GUARD_CHECK;
+  delete env.MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     cwd: opts.cwd,
@@ -567,6 +589,90 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
       assert.ok(
         !(name in childEnv),
         `ambient ${name} must not reach the shim's child env through the stdin-form helper (issue #551 belt)`,
+      );
+    }
+  } finally {
+    for (const [name, value] of Object.entries({
+      GH_MERGE_GUARD: saved.hook,
+      MERGE_GUARD_VERIFY: saved.verify,
+      MERGE_GUARD_VERIFY_TOOL: saved.tool,
+      MERGE_GUARD_CHECK: saved.check,
+      GH_MERGE_GUARD_CHECK: saved.ghCheck,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("gh shim: ambient guard envs cannot reach the plain-form helper's child env (issue #558 pin)", (t) => {
+  // The #558 residual, graded on a clean machine — the plain-form runShim is
+  // the SEVENTH env-construction carrier (its stdin-form sibling closed the
+  // same gap in the #551 fix): it scrubbed only the hook arm (GH_MERGE_GUARD,
+  // issue #479), so the other four guard names rode its spread undeleted.
+  // Arm all five names INSIDE this process (the verify tool at a path that
+  // cannot exist; both check-run names set — the #1132 explicit-assertion
+  // shape) and route the merge verb through the helper. The scrubber runs
+  // INSIDE the child, so it dumps the child env the helper actually built:
+  // each delete is graded directly, on any machine. A merge leg through this
+  // helper is the #551 fix shape's named pin vehicle; the payload VALUE is
+  // equals-form --body= (`pr merge -m` is boolean-only and rides raw by
+  // design) so the scrubber runs inside the child. Save-and-RESTORE in the
+  // finally, never delete (issue #490's restore rule).
+  const saved = {
+    hook: process.env.GH_MERGE_GUARD,
+    verify: process.env.MERGE_GUARD_VERIFY,
+    tool: process.env.MERGE_GUARD_VERIFY_TOOL,
+    check: process.env.MERGE_GUARD_CHECK,
+    ghCheck: process.env.GH_MERGE_GUARD_CHECK,
+  };
+  process.env.GH_MERGE_GUARD = "on";
+  process.env.MERGE_GUARD_VERIFY = "on";
+  process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
+  process.env.MERGE_GUARD_CHECK = "not-this-repos-gates";
+  process.env.GH_MERGE_GUARD_CHECK = "not-this-repos-gates";
+  try {
+    const { res, dir } = runShim(
+      t,
+      GH_SHIM,
+      [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "fs.writeFileSync(",
+        "  path.join(process.env.TMPDIR, 'child-env.json'),",
+        "  JSON.stringify(process.env),",
+        ");",
+        "process.stdout.write('scrubbed');",
+      ].join("\n"),
+      ["pr", "merge", "12", "--body=merge message", "-m"],
+    );
+    assert.equal(
+      res.status, 0,
+      `the ambient guard arm must not flip the helper's merge leg (stderr: ${res.stderr})`,
+    );
+    assert.match(
+      res.stderr,
+      /merge guard INACTIVE \(GH_MERGE_GUARD unset\)/,
+      "the merge leg must take the shim's unarmed branch under the helper's env",
+    );
+    assert.doesNotMatch(
+      `${res.stdout}${res.stderr}`,
+      /fail-closed|merge guard armed|misarmed|merge REFUSED|verification tool is missing|independent verification/i,
+      "neither the guard hook nor its verify leg may run under the helper's env",
+    );
+    const dump = path.join(dir, "child-env.json");
+    assert.ok(fs.existsSync(dump), `the scrubber must have dumped the child env (stderr: ${res.stderr})`);
+    const childEnv = JSON.parse(fs.readFileSync(dump, "utf8"));
+    for (const name of [
+      "GH_MERGE_GUARD",
+      "MERGE_GUARD_VERIFY",
+      "MERGE_GUARD_VERIFY_TOOL",
+      "MERGE_GUARD_CHECK",
+      "GH_MERGE_GUARD_CHECK",
+    ]) {
+      assert.ok(
+        !(name in childEnv),
+        `ambient ${name} must not reach the shim's child env through the plain-form helper (issue #558 belt)`,
       );
     }
   } finally {
