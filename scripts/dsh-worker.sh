@@ -65,7 +65,9 @@
 #                       review-only items claimed and run through
 #                       review-pr.sh (the decoupled review stage)
 #   DSH_WORKER_ACK_MARKER   HTML marker the trigger bakes into the ack
-#                       comment so the worker can find it (default dsh:ack)
+#                       comment so the worker can find it (default dsh:ack;
+#                       matched literally via a jq env variable — jq
+#                       metacharacters in the value are safe, issue #573)
 #   DSH_WORKER_TIMEOUT_MIN  per-AGENT-run cap (default 120) — enforced via
 #                       GNU `timeout` when present; without it the worker
 #                       warns once and runs without a hard cap
@@ -436,8 +438,18 @@ trusted_task() {
 # CI flow collapses to "edit the newest ack in place" here).
 ack_comment() {
   local repo="$1" num="$2"
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
-    --jq "[.[] | select((.body // \"\") | contains(\"${ACK_MARKER}\")) | .id][-1] // 0" 2>/dev/null || echo 0
+  # The marker reaches jq as an env variable, never interpolated into the
+  # filter string (issue #573): an operator marker carrying jq
+  # metacharacters (" \ ] |) shattered the interpolated expression, and the
+  # 2>/dev/null swallow degraded EVERY failure to "no ack found" — a FRESH
+  # ack posted per trigger, error unseen. gh api has no --arg, but its
+  # embedded jq reads $ENV; the filter is now a constant literal, jq/gh
+  # failures surface as typed stderr, and `|| echo 0` keeps the caller's
+  # contract (0/empty = post a fresh ack) for genuine API errors only.
+  ACK_MARKER="$ACK_MARKER" \
+    gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
+    --jq '[.[] | select((.body // "") | contains($ENV.ACK_MARKER)) | .id][-1] // 0' \
+    || echo 0
 }
 
 # run_item_bg <slot-key> <func> [args...] — claim a concurrency slot and
