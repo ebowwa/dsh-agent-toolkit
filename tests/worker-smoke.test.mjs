@@ -9,8 +9,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from "node:fs";
+import { spawnSync, execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,4 +95,68 @@ test("documented env example matches the worker's required vars", () => {
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
+});
+
+// --- trusted_task's issue-body parse degrades loudly, never crashes (issue #530)
+//
+// The claim path re-derives trust AFTER the item is claimed, so a garbage
+// `gh issue view` stdout (gh's error text riding stdout under a 403/429)
+// must degrade to an EMPTY task — the caller's typed "no trusted /dsh
+// comment" path — with ONE diagnostic line on stderr (the worker log),
+// and the shell must survive under the worker's `set -euo pipefail`.
+// The pin runs the REAL function, extracted verbatim from the script
+// (a rename or move fails the extraction loudly), under the same `set
+// -euo pipefail` the worker runs with.
+const trustedTaskSource = () =>
+  execFileSync("bash", ["-c", `sed -n '/^trusted_task() {/,/^}/p' "${WORKER}"`], { encoding: "utf8" });
+
+const runTrustedTask = (issueViewStub) => { // → { status, stderr, task }
+  const dir = mkdtempSync(path.join(tmpdir(), "trusted-task-pin-"));
+  try {
+    const shim = path.join(dir, "shim");
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(path.join(shim, "gh"), `#!/usr/bin/env bash
+case "$*" in
+  *"issues/530/comments"*) exit 0 ;;                # no trusted comments
+  *"issue view"*) ${issueViewStub} ;;
+  *) exit 1 ;;
+esac
+`);
+    spawnSync("chmod", ["+x", path.join(shim, "gh")]);
+    const out = path.join(dir, "task.out");
+    const script = `set -euo pipefail\n${trustedTaskSource()}\ntrusted_task owner/repo 530 false "${out}"`;
+    const res = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${shim}${path.delimiter}${process.env.PATH}` },
+    });
+    const task = existsSync(out) ? readFileSync(out, "utf8") : null;
+    return { status: res.status, stderr: res.stderr, task };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("trusted_task: a non-JSON issue body degrades to an EMPTY task, shell survives, degrade logs (issue #530)", () => {
+  const { status, stderr, task } = runTrustedTask(
+    `printf 'gh: API rate limit exceeded (HTTP 403)'; exit 0`,
+  );
+  assert.equal(status, 0, stderr); // set -euo pipefail survives the garbage body
+  assert.equal(task, ""); // the typed no-trusted-comment path, not a crash
+  assert.match(stderr, /not JSON/); // the degrade is on the record (worker log)
+  assert.match(stderr, /issue #530/);
+});
+
+test("trusted_task: a trusted /dsh issue body still yields the task text (issue #530 positive control)", () => {
+  const { status, stderr, task } = runTrustedTask(
+    `printf '%s' '{"body":"/dsh ship the fix","title":"found: x","authorAssociation":"OWNER"}'; exit 0`,
+  );
+  assert.equal(status, 0, stderr);
+  assert.equal(task, "ship the fix");
+  assert.doesNotMatch(stderr, /not JSON/);
+});
+
+test("trusted_task: a FAILED gh issue view degrades to an empty task, shell survives (issue #530)", () => {
+  const { status, task } = runTrustedTask(`exit 1`);
+  assert.equal(status, 0); // the `|| true` + `[ -n ]` belt around the gh call
+  assert.equal(task, "");
 });
