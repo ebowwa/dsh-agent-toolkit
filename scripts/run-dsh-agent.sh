@@ -412,7 +412,7 @@ agent's mirror/sibling PR may have landed your fix in that window. Before
 \`gh pr create\`, against your PR base branch BASE (the dominant branch you
 were told to open against):
 1. git fetch origin BASE   # add --unshallow first if merge-base fails below
-2. mb=\$(git merge-base HEAD origin/BASE); tip=\$(git rev-parse origin/BASE)
+2. mb=\$(git merge-base HEAD origin/BASE); tip=\$(git rev-parse --verify origin/BASE)
 3. behind=\$(git rev-list --count \$mb..\$tip) — if behind > 0:
    git rebase origin/BASE   # then re-run your TARGETED gates before shipping
 4. Same-scope check (even when behind == 0):

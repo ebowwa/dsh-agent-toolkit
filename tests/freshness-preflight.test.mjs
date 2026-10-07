@@ -18,7 +18,8 @@ test("the driver task carries the freshness-preflight block (factory#840)", () =
   assert.match(driverSrc, /## Freshness preflight — re-check the base before you mint the PR \(factory#840\)/,
     "the block heading, with the issue ref");
   assert.match(driverSrc, /git merge-base HEAD origin\/BASE/, "the merge-base command");
-  assert.match(driverSrc, /git rev-parse origin\/BASE/, "the base-tip command");
+  assert.match(driverSrc, /git rev-parse --verify origin\/BASE/,
+    "the base-tip command — with --verify (issue #526): without it a missing ref echoes the literal ref name to stdout, exits 128, and the `|| true` swallows the exit, so the agent captures the string \"origin/BASE\" as its tip and every downstream behind/overlap read degrades to noise");
   assert.match(driverSrc, /git rev-list --count \\?\$\{?mb/, "the behind count");
   assert.match(driverSrc, /git rebase origin\/BASE/, "the rebase cure");
   assert.match(driverSrc, /--unshallow/, "the shallow-clone escape hatch");
@@ -44,4 +45,12 @@ test("the deterministic half exists: ship-changes.sh mints the PR only after its
   assert.ok(freshIdx > -1 && createIdx > freshIdx, "preflight precedes the mint");
   assert.match(shipper, /force-with-lease/, "the re-push never clobbers blindly");
   assert.match(shipper, /freshness UNVERIFIED/, "degrade names itself instead of failing the ship");
+  assert.ok(
+    shipper.includes('tip="$(git rev-parse --verify "origin/$base" 2>/dev/null || true)"'),
+    "the preflight's tip read uses --verify (issue #526) — a missing ref must land in the empty-tip degrade arm, not capture the literal ref name past the emptiness guard",
+  );
+  assert.ok(
+    !/tip="\$\(git rev-parse "origin\/\$base"/.test(shipper),
+    "no bare (un-verified) rev-parse tip read remains in the preflight (issue #526's garbage-capture trap)",
+  );
 });

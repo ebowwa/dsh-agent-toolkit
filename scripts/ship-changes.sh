@@ -189,7 +189,7 @@ freshness_preflight() {
     return 0
   fi
   mb="$(git merge-base "$head_b" "origin/$base" 2>/dev/null || true)"
-  tip="$(git rev-parse "origin/$base" 2>/dev/null || true)"
+  tip="$(git rev-parse --verify "origin/$base" 2>/dev/null || true)"
   if [ -z "$mb" ] || [ -z "$tip" ]; then
     echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) — NOT verified" >&2
     echo "freshness UNVERIFIED (merge-base unresolvable)"
