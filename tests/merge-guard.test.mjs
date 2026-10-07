@@ -162,6 +162,16 @@ const runShim = (t, argv, { legs = [], guardEnv = {} } = {}) => {
   // runShim-carrier audit lives in issue #490; this delete covers only the
   // var these pins introduce.)
   delete env.GH_MERGE_GUARD_CHECK;
+  // Fifth carrier of the same class (issue #553): the shim's guard invocation
+  // (scripts/gh-scrub-shim) exports MERGE_GUARD_CHECK only when the driver
+  // actually stamped GH_MERGE_GUARD_CHECK, and its guard call only PREFIXES
+  // MERGE_GUARD_GH to the inherited env — assignments add, they never strip —
+  // so an ambient MERGE_GUARD_CHECK=<other> on a lane rides this spread
+  // through the shim into the guard, flips CHECK_EXPLICIT
+  // (CHECK="${MERGE_GUARD_CHECK:-gates}"), and every armed+green shim leg
+  // refuses on a name no leg carries. Delete BEFORE the guardEnv spread so a
+  // deliberate stamp in a specific test still wins.
+  delete env.MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [SHIM, ...argv], {
     encoding: "utf8",
     cwd: dir,
@@ -291,6 +301,17 @@ test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (
   // red. Arm the lane INSIDE this process so the harness env's hermeticity is
   // graded on every machine, not just on mis-configured lanes (the #479 pin
   // shape, applied to the guard's own default).
+  //
+  // Save-and-RESTORE, never delete (issue #553): this pin sits early in the
+  // file, and a `finally { delete … }` here would permanently scrub an armed
+  // lane's export out of this test process — every leg declared AFTER the pin
+  // (sections 2–6, every shim leg included) would then be graded DE-ARMED
+  // even where the lane exports the arm, laundering exactly the failure shape
+  // this file pins against (the whole file ran 39-green on an armed lane
+  // while the isolated armed+green shim leg ran red). Restore the caller's
+  // value so an armed lane stays armed for them; on a clean box the restore
+  // IS a delete (it was unset).
+  const savedCheckEnv = process.env.MERGE_GUARD_CHECK;
   process.env.MERGE_GUARD_CHECK = "ci/ambient-not-gates";
   try {
     const { res, dir } = runGuard(t, "check", ["434"], { legs: [leg()] });
@@ -298,7 +319,8 @@ test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (
     assert.match(res.stdout, /GREEN — 'gates' completed\/success/, "the guard still graded the gates leg");
     assert.equal(apiCalls(dir), 1);
   } finally {
-    delete process.env.MERGE_GUARD_CHECK;
+    if (savedCheckEnv === undefined) delete process.env.MERGE_GUARD_CHECK;
+    else process.env.MERGE_GUARD_CHECK = savedCheckEnv;
   }
 });
 
@@ -531,6 +553,35 @@ test("shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issue #
     assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
   } finally {
     delete process.env.GH_MERGE_GUARD;
+  }
+});
+
+test("shim: an ambient MERGE_GUARD_CHECK=<other> cannot flip the armed+green shim leg (issue #553 pin)", (t) => {
+  // The #553 defect is invisible on a clean dev box: the shim's guard
+  // invocation only PREFIXES MERGE_GUARD_GH to its inherited env, and it
+  // exports MERGE_GUARD_CHECK only when the driver stamped
+  // GH_MERGE_GUARD_CHECK — so an ambient MERGE_GUARD_CHECK on the lane rides
+  // runShim's process.env spread through the shim into the guard, flips
+  // CHECK_EXPLICIT, and the armed+green leg refuses on a name no leg carries
+  // (the #479/#483/#487/#490 shape, fifth carrier). Arm the lane INSIDE this
+  // process so the shim env's hermeticity is graded on every machine (the
+  // #479/#483 pin shape, applied to the shim's forward). Save-and-RESTORE in
+  // the finally: like every pin that arms the lane inside this process, this
+  // one must never launder an armed lane's export for the legs after it —
+  // the #483 pin's finally-delete did exactly that (issue #553).
+  const savedCheckEnv = process.env.MERGE_GUARD_CHECK;
+  process.env.MERGE_GUARD_CHECK = "guard-tests";
+  try {
+    const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+      legs: [leg()],
+      guardEnv: { GH_MERGE_GUARD: "on" },
+    });
+    assert.equal(res.status, 0, `the ambient name must not flip the armed+green shim leg (stderr: ${res.stderr})`);
+    assert.match(res.stdout, /GREEN — 'gates' completed\/success/, "the guard still graded the gates leg");
+    assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+  } finally {
+    if (savedCheckEnv === undefined) delete process.env.MERGE_GUARD_CHECK;
+    else process.env.MERGE_GUARD_CHECK = savedCheckEnv;
   }
 });
 
