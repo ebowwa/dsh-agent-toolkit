@@ -160,3 +160,18 @@ test("trusted_task: a FAILED gh issue view degrades to an empty task, shell surv
   assert.equal(status, 0); // the `|| true` + `[ -n ]` belt around the gh call
   assert.equal(task, "");
 });
+
+test("trusted_task: a JSON 403/429 error envelope degrades to an EMPTY task with the loud diagnostic (issue #530, PR #532 review finding)", () => {
+  // GitHub's own error bodies are JSON: the parse SUCCEEDS, so the not-JSON
+  // catch never fires; without the envelope check the missing
+  // authorAssociation degraded to an empty task with NO diagnostic — the
+  // silent close this ticket exists to make loud.
+  const { status, stderr, task } = runTrustedTask(
+    `printf '%s' '{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}'; exit 0`,
+  );
+  assert.equal(status, 0, stderr); // set -euo pipefail survives
+  assert.equal(task, ""); // the typed no-trusted-comment path
+  assert.match(stderr, /NOT the gh issue envelope/); // the degrade is on the record
+  assert.match(stderr, /issue #530/);
+  assert.doesNotMatch(stderr, /not JSON/); // it parsed — this is the OTHER arm
+});
