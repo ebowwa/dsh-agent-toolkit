@@ -125,8 +125,10 @@ test("merge-guard.sh carries the OPT-IN arm; unarmed default stays gates-only", 
 
 test("the docs carry the channel rule and conduct (REVIEW.md, CONTRIBUTING.md)", () => {
   const review = readFileSync(path.join(ROOT, "REVIEW.md"), "utf8");
-  assert.ok(proseHas(review, "Independent verification of a sibling PR rides the `gate-verify:` comment channel (issue #326)"),
+  assert.ok(proseHas(review, "Independent verification of a sibling PR rides the `gate-verify:` marker channel (issue #326)"),
     "REVIEW.md states the channel");
+  assert.ok(proseHas(review, "posts the marker line `gate-verify: pass` (or `gate-verify: fail`) as a PR comment or a formal review body (issue #560"),
+    "REVIEW.md states the two-channel surface (issue #560: review bodies too)");
   assert.ok(proseHas(review, "the merge guard weighs the channel only when explicitly armed (`MERGE_GUARD_VERIFY=on`)"),
     "REVIEW.md states the arm is opt-in");
   const contributing = readFileSync(path.join(ROOT, "CONTRIBUTING.md"), "utf8");
