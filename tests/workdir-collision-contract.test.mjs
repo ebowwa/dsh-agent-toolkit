@@ -15,11 +15,13 @@
 //      check validated a tree that was no longer theirs
 //      (work-361-toolkit-1791109240, 2026-10-04 10:20–10:28Z).
 //
-// ...and the two rules that make the mint survivable even under a
+// ...and the rules that make the mint survivable even under a
 // colliding or reused path: re-entry only via the session's OWN recorded
-// path (never `ls -d work-<issue>-* | head -1` glob reuse), and the
+// path (never `ls -d work-<issue>-* | head -1` glob reuse), the
 // owner-marker belt (`.dsh-workdir-owner` stamped at mint, verified
-// before each edit batch).
+// before each edit batch), and the face-lock claim (FleetTower#1765 —
+// the sweepers must see the dir too: a marker inside a purged tree is
+// unread; a claim in the parent store is what destroyers honor).
 //
 // Two surfaces, one protocol — these fixtures pin BOTH and keep them in
 // agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
@@ -148,8 +150,16 @@ test("issues #333/#374: the prompt assembly appends the workdir-hygiene contract
   assert.match(task, /before each edit batch, re-check the marker matches YOUR session/);
   assert.match(task, /a takeover in progress: stop, do not edit, file it, mint fresh/);
 
-  // The acceptance sentence (three layers, zero shared worktrees):
+  // Rule 4 — the face-lock claim (FleetTower#1765): the sweepers must see you.
+  assert.match(task, /CLAIM THE MINT — the sweepers must be able to see you/);
+  assert.match(task, /bin\/face-lock" claim "\$workdir" --face "\$\{ISSUE:-\$\$\}"/);
+  assert.match(task, /re-claim\/refresh it on the same cadence as the marker check/);
+  assert.match(task, /Randomness is NOT ownership/);
+  assert.match(task, /FleetTower#1765/);
+
+  // The acceptance sentence (four layers, zero shared worktrees):
   assert.match(task, /Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree/);
+  assert.match(task, /any sweeper that meets the dir meets a claim, not a surprise/);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -203,9 +213,14 @@ const WORKDIR_RULES = [
     /3\. THE OWNER-MARKER BELT — at mint, stamp ownership/,
     /\*\*THE OWNER-MARKER BELT\*\* — mint stamps ownership, edit batches verify/,
   ],
+  [
+    "CLAIM THE MINT",
+    /4\. CLAIM THE MINT — the sweepers must be able to see you/,
+    /\*\*CLAIM THE MINT\*\* — the sweepers must be able to see you/,
+  ],
 ];
 
-test("issues #333/#374: driver and contract doc both carry the three rules", () => {
+test("issues #333/#374: driver and contract doc both carry the workdir rules", () => {
   // The driver stamp lives inside a double-quoted shell string, so the
   // recipe's quotes and dollars are backslash-escaped IN SOURCE and
   // expand to their plain forms in the launched task; the contract doc
@@ -227,6 +242,8 @@ test("issues #333/#374: driver and contract doc both carry the three rules", () 
     assert.match(surface, /The bare `?\$\(date \+%s\)`? suffix is banned/);
     assert.match(surface, /NEVER via glob reuse \(`?ls -d work-<issue>-\* \| head -1`?\)/i);
     assert.match(surface, /\.dsh-workdir-owner/);
+    assert.match(surface, /CLAIM THE MINT/);
+    assert.match(surface, /FleetTower#1765/);
     assert.match(surface, /structurally impossible collisions/i);
   }
 });

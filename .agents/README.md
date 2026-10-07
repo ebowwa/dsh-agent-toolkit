@@ -409,14 +409,35 @@ agents on one box). The contract:
    not — is a takeover in progress: stop, do not edit, file it, mint
    fresh. This is the belt for rule 2's suspenders: it catches the reuse
    vectors no naming discipline can close.
+4. **CLAIM THE MINT** — the sweepers must be able to see you. Rule 3's
+   marker lives INSIDE the dir, and a sweeper that rm -rf's the dir
+   never reads it: the #1765 receipt (2026-10-07, box m1mini16gb-2) is a
+   live session whose minted workdir — pushed work and an in-flight PR —
+   vanished mid-session to a whole-TMPDIR purge
+   (`rm -rf "$(getconf DARWIN_USER_TEMP_DIR)"/*` on any below-floor
+   disk-watch pass, now vendored taught at FleetTower
+   `scripts/2o/mac-disk-watch.sh`). Unpredictability is not ownership;
+   a claim is. Right after the clone, claim the dir — FleetTower-shaped
+   checkouts carry `bin/face-lock`:
+
+   ```bash
+   "$workdir/bin/face-lock" claim "$workdir" --face "${ISSUE:-$$}"
+   ```
+
+   Re-claim/refresh it on the same cadence as the marker check (every
+   heartbeat re-arms the claim's dead-pid grace — the between-turns
+   window a bare marker cannot close, issue #1435). When the cloned
+   repo carries no face-lock, say so in one loud line and keep the
+   owner marker as the belt.
 
 **Acceptance — structurally impossible collisions:** two same-box
 siblings working the same issue can never share a worktree — neither
 names a path the other could guess (random mint), neither lands in a dir
-the other minted (recorded-path re-entry), and any takeover that slips
-the first two rules is detected before the next edit batch (owner
-marker). The prompt assembly stamps this contract into every task it
-builds too (structural + behavioral pins:
+the other minted (recorded-path re-entry), any takeover that slips the
+first two rules is detected before the next edit batch (owner marker),
+and any sweeper that meets the dir meets a claim, not a surprise
+(face-lock claim — FleetTower#1765). The prompt assembly stamps this
+contract into every task it builds too (structural + behavioral pins:
 `tests/workdir-collision-contract.test.mjs`).
 
 ## Why this exists
