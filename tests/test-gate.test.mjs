@@ -103,6 +103,65 @@ test("fails", () => assert.equal(1 + 1, 3));
   }
 });
 
+test("a non-numeric knob is a typed bad-knob error before any suite runs — never a green suite reported HANG (issue #538)", () => {
+  const f = fixtureDir();
+  try {
+    const green = f.suite("green.test.mjs", `
+import { test } from "node:test";
+import assert from "node:assert/strict";
+test("passes", () => assert.equal(1 + 1, 2));
+`);
+    // the #538 repro: Number("abc") is NaN, Math.max(1, NaN) is NaN, and
+    // setTimeout(fn, NaN) fires ~immediately — the pre-guard gate SIGKILLed
+    // this green suite at 0.0s and reported it HANG with a diagnostic
+    // blaming "an ambient seam"
+    const res = runGate([green], "abc");
+    assert.equal(res.status, 2, `a bad knob must exit typed-2 before any suite runs, stdout: ${res.stdout}`);
+    assert.match(res.stderr, /bad knob/, "the error must be typed (bad knob)");
+    assert.match(res.stderr, /DSH_TEST_GATE_TIMEOUT_S/, "the error must name the knob");
+    assert.match(res.stderr, /"abc"/, "the error must name the offending value");
+    assert.doesNotMatch(res.stdout, /HANG/, "a green suite must NEVER be reported HANG over a malformed knob");
+    assert.doesNotMatch(res.stdout, /green\.test\.mjs/, "no suite may run under a bad knob — the failure is the knob, not a suite");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a sub-1 knob is the same bad knob — the 1s insta-kill floor is not a usable bound (issue #538)", () => {
+  const f = fixtureDir();
+  try {
+    const green = f.suite("green.test.mjs", `
+import { test } from "node:test";
+import assert from "node:assert/strict";
+test("passes", () => assert.equal(1 + 1, 2));
+`);
+    for (const bad of ["0", "-5"]) {
+      const res = runGate([green], bad);
+      assert.equal(res.status, 2, `knob ${bad} must exit typed-2, stdout: ${res.stdout}`);
+      assert.match(res.stderr, /bad knob/, `knob ${bad} must be typed (bad knob)`);
+      assert.doesNotMatch(res.stdout, /HANG/, `knob ${bad} must never surface as a suite HANG`);
+    }
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a blank knob falls to the 120s default — only a malformed value is a bad knob (issue #538)", () => {
+  const f = fixtureDir();
+  try {
+    const green = f.suite("green.test.mjs", `
+import { test } from "node:test";
+import assert from "node:assert/strict";
+test("passes", () => assert.equal(1 + 1, 2));
+`);
+    const res = runGate([green], "");
+    assert.equal(res.status, 0, `a blank knob must fall to the default bound, stderr: ${res.stderr}`);
+    assert.match(res.stdout, /ok +.*green\.test\.mjs/, "the suite must pass under the default bound");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 test("the docs teach the bounded gate as the in-session recipe (issue #398)", () => {
   for (const [doc, mustMatch] of [
     ["README.md", [/node scripts\/test-gate\.mjs/, /DSH_TEST_GATE_TIMEOUT_S/]],

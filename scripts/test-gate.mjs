@@ -32,7 +32,10 @@
 //   node scripts/test-gate.mjs --only run-dsh-agent                # substring pinpoint
 //
 // Env:
-//   DSH_TEST_GATE_TIMEOUT_S  per-suite kill bound (default 120)
+//   DSH_TEST_GATE_TIMEOUT_S  per-suite kill bound (default 120; unset or
+//                            blank falls to the default — a non-numeric or
+//                            sub-1 value is a typed bad-knob error, exit 2,
+//                            before any suite runs — issue #538)
 
 import { spawn } from "node:child_process";
 import { readdirSync, existsSync } from "node:fs";
@@ -41,7 +44,26 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const TIMEOUT_S = Math.max(1, Number(process.env.DSH_TEST_GATE_TIMEOUT_S || 120));
+const TIMEOUT_S = (() => {
+  const raw = process.env.DSH_TEST_GATE_TIMEOUT_S;
+  if (raw === undefined || raw.trim() === "") return 120;
+  const n = Number(raw);
+  // A non-numeric value Number()s to NaN and Math.max(1, NaN) is NaN —
+  // setTimeout(fn, NaN) fires ~immediately and every suite is SIGKILLed at
+  // ~0.0s: a fully GREEN suite reported HANG, the exact false alarm the
+  // bounded gate exists to prevent (issue #538). A sub-1 value floors to a
+  // 1s bound that insta-kills any real suite. Both are operator typos, not
+  // suite facts — fail typed BEFORE any suite runs, naming the knob.
+  if (!Number.isFinite(n) || n < 1) {
+    console.error(
+      `test-gate: bad knob — DSH_TEST_GATE_TIMEOUT_S=${JSON.stringify(raw)} is not a positive number of seconds ` +
+      `(issue #538: a non-numeric value NaNs the bound and reports green suites HANG at 0.0s; a sub-1 value ` +
+      `insta-kills). Unset it for the 120s default, or set a bound >= 1.`,
+    );
+    process.exit(2);
+  }
+  return n;
+})();
 
 // Sanitize the runner-parentage marker (issue #398 class, found by the
 // gate's own pins): a gate run from INSIDE `node --test` — which is how

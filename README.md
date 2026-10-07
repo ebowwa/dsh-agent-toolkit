@@ -112,7 +112,10 @@ DSH_TEST_GATE_TIMEOUT_S=30 node scripts/test-gate.mjs --only run-dsh-agent  # pi
 
 `DSH_TEST_GATE_TIMEOUT_S` (default 120) is the per-suite kill bound. A
 suite that cannot run hermetically must fail loud naming the seam — never
-hang the gate.
+hang the gate. A malformed bound fails louder still: a non-numeric or
+sub-1 value is a typed bad-knob error (exit 2, before any suite runs) —
+never a NaN bound that insta-kills a green suite as a false HANG
+(issue #538).
 
 ## Adopting (consumer repo)
 
