@@ -99,6 +99,20 @@ function runShim(t, shim, scrubBody, argv, opts = {}) {
   // shape).
   delete env.GH_MERGE_GUARD_CHECK;
   delete env.MERGE_GUARD_CHECK;
+  // The belt's sixth name (issue #563): GH_MERGE_GUARD_SCRIPT is the guard's
+  // SCRIPT PATH override — under an armed hook the shim reads it as the
+  // MERGE_GUARD default (gh-scrub-shim:192,
+  // `MERGE_GUARD="${GH_MERGE_GUARD_SCRIPT:-${SCRUB_SCRIPT%/*}/merge-guard.sh}"`),
+  // so an ambient value redirects WHICH SCRIPT the hook executes as the
+  // guard, not merely a check-run name — the sharpest of the six. It is
+  // ambient-REAL, not synthetic: the driver persists it to every later step
+  // of a driver-armed job (scripts/run-dsh-agent.sh export + GITHUB_ENV, the
+  // issue #251 persistence-leak class), so it rides this spread on real lane
+  // env, not only behind a deliberate arm. MERGE_GUARD_GH, the one other
+  // MERGE_GUARD* name in the chain, stays unbelted — the shim's guard
+  // invocation PREFIXES `MERGE_GUARD_GH="$REAL"`, overriding any ambient
+  // value (gh-scrub-shim:208).
+  delete env.GH_MERGE_GUARD_SCRIPT;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     cwd: opts.cwd,
@@ -370,6 +384,20 @@ function runShimWithStdin(t, shim, scrubBody, argv, stdin) {
   // shape, on the sibling helper).
   delete env.GH_MERGE_GUARD_CHECK;
   delete env.MERGE_GUARD_CHECK;
+  // The belt's sixth name (issue #563): GH_MERGE_GUARD_SCRIPT is the guard's
+  // SCRIPT PATH override — under an armed hook the shim reads it as the
+  // MERGE_GUARD default (gh-scrub-shim:192,
+  // `MERGE_GUARD="${GH_MERGE_GUARD_SCRIPT:-${SCRUB_SCRIPT%/*}/merge-guard.sh}"`),
+  // so an ambient value redirects WHICH SCRIPT the hook executes as the
+  // guard, not merely a check-run name — the sharpest of the six. It is
+  // ambient-REAL, not synthetic: the driver persists it to every later step
+  // of a driver-armed job (scripts/run-dsh-agent.sh export + GITHUB_ENV, the
+  // issue #251 persistence-leak class), so it rides this spread on real lane
+  // env, not only behind a deliberate arm. MERGE_GUARD_GH, the one other
+  // MERGE_GUARD* name in the chain, stays unbelted — the shim's guard
+  // invocation PREFIXES `MERGE_GUARD_GH="$REAL"`, overriding any ambient
+  // value (gh-scrub-shim:208).
+  delete env.GH_MERGE_GUARD_SCRIPT;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     input: stdin,
@@ -515,8 +543,9 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
   // the hook arm (GH_MERGE_GUARD, issue #483), so MERGE_GUARD_VERIFY /
   // MERGE_GUARD_VERIFY_TOOL rode its spread undeleted — the #551 receipt's
   // "two fronts at once" arm (the hook arms AND the guard's verify leg
-  // arms). Arm every guard name INSIDE this process (the verify tool at a
-  // path that cannot exist; both check-run names set — the #1132
+  // arms). Arm every guard name INSIDE this process (the verify tool and
+  // the script-path override at paths that cannot exist; both check-run
+  // names set — the #1132
   // explicit-assertion shape) and route the merge verb through the helper.
   // The scrubber runs INSIDE the child, so it dumps the child env the
   // helper actually built: each delete is graded directly, on any machine,
@@ -532,12 +561,14 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
     tool: process.env.MERGE_GUARD_VERIFY_TOOL,
     check: process.env.MERGE_GUARD_CHECK,
     ghCheck: process.env.GH_MERGE_GUARD_CHECK,
+    script: process.env.GH_MERGE_GUARD_SCRIPT,
   };
   process.env.GH_MERGE_GUARD = "on";
   process.env.MERGE_GUARD_VERIFY = "on";
   process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
   process.env.MERGE_GUARD_CHECK = "not-this-repos-gates";
   process.env.GH_MERGE_GUARD_CHECK = "not-this-repos-gates";
+  process.env.GH_MERGE_GUARD_SCRIPT = "/nonexistent/evil-guard.sh";
   try {
     // A payload VALUE the shim definitely scrubs (equals-form --body=, the
     // shim's first scrub case; `pr merge -m` is boolean-only and rides raw
@@ -585,6 +616,7 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
       "MERGE_GUARD_VERIFY_TOOL",
       "MERGE_GUARD_CHECK",
       "GH_MERGE_GUARD_CHECK",
+      "GH_MERGE_GUARD_SCRIPT",
     ]) {
       assert.ok(
         !(name in childEnv),
@@ -598,6 +630,7 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
       MERGE_GUARD_VERIFY_TOOL: saved.tool,
       MERGE_GUARD_CHECK: saved.check,
       GH_MERGE_GUARD_CHECK: saved.ghCheck,
+      GH_MERGE_GUARD_SCRIPT: saved.script,
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
@@ -610,8 +643,9 @@ test("gh shim: ambient guard envs cannot reach the plain-form helper's child env
   // the SEVENTH env-construction carrier (its stdin-form sibling closed the
   // same gap in the #551 fix): it scrubbed only the hook arm (GH_MERGE_GUARD,
   // issue #479), so the other four guard names rode its spread undeleted.
-  // Arm all five names INSIDE this process (the verify tool at a path that
-  // cannot exist; both check-run names set — the #1132 explicit-assertion
+  // Arm all six names INSIDE this process (the verify tool and the
+  // script-path override at paths that cannot exist; both check-run names
+  // set — the #1132 explicit-assertion
   // shape) and route the merge verb through the helper. The scrubber runs
   // INSIDE the child, so it dumps the child env the helper actually built:
   // each delete is graded directly, on any machine. A merge leg through this
@@ -625,12 +659,14 @@ test("gh shim: ambient guard envs cannot reach the plain-form helper's child env
     tool: process.env.MERGE_GUARD_VERIFY_TOOL,
     check: process.env.MERGE_GUARD_CHECK,
     ghCheck: process.env.GH_MERGE_GUARD_CHECK,
+    script: process.env.GH_MERGE_GUARD_SCRIPT,
   };
   process.env.GH_MERGE_GUARD = "on";
   process.env.MERGE_GUARD_VERIFY = "on";
   process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
   process.env.MERGE_GUARD_CHECK = "not-this-repos-gates";
   process.env.GH_MERGE_GUARD_CHECK = "not-this-repos-gates";
+  process.env.GH_MERGE_GUARD_SCRIPT = "/nonexistent/evil-guard.sh";
   try {
     const { res, dir } = runShim(
       t,
@@ -669,6 +705,7 @@ test("gh shim: ambient guard envs cannot reach the plain-form helper's child env
       "MERGE_GUARD_VERIFY_TOOL",
       "MERGE_GUARD_CHECK",
       "GH_MERGE_GUARD_CHECK",
+      "GH_MERGE_GUARD_SCRIPT",
     ]) {
       assert.ok(
         !(name in childEnv),
@@ -682,6 +719,7 @@ test("gh shim: ambient guard envs cannot reach the plain-form helper's child env
       MERGE_GUARD_VERIFY_TOOL: saved.tool,
       MERGE_GUARD_CHECK: saved.check,
       GH_MERGE_GUARD_CHECK: saved.ghCheck,
+      GH_MERGE_GUARD_SCRIPT: saved.script,
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
