@@ -87,6 +87,15 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   markers can never block or green-light a merge silently. The shipper is
   deliberately NOT a consumer: its window closes at PR creation, while
   verification attaches to an already-open PR.
+- A claim PR must carry its OWN delta (issue #565): a PR whose head OID is
+  byte-identical to another open PR's head — or whose tip tree equals the
+  session's captured before-state tree — is a HOLLOW SHIP. It grades the
+  stacking parent's content twice (green CI on the parent's unmerged work)
+  while the claim's own receipts stay unexecuted; the receipt is PR #564,
+  whose head equaled PR #562's and still posted DONE with detailed grades.
+  The shipper refuses to mint one (ship-changes.sh: no push, no PR, exit 4)
+  and the review stage surfaces a shared-head carrier as a claim to check;
+  shipping, approving, or merging a known-hollow PR is a blocking defect.
 
 ## Workflow discipline
 

@@ -373,3 +373,142 @@ test("milestone carry degrades, never fails the ship: ticket without a milestone
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+// --- hollow-ship invariant (issue #565) --------------------------------------
+// A claim branch whose tip TREE equals the session's captured before-state
+// tree (dsh-before-sha — the stacking parent's head on a base-ref checkout)
+// carries ZERO own delta: minting its PR grades the PARENT's content twice
+// while the claim's receipts stay unexecuted (the PR #564 receipt: head
+// byte-identical to PR #562's head, DONE posted anyway). The shipper refuses
+// the mint before the push — no branch, no PR — and fails the run loudly
+// (exit 4) so the retry ladder re-runs the claim.
+
+const beforeState = (f) => {
+  writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+  writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
+  writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+  writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), "done\n");
+};
+
+test("hollow agent branch: tip tree == before tree → NOT pushed, NO PR, exit 4 (issue #565)", () => {
+  const f = fixture();
+  try {
+    beforeState(f);
+    // the agent stacked on the parent's head and "shipped" a branch with
+    // zero own commits: the branch pointer sits exactly at the before-state
+    git(["branch", "dsh/hollow-claim", f.head], { cwd: f.work });
+
+    const res = spawnSync("bash", [SHIPPER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 4, `expected the hollow-ship exit 4, got ${res.status}\n${res.stderr}`);
+
+    // refused BEFORE the push: no branch on the remote, no PR anywhere
+    const refs = git(["ls-remote", f.bare]).stdout;
+    assert.ok(!refs.includes("dsh/hollow-claim"),
+      "a hollow branch must not be pushed (a pushed-but-PR-less branch is the branch-hygiene leak class)");
+    assert.ok(!existsSync(f.ghLog) || !readFileSync(f.ghLog, "utf8").includes("pr create"),
+      "no PR may be minted from a zero-own-delta branch");
+
+    // the refusal is loud on both surfaces (stderr warning + the ship note
+    // the reply step posts)
+    assert.match(res.stderr, /HOLLOW SHIP refused/);
+    assert.match(res.stderr, /issue #565/);
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /HOLLOW SHIP refused/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a real agent branch (own commit) still ships — no hollow false positive (issue #565)", () => {
+  const f = fixture();
+  try {
+    beforeState(f);
+    git(["checkout", "-q", "-b", "dsh/real-claim"], { cwd: f.work });
+    writeFileSync(path.join(f.work, "a.txt"), "base content\nthe claim's own change\n");
+    git(["add", "-A"], { cwd: f.work });
+    git(["commit", "-q", "-m", "the claim's own work"], { cwd: f.work });
+    git(["checkout", "-q", "master"], { cwd: f.work });
+
+    const res = spawnSync("bash", [SHIPPER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, res.stderr);
+    const refs = git(["ls-remote", f.bare]).stdout;
+    assert.match(refs, /refs\/heads\/dsh\/real-claim/);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.match(log, /pr create/);
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /shipped/);
+    assert.ok(!note.includes("HOLLOW"), "a real-delta branch is never called hollow");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("hollow auto path: commits ahead with a net-zero tree are refused too (issue #565)", () => {
+  const f = fixture();
+  try {
+    beforeState(f);
+    // the agent's "work" is an empty commit: ahead of the before-state by a
+    // commit, but the TREE is unchanged — the minted PR would carry zero
+    // own delta exactly like the stacked-branch case
+    git(["commit", "-q", "--allow-empty", "-m", "the agent's empty work"], { cwd: f.work });
+
+    const res = spawnSync("bash", [SHIPPER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 4, `expected the hollow-ship exit 4, got ${res.status}\n${res.stderr}`);
+    const refs = git(["ls-remote", f.bare]).stdout;
+    assert.ok(!refs.includes("dsh/auto-"),
+      "the zero-tree-delta auto branch must not be pushed");
+    assert.match(res.stderr, /HOLLOW SHIP refused/);
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /HOLLOW SHIP refused/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("missing before-state degrades safe: no dsh-before-sha → never hollow, real work ships (issue #565)", () => {
+  const f = fixture();
+  try {
+    // NO dsh-before-sha in the cache: the invariant's only trusted source is
+    // the captured file (the $BEFORE_SHA fallback is post-run HEAD and would
+    // trivially equal a real branch tip) — the guard must not fire.
+    writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
+    writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+    writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), "done\n");
+    git(["checkout", "-q", "-b", "dsh/real-claim-2"], { cwd: f.work });
+    writeFileSync(path.join(f.work, "a.txt"), "base content\nanother real change\n");
+    git(["add", "-A"], { cwd: f.work });
+    git(["commit", "-q", "-m", "real work, ungradeable before-state"], { cwd: f.work });
+    git(["checkout", "-q", "master"], { cwd: f.work });
+
+    const res = spawnSync("bash", [SHIPPER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(git(["ls-remote", f.bare]).stdout, /refs\/heads\/dsh\/real-claim-2/);
+    assert.match(readFileSync(f.ghLog, "utf8"), /pr create/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("structural: the hollow-ship guard is wired into BOTH mint arms and fails the run (issue #565)", () => {
+  const s = readFileSync(SHIPPER, "utf8");
+  assert.match(s, /hollow_ship\(\)/, "the guard exists as a function");
+  // both mint paths consult it — the agent-branch loop and the auto path
+  const loopIdx = s.indexOf("for B in $(git for-each-ref refs/heads/dsh");
+  const autoIdx = s.indexOf('BRANCH="dsh/auto-r${DSH_RUN_ID}');
+  const guardUses = [...s.matchAll(/if hollow_ship "/g)].map((m) => m.index);
+  assert.equal(guardUses.length, 2, "the guard must gate exactly two mint arms");
+  assert.ok(guardUses[0] > loopIdx && guardUses[0] < autoIdx,
+    "the agent-branch arm consults the guard before its push");
+  assert.ok(guardUses[1] > autoIdx, "the auto arm consults the guard before its push");
+  assert.match(s, /\[ -z "\$HOLLOW_FOUND" \] \|\| exit 4/,
+    "the refusal is FATAL for the run (retry ladder re-runs the claim)");
+  // the refusal fires BEFORE the push on both arms (a refused mint must
+  // never strand a pushed-but-PR-less branch)
+  for (const idx of guardUses) {
+    const tail = s.slice(idx, idx + 400);
+    const pushIdx = tail.indexOf("git push");
+    const refuseIdx = tail.indexOf("HOLLOW SHIP refused");
+    assert.ok(refuseIdx !== -1 && (pushIdx === -1 || refuseIdx < pushIdx),
+      "the refusal surfaces before the push arm");
+  }
+});
