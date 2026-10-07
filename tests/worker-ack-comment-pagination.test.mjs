@@ -22,7 +22,14 @@
 //      EITHER call — a last-page failure never falls back to page-1's
 //      ancient ids;
 //   5. the marker rides the $ENV passthrough (issue #573's contract,
-//      re-pinned on the paginating shape): never interpolated into argv.
+//      re-pinned on the paginating shape): never interpolated into argv;
+//   6. the envelope fixture speaks gh's REAL byte shape (issue #591):
+//      the status line LF, every header line CRLF, the blank separator
+//      CRLF (gh >= 2.95.0 printHeaders) — the $'\n\n' LF split never
+//      matched a real envelope, so a CRLF fixture is what keeps this
+//      suite honest (the old LF shim let the defect ship green); the
+//      shim grades with `jq -r`, mirroring gh's embedded jq (top-level
+//      scalars print RAW — go-gh pkg/jq EvaluateFormatted).
 //
 // ack_comment is extracted from the worker and driven directly through a
 // gh shim (same pattern as tests/worker-ack-comment.test.mjs) — no real
@@ -63,12 +70,16 @@ function readFnSource(file, name) {
 
 const extractAckComment = () => readFnSource(WORKER, "ack_comment");
 
-// A gh shim that speaks the -i envelope: headers (from GH_HEADERS, a
-// file) + blank line + the jq result of GH_PAYLOAD for the paginating
-// call, and the bare jq result of GH_LAST_PAYLOAD for the ?page= fetch.
-// Both calls log argv and the ACK_MARKER they received; GH_RC fails the
-// first call, GH_LAST_RC the second. The Link fixture URL mirrors the
-// live shape measured on issue #100 (per_page first, page second).
+// A gh shim that speaks the -i envelope in gh's REAL byte shape (issue
+// #591): status line LF, headers (from GH_HEADERS, a file) each CRLF, the
+// blank separator CRLF, then the jq result of GH_PAYLOAD for the
+// paginating call, and the bare jq result of GH_LAST_PAYLOAD for the
+// ?page= fetch. The old shim fabricated LF headers + an LF separator —
+// a contract real gh never spoke, which is how the $'\n\n' split defect
+// shipped green. Both calls log argv and the ACK_MARKER they received;
+// GH_RC fails the first call, GH_LAST_RC the second. The Link fixture URL
+// mirrors the live shape measured on issue #100 (per_page first, page
+// second).
 const fixture = () => {
   const dir = mkdtempSync(path.join(tmpdir(), "worker-ack-page-test-"));
   const shim = path.join(dir, "shim");
@@ -98,9 +109,9 @@ if [ -n "\${GH_RC:-}" ] && [ "\$GH_RC" != 0 ] && [ "\$envelope" = yes ]; then ex
 if [ -n "\${GH_LAST_RC:-}" ] && [ "\$GH_LAST_RC" != 0 ] && [ "\$is_last" = yes ]; then exit "\$GH_LAST_RC"; fi
 payload="\${GH_PAYLOAD:-/nonexistent}"
 [ "\$is_last" = yes ] && [ -n "\${GH_LAST_PAYLOAD:-}" ] && payload="\$GH_LAST_PAYLOAD"
-[ "\$envelope" = yes ] && [ -s "\${GH_HEADERS:-}" ] && printf '%s\\n\\n' "\$(cat "\$GH_HEADERS")"
+[ "\$envelope" = yes ] && [ -s "\${GH_HEADERS:-}" ] && { printf 'HTTP/2 200\\n'; awk '{printf "%s\\r\\n", \$0}' "\$GH_HEADERS"; printf '\\r\\n'; }
 if [ -n "$filter" ] && command -v jq >/dev/null 2>&1 && [ -f "\$payload" ]; then
-  jq -c "$filter" < "\$payload"
+  jq -r "$filter" < "\$payload"   # gh's embedded jq prints top-level scalars RAW (issue #591)
   exit "\$?"
 fi
 [ -f "\$payload" ] && cat "\$payload"
@@ -171,6 +182,30 @@ test("a >100-comment thread: the rel=last page is fetched and scanned — the ne
     assert.ok(cs[0].includes("-i"), "the first call is the -i envelope");
     assert.ok(!/[?&]page=\d/.test(cs[0]), "the first call carries no page override");
     assert.ok(cs[1].includes("page=3"), "the second call fetches rel=last's page:\n" + cs[1]);
+  } finally { f.cleanup(); }
+});
+
+test("the CRLF envelope (real gh 2.95.0 bytes) is split, never printed — the #591 symptom pin", { skip: HAS_JQ ? false : "no jq binary on this box" }, () => {
+  const f = fixture();
+  try {
+    // A single-page thread in gh's real byte shape: the envelope carries
+    // ordinary headers CRLF + the CRLF separator, NO Link (gh emits Link
+    // only on a paginated route — the headers are always there). A match
+    // on the one page must come out as the BARE id. Under the $'\n\n' LF
+    // split this printed the WHOLE envelope — status line, headers,
+    // separator — as the ack id, which then never matched the caller's
+    // "0" check and rode on as ACK_COMMENT_ID garbage.
+    const res = f.runAck({
+      marker: "dsh:ack",
+      payload: [plain(5), ack(6)],
+      headers: "Content-Type: application/json\nX-GitHub-Media-Type: github.v3; format=json",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout.trim(), "6", "the bare id, never envelope bytes");
+    assert.ok(!/HTTP\/|Content-Type:|\r/.test(res.stdout),
+      "no status line, header text, or CR byte may reach stdout:\n" + JSON.stringify(res.stdout));
+    assert.equal(f.calls().length, 1, "a single-page thread makes no second call");
+    assert.doesNotMatch(res.stderr, /rel="last"/, "a Link-less envelope is not a Link degradation");
   } finally { f.cleanup(); }
 });
 
