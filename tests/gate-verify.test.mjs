@@ -129,6 +129,8 @@ test("the docs carry the channel rule and conduct (REVIEW.md, CONTRIBUTING.md)",
     "REVIEW.md states the channel");
   assert.ok(proseHas(review, "posts the marker line `gate-verify: pass` (or `gate-verify: fail`) as a PR comment or a formal review body (issue #560"),
     "REVIEW.md states the two-channel surface (issue #560: review bodies too)");
+  assert.ok(proseHas(review, "a same-second comment/review tie goes to the formal review, issue #571 — the two id spaces never compare"),
+    "REVIEW.md states the same-second tie policy (issue #571)");
   assert.ok(proseHas(review, "the merge guard weighs the channel only when explicitly armed (`MERGE_GUARD_VERIFY=on`)"),
     "REVIEW.md states the arm is opt-in");
   const contributing = readFileSync(path.join(ROOT, "CONTRIBUTING.md"), "utf8");

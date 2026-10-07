@@ -81,8 +81,10 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   bare `pass` line in prose never qualifies) and aggregated per PR by
   `scripts/pr-verification.mjs` (both channels merged into one
   time-ordered stream — comment created_at / review submitted_at, PENDING
-  reviews skipped; last marker wins; bodies never pass through — only
-  verdict + id/author/URL). The marker is evidence,
+  reviews skipped; a same-second comment/review tie goes to the formal
+  review, issue #571 — the two id spaces never compare; last marker
+  wins; bodies never pass through — only verdict + id/author/URL). The
+  marker is evidence,
   never an auto-approval: labels still come only from `review-verdict.mjs`,
   the review stage receives prior markers as CLAIMS to check (an
   unreproducible claim is a finding, the honesty rule), and the merge
