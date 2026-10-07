@@ -40,6 +40,25 @@ export const ambientPathWithoutDriverShims = (p = process.env.PATH || "") =>
 
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
 
+// issue #582: spawnSync NEVER throws — a failed fixture-SETUP call used to
+// resolve silently. This suite's own receipt: on a defaultBranch!=master
+// lane the `push -q -u origin master` below failed, nothing noticed, and
+// the empty bare remote stood in for "origin/master at base" with every
+// assert still passing — the suite stayed green while measuring a different
+// fixture than the one its names describe. Fixture CONSTRUCTION asserts
+// every call: a non-zero exit (or a spawn-level error) throws with the
+// captured stderr, so fixture breakage goes red naming the exact call.
+// Runtime probes of the shipper's behavior keep the plain `git()` helper.
+const gitSetup = (args, opts = {}) => {
+  const r = spawnSync("git", args, { encoding: "utf8", ...opts });
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `fixture setup failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
+
 /** Build a fixture: bare remote + a work clone, plus a gh shim. Returns
  * paths the test drives through the shipper. */
 const fixture = () => {
@@ -53,16 +72,16 @@ const fixture = () => {
   mkdirSync(shim, { recursive: true });
   mkdirSync(logs, { recursive: true });
 
-  git(["init", "--bare", "-q", bare], { cwd: dir });
-  git(["init", "-q", "-b", "master", work]); // pin the branch: init.defaultBranch differs per lane and the fixture pushes refs/heads/master by name (issue #575)
-  git(["config", "user.name", "tester"], { cwd: work });
-  git(["config", "user.email", "tester@example.com"], { cwd: work });
+  gitSetup(["init", "--bare", "-q", bare], { cwd: dir });
+  gitSetup(["init", "-q", "-b", "master", work]); // pin the branch: init.defaultBranch differs per lane and the fixture pushes refs/heads/master by name (issue #575)
+  gitSetup(["config", "user.name", "tester"], { cwd: work });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
-  git(["add", "a.txt"], { cwd: work });
-  git(["commit", "-q", "-m", "base"], { cwd: work });
-  git(["remote", "add", "origin", bare], { cwd: work });
-  git(["push", "-q", "-u", "origin", "master"], { cwd: work });
-  const head = git(["rev-parse", "HEAD"], { cwd: work }).stdout.trim();
+  gitSetup(["add", "a.txt"], { cwd: work });
+  gitSetup(["commit", "-q", "-m", "base"], { cwd: work });
+  gitSetup(["remote", "add", "origin", bare], { cwd: work });
+  gitSetup(["push", "-q", "-u", "origin", "master"], { cwd: work });
+  const head = gitSetup(["rev-parse", "HEAD"], { cwd: work }).stdout.trim();
 
   // gh shim: logs every call; answers pr create / pr view; copies the
   // --body-file it is handed for the scrub assertion.

@@ -30,6 +30,25 @@ const DRIVER = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
 
+// issue #582: spawnSync NEVER throws — a failed fixture-SETUP call used to
+// resolve silently: a non-zero init/config/push changed nothing the asserts
+// could see, so the suite stayed green while measuring a different fixture
+// than the one its names describe (sibling receipt: tests/ship-changes.test.mjs
+// went 21/21 green on a defaultBranch!=master lane with the fixture's
+// `push -q -u origin master` failing every run). Fixture CONSTRUCTION asserts
+// every call: a non-zero exit (or a spawn-level error) throws with the
+// captured stderr, so fixture breakage goes red naming the exact call.
+// Runtime probes of the scripts under test keep the plain `git()` helper.
+const gitSetup = (args, opts = {}) => {
+  const r = spawnSync("git", args, { encoding: "utf8", ...opts });
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `fixture setup failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
+
 // Base child env: inherit the AMBIENT environment minus every DSH_* var, so
 // machine-specific toolchain shims (e.g. a PATH-mounted git wrapper and its
 // GIT_SCRUB_REAL target) keep working here AND on a clean CI cell, while no
@@ -161,16 +180,16 @@ test("shipper: only the retired DSH_BOT_DIR set still ships + opens the PR (exit
   const work = path.join(dir, "work");
   const shim = path.join(dir, "shim");
   mkdirSync(shim, { recursive: true });
-  git(["init", "--bare", "-q", bare], { cwd: dir });
-  git(["init", "-q", "-b", "master", work]); // pin the branch: init.defaultBranch differs per lane and the fixture pushes refs/heads/master by name (issue #575)
-  git(["config", "user.name", "tester"], { cwd: work });
-  git(["config", "user.email", "tester@example.com"], { cwd: work });
+  gitSetup(["init", "--bare", "-q", bare], { cwd: dir });
+  gitSetup(["init", "-q", "-b", "master", work]); // pin the branch: init.defaultBranch differs per lane and the fixture pushes refs/heads/master by name (issue #575)
+  gitSetup(["config", "user.name", "tester"], { cwd: work });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
-  git(["add", "a.txt"], { cwd: work });
-  git(["commit", "-q", "-m", "base"], { cwd: work });
-  git(["remote", "add", "origin", bare], { cwd: work });
-  git(["push", "-q", "-u", "origin", "master"], { cwd: work });
-  const head = git(["rev-parse", "HEAD"], { cwd: work }).stdout.trim();
+  gitSetup(["add", "a.txt"], { cwd: work });
+  gitSetup(["commit", "-q", "-m", "base"], { cwd: work });
+  gitSetup(["remote", "add", "origin", bare], { cwd: work });
+  gitSetup(["push", "-q", "-u", "origin", "master"], { cwd: work });
+  const head = gitSetup(["rev-parse", "HEAD"], { cwd: work }).stdout.trim();
   const ghLog = path.join(dir, "gh.log");
   writeFileSync(path.join(shim, "gh"), `#!/usr/bin/env bash
 echo "gh: $*" >> "$GH_LOG"
@@ -221,7 +240,7 @@ test("shipper: NEITHER name set still fails closed naming the required var", () 
   const work = path.join(dir, "work");
   const shim = path.join(dir, "shim");
   mkdirSync(shim, { recursive: true });
-  git(["init", "-q", work]);
+  gitSetup(["init", "-q", work]);
   writeFileSync(path.join(shim, "gh"), "#!/usr/bin/env bash\nexit 0\n");
   spawnSync("chmod", ["+x", path.join(shim, "gh")]);
   try {
@@ -357,17 +376,17 @@ test("worker composed: a legacy-only env file still drives ship→reply→review
   // refs/pull/999/merge so the review stage's merge fetch resolves against
   // the local store.
   const seed = path.join(dir, "seed");
-  git(["init", "-q", "-b", "master", seed]); // pin the branch: init.defaultBranch differs per lane and the review stage fetches refs/heads/<baseRefName>
-  git(["config", "user.name", "tester"], { cwd: seed });
-  git(["config", "user.email", "tester@example.com"], { cwd: seed });
+  gitSetup(["init", "-q", "-b", "master", seed]); // pin the branch: init.defaultBranch differs per lane and the review stage fetches refs/heads/<baseRefName>
+  gitSetup(["config", "user.name", "tester"], { cwd: seed });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: seed });
   writeFileSync(path.join(seed, "REVIEW.md"), "# rules contract fixture\n");
   writeFileSync(path.join(seed, "a.txt"), "base content\n");
-  git(["add", "."], { cwd: seed });
-  git(["commit", "-q", "-m", "base"], { cwd: seed });
-  git(["init", "--bare", "-q", "-b", "master", bare]); // pin HEAD to the pushed branch: an unresolved HEAD fails the store worktree add exactly like an empty repo
-  git(["push", "-q", bare, "master"], { cwd: seed });
-  const base = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["--git-dir", bare, "update-ref", "refs/pull/999/merge", base]);
+  gitSetup(["add", "."], { cwd: seed });
+  gitSetup(["commit", "-q", "-m", "base"], { cwd: seed });
+  gitSetup(["init", "--bare", "-q", "-b", "master", bare]); // pin HEAD to the pushed branch: an unresolved HEAD fails the store worktree add exactly like an empty repo
+  gitSetup(["push", "-q", bare, "master"], { cwd: seed });
+  const base = gitSetup(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
+  gitSetup(["--git-dir", bare, "update-ref", "refs/pull/999/merge", base]);
 
   // gh shim: the queue poll yields ONE queued issue; the ack lookup yields 0;
   // the comments endpoint returns a trusted /dsh trigger (deliberately raw
