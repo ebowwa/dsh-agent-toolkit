@@ -9,6 +9,19 @@
 #     arc: started → shipping → final);
 #   - else post a fresh comment on the thread (pr or issue).
 #
+# The reply write is the one output that must not be droppable — when it is
+# lost, the agent's entire run is unrecorded (issue #535). Every write walks
+# a pinned retry ladder (60s/120s/240s — sub-minute retries are proven
+# useless against a secondary rate limit), classified: only transient
+# platform blocks retry, a non-transient failure (404, 422, auth) fails
+# fast because no backoff cures it. A fresh-comment write that stays blocked
+# through the whole GraphQL ladder falls back to the REST create-comment
+# endpoint once (issue #535 receipts: REST cleared after a 240s backoff
+# while GraphQL addComment stayed blocked — separate quota pools; a PR
+# conversation comment IS an issue comment, so one endpoint covers both).
+# Final failure is TYPED, never silent: ::error:: + exit non-zero, naming
+# the preserved reply file so the answer stays recoverable.
+#
 # Everything user-facing is scrubbed fail-closed: if the scrubber cannot
 # run, the answer is withheld, never posted raw.
 #
@@ -33,6 +46,10 @@
 #   ACK_COMMENT_ID      optional: the ack comment to PATCH instead of posting
 #   EXTRA_SCRUB_HOSTS   optional comma-separated hosts for the scrubber
 #                       (mapped to DSH_SCRUB_EXTRA_HOSTS like the driver)
+#   DSH_REPLY_BACKOFF_S optional test seam: replaces every ladder wait with
+#                       one fixed value; "0" removes the waits entirely while
+#                       keeping the REAL bounded loop (attempts, classification,
+#                       RC surfacing) — mirrors the driver's DSH_RETRY_BACKOFF_S
 
 set -euo pipefail
 
@@ -100,12 +117,118 @@ fi
   fi
 } > "$DSH_REPLY_OUT"
 
+# --- THROTTLE-WAVE RETRY ON THE REPLY WRITE (issue #535) --------------------
+# A GitHub secondary rate limit (HTTP 403 "temporarily blocked from content
+# creation") or the GraphQL "was submitted too quickly" block loses a single
+# unguarded write — and the reply is the one output that must not be lost.
+# Ladder: 4 attempts, waits 60s/120s/240s (sub-minute retries NEVER cleared
+# the block in the issue #535 receipts). Only the transient classes below
+# retry; anything else fails fast on attempt 1.
+
+# Classifies a write failure as transient (echoes the class name) or not
+# (non-zero). The class list is the platform-block family: rate limits,
+# abuse-detection content blocks, 5xx, raw network blips. A 404, a 422
+# validation error, or a credentials failure matches nothing and fails fast
+# — no backoff cures the environment it would re-enter.
+reply_transient_class() {
+  case "$1" in
+    *"secondary rate limit"*) echo "secondary rate limit";;
+    *"submitted too quickly"*) echo "submitted-too-quickly block";;
+    *"temporarily blocked"*) echo "content-creation block";;
+    *"rate limit"*) echo "rate limit";;
+    *"Bad Gateway"*|*"bad gateway"*|*"Service Unavailable"*|*"service unavailable"*|*"Gateway Time"*|*"gateway time"*|*"internal server error"*|*"Internal Server Error"*) echo "server error";;
+    *"Could not resolve host"*|*"Connection refused"*|*"connection refused"*|*"Connection reset"*|*"connection reset"*|*"timed out"*|*"Timed out"*) echo "network error";;
+    *) return 1;;
+  esac
+}
+
+# One write attempt: stdout flows through (the fresh-comment URL reaches the
+# worker log), stderr is captured into REPLY_LAST_ERR for classification.
+reply_attempt() {
+  REPLY_LAST_ERR="$( { "$@" 2>&1 1>&3 3>&-; } 3>&1 )"
+  return $?
+}
+
+# reply_write_retry <label> <cmd...> — walks the pinned ladder. Emits the
+# typed ::error:: on transient exhaustion (naming the preserved reply file)
+# and sets REPLY_FINAL_SIG (non-empty iff the final failure was transient);
+# a non-transient failure returns the raw rc on attempt 1, REPLY_FINAL_SIG empty.
+reply_write_retry() {
+  local label="$1"; shift
+  local -a waits
+  if [ -n "${DSH_REPLY_BACKOFF_S:-}" ]; then
+    waits=("$DSH_REPLY_BACKOFF_S" "$DSH_REPLY_BACKOFF_S" "$DSH_REPLY_BACKOFF_S")
+  else
+    waits=(60 120 240)
+  fi
+  local attempt rc=0 sig=""
+  for attempt in 1 2 3 4; do
+    if reply_attempt "$@"; then
+      if [ "$attempt" -gt 1 ]; then
+        echo "post-reply: $label landed on attempt $attempt" >&2
+      fi
+      REPLY_FINAL_SIG=""
+      return 0
+    else
+      # the capture MUST live in the else branch: `rc=$?` AFTER the fi
+      # reads the if construct's own status (0 on a failed condition), not
+      # the write's — the silent-exit-0 class this ladder exists to prevent
+      rc=$?
+    fi
+    sig="$(reply_transient_class "$REPLY_LAST_ERR" || true)"
+    if [ -z "$sig" ]; then
+      echo "::error::post-reply: $label FAILED with a NON-transient error (attempt ${attempt}/4) — no backoff and no retry cures this class, failing fast; the composed reply is PRESERVED at ${DSH_REPLY_OUT}" >&2
+      printf '%s\n' "$REPLY_LAST_ERR" >&2
+      REPLY_FINAL_SIG=""
+      return "$rc"
+    fi
+    if [ "$attempt" -lt 4 ]; then
+      echo "post-reply: $label hit a transient platform block (${sig}) — attempt ${attempt}/4, retrying in ${waits[$((attempt-1))]}s (issue #535: sub-minute retries never clear it):" >&2
+      printf '%s\n' "$REPLY_LAST_ERR" >&2
+      sleep "${waits[$((attempt-1))]}"
+    fi
+  done
+  echo "::error::post-reply: $label FAILED after 4 attempts (transient platform block never cleared: ${sig}) — the composed reply is PRESERVED at ${DSH_REPLY_OUT}; post it manually, never re-run the whole task for this" >&2
+  printf '%s\n' "$REPLY_LAST_ERR" >&2
+  REPLY_FINAL_SIG="$sig"
+  return "$rc"
+}
+
+# reply_rest_fallback <primary_rc> — the GraphQL→REST channel switch,
+# reached only when the fresh-comment ladder FAILED. A TRANSIENT exhaustion
+# switches channels (issue #535 receipts: REST cleared after a 240s backoff
+# while GraphQL addComment stayed blocked through the same wave — separate
+# quota pools; a PR conversation comment IS an issue comment, so the one
+# REST create endpoint covers both TARGET_KINDs). A NON-transient failure
+# propagates the primary rc unchanged — fail fast stays fail fast, no
+# channel switch can cure a 404. The fallback walks the same ladder.
+reply_rest_fallback() {
+  local rc="$1"
+  if [ -z "${REPLY_FINAL_SIG:-}" ]; then
+    return "$rc"
+  fi
+  echo "post-reply: GraphQL channel stayed blocked through the whole ladder — falling back to the REST create-comment channel (issue #535)" >&2
+  reply_write_retry "REST create-comment" \
+    gh api "repos/${DSH_SHIP_REPO}/issues/${TARGET_NUM}/comments" \
+      -F body="@$DSH_REPLY_OUT"
+}
+
 if [ -n "${ACK_COMMENT_ID:-}" ]; then
-  # edit the ack comment in place — one comment per task
-  gh api "repos/${DSH_SHIP_REPO}/issues/comments/${ACK_COMMENT_ID}" -X PATCH \
-    -F body="@$DSH_REPLY_OUT" >/dev/null
+  # edit the ack comment in place — one comment per task. No POST fallback:
+  # a fresh comment would break the one-comment-per-task UX, and the typed
+  # error below preserves the reply file either way. (>/dev/null keeps the
+  # PATCH response body out of the log — the original behavior.)
+  reply_write_retry "ack comment PATCH" \
+    gh api "repos/${DSH_SHIP_REPO}/issues/comments/${ACK_COMMENT_ID}" -X PATCH \
+      -F body="@$DSH_REPLY_OUT" >/dev/null
 elif [ "$TARGET_KIND" = "pr" ]; then
-  gh pr comment "$TARGET_NUM" --repo "$DSH_SHIP_REPO" --body-file "$DSH_REPLY_OUT"
+  rc=0
+  reply_write_retry "pr comment" \
+    gh pr comment "$TARGET_NUM" --repo "$DSH_SHIP_REPO" --body-file "$DSH_REPLY_OUT" || rc=$?
+  [ "$rc" -eq 0 ] || reply_rest_fallback "$rc"
 else
-  gh issue comment "$TARGET_NUM" --repo "$DSH_SHIP_REPO" --body-file "$DSH_REPLY_OUT"
+  rc=0
+  reply_write_retry "issue comment" \
+    gh issue comment "$TARGET_NUM" --repo "$DSH_SHIP_REPO" --body-file "$DSH_REPLY_OUT" || rc=$?
+  [ "$rc" -eq 0 ] || reply_rest_fallback "$rc"
 fi
