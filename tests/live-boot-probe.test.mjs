@@ -161,3 +161,27 @@ test("the live legs ride the probe — no bare spawnSync(\"dsh\") in the mount s
     );
   }
 });
+
+// run-dsh-agent's live legs ride the probe too (issue #600): both dump
+// shapes (--dump-config, --dump-default-config) and all three
+// stamped-overlay boots. The mount suites' exactly-one pin above does not
+// transfer as-is — this file skip-gates FOUR tests on the `--version`
+// presence probe (sub-second, no load exposure), so the budget here is
+// SHAPE-based, not count-based: every bare spawnSync("dsh") in the file
+// must be a ["--version"] probe, and the file must import the shared
+// probe. A future bare-spawnSync live leg (single-line OR multi-line
+// formatted — the receipt #600's own grep initially missed the multi-line
+// --dump-config leg for exactly that reason) reds here, offline.
+test("the live legs ride the probe — run-dsh-agent's bare dsh spawns are only its --version skip gates (issue #600)", () => {
+  const f = "run-dsh-agent.test.mjs";
+  const src = readFileSync(join(TESTS_DIR, f), "utf8");
+  assert.match(src, /import \{ bootProbe \} from "\.\/lib\/live-boot\.mjs"/, `${f} imports the shared probe`);
+  const bare = [...src.matchAll(/spawnSync\(\s*"dsh"/g)];
+  const versionProbes = [...src.matchAll(/spawnSync\(\s*"dsh"\s*,\s*\["--version"\]/g)];
+  assert.equal(
+    bare.length,
+    versionProbes.length,
+    `${f}: only the --version presence probes may spawn dsh bare (found ${bare.length} bare spawnSync("dsh"), ${versionProbes.length} of them --version probes — the live legs go through bootProbe, issue #600)`,
+  );
+  assert.ok(bare.length > 0, `${f} still skip-gates on the --version presence probe (the gate itself must not vanish)`);
+});

@@ -27,6 +27,11 @@
 // (the warn-and-skip / load diagnostic on stderr) are both OUTPUT, so
 // both-streams-empty is exactly "neither a composed config nor a
 // diagnostic": starvation, retried once; any diagnostic is a verdict.
+//
+// run-dsh-agent.test.mjs's live legs ride it too (issue #600): the two
+// dump shapes (--dump-config, --dump-default-config) and the three
+// stamped-overlay boots — same both-streams-empty discriminator, same
+// no-masking rule.
 
 import { spawnSync } from "node:child_process";
 
