@@ -326,18 +326,46 @@ trusted_task() {
     # "/dsh" body means "the title IS the task" (#474 shape).
     issue_json="$(gh issue view "$num" --repo "$repo" --json body,title,authorAssociation 2>/dev/null || true)"
     if [ -n "$issue_json" ]; then
+      # The parse is guarded INSIDE the node script (issue #530): a non-JSON
+      # body — gh's error text riding stdout under a 403/429 — is caught and
+      # degrades to an EMPTY task, never an uncaught JSON.parse (the #527
+      # crash shape, claim-path twin). A body that PARSES but is not the gh
+      # issue envelope takes the same path: GitHub's own 403/429 error
+      # bodies are JSON ({"message": ...}), the parse succeeds, and
+      # authorAssociation is undefined — without the envelope check that arm
+      # degraded SILENTLY (the PR #532 review finding), the same wrong
+      # outcome. The trailing `|| true` is the belt, not the guard — an
+      # invisible one, which is exactly how the #530 receipt misread this
+      # block — so the guard lives where the throw happens. The blanket
+      # `2>/dev/null` is gone with it: EVERY degrade writes ONE diagnostic
+      # line to the worker log, because a silent degrade here is a WRONG
+      # outcome, not a safe one — the caller reads an empty task as "no
+      # trusted /dsh comment" and closes the claimed item, and that close
+      # must be diagnosable.
       body="$(printf '%s' "$issue_json" | node -e '
-        const j = JSON.parse(require("fs").readFileSync(0, "utf8"));
-        const trusted = ["OWNER", "MEMBER", "COLLABORATOR"].includes(j.authorAssociation);
-        const body = (j.body || "");
-        const title = (j.title || "").replace(/^\/dsh\s*/, "");
-        if (!trusted) process.stdout.write("");
-        else if (body.startsWith("/dsh")) {
-          const t = body.replace(/^\/dsh\s*/, "").trim();
-          process.stdout.write(t.length > 0 ? t : "/dsh " + title);
-        } else if ((j.title || "").startsWith("/dsh") && title.length > 0) {
-          process.stdout.write("/dsh " + title);
-        } else process.stdout.write("");' 2>/dev/null || true)"
+        let j = null, parsed = true;
+        try { j = JSON.parse(require("fs").readFileSync(0, "utf8")); }
+        catch { parsed = false; }
+        const envelope = j !== null && typeof j === "object" && typeof j.authorAssociation === "string";
+        if (!envelope) {
+          if (parsed) {
+            process.stderr.write("trusted_task: issue body parsed but is NOT the gh issue envelope (no string authorAssociation — a JSON error body riding stdout under a 403/429?) — degrading to an empty task (issue #530)\n");
+          } else {
+            process.stderr.write("trusted_task: issue body is not JSON (gh error text on stdout under throttle?) — degrading to an empty task (issue #530)\n");
+          }
+          process.stdout.write("");
+        } else {
+          const trusted = ["OWNER", "MEMBER", "COLLABORATOR"].includes(j.authorAssociation);
+          const body = (j.body || "");
+          const title = (j.title || "").replace(/^\/dsh\s*/, "");
+          if (!trusted) process.stdout.write("");
+          else if (body.startsWith("/dsh")) {
+            const t = body.replace(/^\/dsh\s*/, "").trim();
+            process.stdout.write(t.length > 0 ? t : "/dsh " + title);
+          } else if ((j.title || "").startsWith("/dsh") && title.length > 0) {
+            process.stdout.write("/dsh " + title);
+          } else process.stdout.write("");
+        }' || true)"
     fi
   fi
   printf '%s' "$body" > "$out"

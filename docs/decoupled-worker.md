@@ -49,6 +49,25 @@ serialization matches the CI flow: the worker takes the **last** trusted
 `/dsh` comment as the task, and the **last** ack comment (matched by the
 `dsh:ack` marker) is edited in place — one living comment per task.
 
+### The claim-path trust re-derivation degrades loudly, never crashes (issue #530)
+
+`trusted_task` re-derives trust from the API **after the item is already
+claimed** (`queued` removed, `running` added), so its `gh` reads sit on the
+same throttle surface as the poll. The issue-body read (`gh issue view`) is
+parsed with node, and under a 403/429 gh's error text can ride that stdout:
+the parse is guarded **inside** the node script — a non-JSON body is caught,
+and a body that parses but is NOT the gh issue envelope takes the same path
+(GitHub's own 403/429 error bodies are JSON: `{"message": ...}` parses fine
+and carries no `authorAssociation`; without that envelope check the arm
+degraded silently — the PR #532 review finding) — either way degrading to an
+EMPTY task, never an uncaught `JSON.parse` (the #527 crash shape carried to
+the claim path; the shell-level `|| true` is only the belt) — and every
+degrade writes ONE diagnostic line to the worker log.
+Silence here would be a wrong outcome, not a safe one: an empty task reads
+to the caller as "no trusted /dsh comment", which replies and closes the
+claimed item, so the degrade must be on the record. Pinned by
+`tests/worker-smoke.test.mjs`.
+
 ## Installing the worker on a factory box
 
 **The one-dispatch path (recommended):** fire the `deploy-worker` workflow
