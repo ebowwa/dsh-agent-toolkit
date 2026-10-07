@@ -16,6 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootProbe } from "./lib/live-boot.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = join(ROOT, "plugins", "tool-session-query");
@@ -207,14 +208,23 @@ test("the composed tree BOOTS: all three plugins load, boot dies at the credenti
   // exactly the failure that caught the alpha-line API drift (SessionSeq).
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
-  const boot = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "reply ok"], {
-    encoding: "utf8",
-    timeout: 120_000,
-    cwd,
-    env,
+  // Starvation retry (issue #594): under the full suite's parallel file
+  // execution this child can starve to an EMPTY-output termination
+  // (measured: 125s wall, both streams empty) while the quiet single-file
+  // rerun is green on the same tree. bootProbe retries exactly that shape
+  // once; a diagnostic-bearing attempt returns immediately — a real defect
+  // prints (the alpha-line drift shape dies loudly), so the retry never
+  // masks one. Pins: tests/live-boot-probe.test.mjs.
+  const { boot, attemptsRan, starvationRetried } = bootProbe({
+    command: "dsh",
+    args: ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "reply ok"],
+    options: { timeout: 120_000, cwd, env },
   });
-  assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+  const load = starvationRetried
+    ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #594)`
+    : "";
+  assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${load}`);
   const combined = `${boot.stdout}\n${boot.stderr}`;
-  assert.match(combined, /MISSING_CREDENTIAL/, `boot must reach the credential wall with every plugin loaded, got: ${combined.slice(0, 800)}`);
+  assert.match(combined, /MISSING_CREDENTIAL/, `boot must reach the credential wall with every plugin loaded${load}, got: ${combined.slice(0, 800)}`);
   assert.doesNotMatch(combined, /failed to apply loader entry|does not provide an export/, "no plugin-load failure (the alpha-line drift shape)");
 });
