@@ -34,6 +34,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootProbe } from "./lib/live-boot.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
@@ -314,13 +315,30 @@ test("the stamped overlay composes into the real profile: the insert row resolve
   // The dump MUST run against the launcher's own home: the package copy the
   // insert row names lives in THIS profile tree. An isolated home would
   // warn-and-skip the row and still exit 0 — the silently-dead shape.
-  const dump = spawnSync(
-    "dsh",
-    ["--profile", "headless", "--patch", overlay, "--dump-config"],
-    { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 60_000 },
-  );
-  assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
-  assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/, "the insert row must appear in the composed config");
+  //
+  // Starvation retry (issue #595): under the full suite's parallel file
+  // execution this child can starve exactly like the boot leg below — and
+  // because the dump's red surfaces at the STATUS assert (a starved child
+  // exits nonzero/null), the load shape must be named THERE, not only at a
+  // match. The dump's starvation shape is the same both-streams-empty
+  // discriminator bootProbe pins: the success signal (the composed row on
+  // stdout) and the failure signal (the warn-and-skip / load diagnostic on
+  // stderr) are both OUTPUT, so both streams empty is exactly "neither a
+  // composed config nor a diagnostic" — a starvation artifact, retried
+  // once; a diagnostic-bearing attempt is a verdict and returns
+  // immediately (issue #595's no-masking rule). Pins:
+  // tests/live-boot-probe.test.mjs.
+  const { boot: dump, attemptsRan, starvationRetried } = bootProbe({
+    command: "dsh",
+    args: ["--profile", "headless", "--patch", overlay, "--dump-config"],
+    options: { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 60_000 },
+  });
+  const dumpLoad = starvationRetried
+    ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #595)`
+    : "";
+  assert.equal(dump.status, 0, `dump-config must compose${dumpLoad}, stderr: ${dump.stderr}`);
+  assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/,
+    `the insert row must appear in the composed config${dumpLoad}`);
 });
 
 test("the packaged plugin's tree BOOTS against the stamped overlay (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
@@ -339,18 +357,29 @@ test("the packaged plugin's tree BOOTS against the stamped overlay (skip when ds
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
-      encoding: "utf8",
-      timeout: 120_000,
-      cwd,
-      env,
+    // Starvation retry (issue #595): the same exposure #594 measured for
+    // session-query-mount's boot leg — under the full suite's parallel file
+    // execution the real dsh child can starve to an EMPTY-output
+    // termination while the quiet single-file rerun is green on the same
+    // tree. bootProbe retries exactly that shape once; a diagnostic-bearing
+    // attempt returns immediately — a real defect prints (the credential
+    // wall prints MISSING_CREDENTIAL, a tree that fails to load dies
+    // loudly), so the retry never masks one. Pins:
+    // tests/live-boot-probe.test.mjs.
+    const { boot, attemptsRan, starvationRetried } = bootProbe({
+      command: "dsh",
+      args: ["--profile", "headless", "--patch", overlay, "reply ok"],
+      options: { timeout: 120_000, cwd, env },
     });
-    assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+    const load = starvationRetried
+      ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #595)`
+      : "";
+    assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${load}`);
     const combined = `${boot.stdout}\n${boot.stderr}`;
     assert.match(
       combined,
       /MISSING_CREDENTIAL/,
-      "the boot must reach credential resolution — proving the whole tree, this plugin included, loaded",
+      `the boot must reach credential resolution — proving the whole tree, this plugin included, loaded${load}`,
     );
     assert.doesNotMatch(
       combined,
