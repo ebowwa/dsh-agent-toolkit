@@ -159,6 +159,94 @@ CONCURRENCY="${DSH_WORKER_CONCURRENCY:-3}"
 ITEM_SLOTS="$DATA/items"
 mkdir -p "$ITEM_SLOTS" 2>/dev/null || true
 
+# --- poll path: a failed or garbage poll must NEVER kill the worker (issue #527)
+# 870 crash-loop receipts on one box: under a 403/429 throttle wave gh prints
+# its human error AND (via the --jq fallback) the raw error body on stdout;
+# the old `done < <(gh api ... || echo …)` fed those body lines into a
+# `node -e 'JSON.parse(...)'` with no guard — the parse threw, the assignment
+# failed, set -e killed the worker, and the next cron minute repeated it.
+# Three defenses, in the order the failure reaches them:
+#   1. poll_field <line> <field> — try/catch parse; a non-JSON line is an
+#      EMPTY field, never an uncaught throw.
+#   2. poll_label — gh's stdout is CAPTURED (never streamed into the item
+#      loop) and its stderr lands in $POLL_ERR_FILE for classification;
+#      a failed poll is an empty result, so garbage never reaches parsing.
+#   3. Backoff: a rate-limited poll backs off (30s × streak, cap 15m) and
+#      stays QUIET — one line when the throttle starts, one when it clears;
+#      any other poll failure logs every sweep (an expired PAT SHOULD nag).
+#      While backed off the sweep makes NO gh calls at all (label creates
+#      and the dashboard burn the same quota).
+# The backoff state (until-epoch + consecutive-failure streak) lives in
+# $POLL_BACKOFF_FILE under the data root, NOT in process variables: the box
+# runs `dsh-worker.sh --once` from CRON EVERY MINUTE (install-worker.sh), so
+# in-process state would reset every sweep and re-log the throttle line each
+# minute — exactly the noise this fix removes (issue #527, ask 2). The
+# streak escalates the wait across cron minutes; a successful poll clears
+# the file with ONE recovery line.
+POLL_ERR_FILE="$DATA/poll-err.txt"
+POLL_BACKOFF_FILE="$DATA/poll-backoff.state"
+
+poll_field() { # <json-line> <field> — the field value; "" when the line is not JSON (issue #527)
+  printf '%s' "$1" | node -e '
+    let s = "";
+    try { s = require("fs").readFileSync(0, "utf8"); } catch {}
+    let v;
+    try { v = JSON.parse(s)[process.argv[1]]; } catch { v = ""; }
+    process.stdout.write(v === null || v === undefined ? "" : String(v));' "$2" 2>/dev/null || true
+}
+
+poll_label() { # <repo> <label> — issues poll; stdout to the caller, gh stderr → $POLL_ERR_FILE
+  # rc 3 = skipped (throttled): the backoff goes quiet MID-SWEEP too — once
+  # one label's poll comes back rate-limited, the remaining labels of this
+  # sweep make no gh calls at all (issue #527).
+  if poll_throttled; then return 3; fi
+  gh api --paginate "repos/${1}/issues?state=open&labels=${2}&per_page=100" \
+    --jq '.[] | {number: (.number // 0), is_pr: ((.pull_request != null) // false)}' \
+    2>"$POLL_ERR_FILE"
+}
+
+# poll_state_read — sets POLL_UNTIL / POLL_STREAK from the state file
+# ("0 0" when absent or garbage; the file is ours, but never trust a parse).
+poll_state_read() {
+  POLL_UNTIL=0; POLL_STREAK=0
+  local line until_s streak
+  line="$(head -n1 "$POLL_BACKOFF_FILE" 2>/dev/null || true)"
+  until_s="${line%% *}"; streak="${line##* }"
+  case "$until_s" in ''|*[!0-9]*) return 0 ;; esac
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  POLL_UNTIL="$until_s"; POLL_STREAK="$streak"
+  return 0
+}
+
+poll_throttled() {
+  poll_state_read
+  [ "$(date +%s)" -lt "$POLL_UNTIL" ]
+}
+
+poll_record_success() { # <repo> <label> — clear a recorded throttle; ONE line when it clears
+  local repo="$1" label="$2"
+  poll_state_read
+  if [ "$POLL_UNTIL" -gt 0 ]; then
+    echo "worker: poll recovered on $repo label '$label' — rate-limit backoff cleared" >&2
+    rm -f "$POLL_BACKOFF_FILE" 2>/dev/null || true
+  fi
+}
+
+poll_record_failure() { # <repo> <label> — classify gh's stderr, extend the backoff, log on transitions
+  local repo="$1" label="$2" wait_s streak was_throttled
+  if poll_throttled; then was_throttled=1; else was_throttled=0; fi
+  streak=$((POLL_STREAK + 1))
+  if grep -qiE 'rate limit|secondary rate|abuse' "$POLL_ERR_FILE" 2>/dev/null; then
+    wait_s=$((30 * streak)); [ "$wait_s" -gt 900 ] && wait_s=900
+    printf '%s %s\n' "$(( $(date +%s) + wait_s ))" "$streak" > "$POLL_BACKOFF_FILE" 2>/dev/null || true
+    if [ "$was_throttled" -eq 0 ]; then
+      echo "worker: poll rate-limited on $repo label '$label' — empty result, backing off ${wait_s}s (staying quiet until it clears)" >&2
+    fi
+  elif [ "$was_throttled" -eq 0 ]; then
+    echo "worker: poll FAILED on $repo label '$label' (non-throttle gh error) — empty result, retry next sweep" >&2
+  fi
+}
+
 # slot_free <kind>-<num> — per-item lock + a bounded-slot check. Prints
 # the lock path when a slot is taken, nothing when the bound is hit or
 # the item is already running.
@@ -756,55 +844,78 @@ process_item() {
 }
 
 sweep() {
-  local repo line num is_pr
+  local repo line num is_pr poll_out poll_rc
   for repo in $REPOS; do
+    # issue #527: during a rate-limit backoff the sweep stays QUIET — no gh
+    # calls at all (label creates and the dashboard burn the same quota).
+    if poll_throttled; then continue; fi
     ensure_labels "$repo"
     echo "worker: polling $repo for label '$QUEUE_LABEL'"
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      num="$(printf '%s' "$line" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).number?.toString() ?? "")')"
-      is_pr="$(printf '%s' "$line" | node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0,"utf8")).is_pr))')"
-      [ -n "$num" ] || continue
-      run_item_bg "w-$repo-$num" process_item "$repo" "$num" "$is_pr"
-    done < <(gh api --paginate "repos/${repo}/issues?state=open&labels=${QUEUE_LABEL}&per_page=100" \
-      --jq '.[] | {number: (.number // 0), is_pr: ((.pull_request != null) // false)}' \
-      || echo "worker: poll FAILED for $repo label '$QUEUE_LABEL' (gh error above, if any)" >&2)
+    # The poll is CAPTURED, never streamed into the item loop: a failed or
+    # garbage poll is an EMPTY result (issue #527), so non-JSON error bodies
+    # can no longer reach the parser or the claim path.
+    poll_rc=0
+    poll_out="$(poll_label "$repo" "$QUEUE_LABEL")" || poll_rc=$?
+    if [ "$poll_rc" -eq 0 ]; then
+      poll_record_success "$repo" "$QUEUE_LABEL"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        num="$(poll_field "$line" number)"
+        is_pr="$(poll_field "$line" is_pr)"
+        [ -n "$num" ] || continue
+        run_item_bg "w-$repo-$num" process_item "$repo" "$num" "$is_pr"
+      done <<< "$poll_out"
+    elif [ "$poll_rc" -ne 3 ]; then
+      poll_record_failure "$repo" "$QUEUE_LABEL"
+    fi
     # Review-only items (dsh/review): the decoupled review stage — reviews
     # of ANY PR run here, never in a runner-holding Actions job.
     echo "worker: polling $repo for label '$REVIEW_LABEL'"
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      num="$(printf '%s' "$line" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).number?.toString() ?? "")')"
-      is_pr="$(printf '%s' "$line" | node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0,"utf8")).is_pr))')"
-      [ -n "$num" ] || continue
-      if [ "$is_pr" = "true" ]; then
-        run_item_bg "r-$repo-$num" review_item "$repo" "$num"
-      else
-        echo "worker: dsh/review on $repo #$num is not a PR — dropping the label (reviews are PR-only)"
-        gh api -X DELETE "repos/${repo}/issues/${num}/labels/$(label_enc "$REVIEW_LABEL")" >/dev/null 2>&1 || true
-      fi
-    done < <(gh api --paginate "repos/${repo}/issues?state=open&labels=${REVIEW_LABEL}&per_page=100" \
-      --jq '.[] | {number: (.number // 0), is_pr: ((.pull_request != null) // false)}' \
-      || echo "worker: poll FAILED for $repo label '$REVIEW_LABEL' (gh error above, if any)" >&2)
+    poll_rc=0
+    poll_out="$(poll_label "$repo" "$REVIEW_LABEL")" || poll_rc=$?
+    if [ "$poll_rc" -eq 0 ]; then
+      poll_record_success "$repo" "$REVIEW_LABEL"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        num="$(poll_field "$line" number)"
+        is_pr="$(poll_field "$line" is_pr)"
+        [ -n "$num" ] || continue
+        if [ "$is_pr" = "true" ]; then
+          run_item_bg "r-$repo-$num" review_item "$repo" "$num"
+        else
+          echo "worker: dsh/review on $repo #$num is not a PR — dropping the label (reviews are PR-only)"
+          gh api -X DELETE "repos/${repo}/issues/${num}/labels/$(label_enc "$REVIEW_LABEL")" >/dev/null 2>&1 || true
+        fi
+      done <<< "$poll_out"
+    elif [ "$poll_rc" -ne 3 ]; then
+      poll_record_failure "$repo" "$REVIEW_LABEL"
+    fi
     # Dispatched tasks (dsh/task): the legacy runner-holding
     # agent-dispatch path, retired — tasks run here like everything else.
     echo "worker: polling $repo for label '$TASK_LABEL'"
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      num="$(printf '%s' "$line" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).number?.toString() ?? "")')"
-      is_pr="$(printf '%s' "$line" | node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0,"utf8")).is_pr))')"
-      [ -n "$num" ] || continue
-      if [ "$is_pr" = "true" ]; then
-        echo "worker: dsh/task on $repo #$num is a PR — dropping the label (tasks are issue-only)"
-        gh api -X DELETE "repos/${repo}/issues/${num}/labels/$(label_enc "$TASK_LABEL")" >/dev/null 2>&1 || true
-      else
-        run_item_bg "t-$repo-$num" task_item "$repo" "$num"
-      fi
-    done < <(gh api --paginate "repos/${repo}/issues?state=open&labels=${TASK_LABEL}&per_page=100" \
-      --jq '.[] | {number: (.number // 0), is_pr: ((.pull_request != null) // false)}' \
-      || echo "worker: poll FAILED for $repo label '$TASK_LABEL' (gh error above, if any)" >&2)
+    poll_rc=0
+    poll_out="$(poll_label "$repo" "$TASK_LABEL")" || poll_rc=$?
+    if [ "$poll_rc" -eq 0 ]; then
+      poll_record_success "$repo" "$TASK_LABEL"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        num="$(poll_field "$line" number)"
+        is_pr="$(poll_field "$line" is_pr)"
+        [ -n "$num" ] || continue
+        if [ "$is_pr" = "true" ]; then
+          echo "worker: dsh/task on $repo #$num is a PR — dropping the label (tasks are issue-only)"
+          gh api -X DELETE "repos/${repo}/issues/${num}/labels/$(label_enc "$TASK_LABEL")" >/dev/null 2>&1 || true
+        else
+          run_item_bg "t-$repo-$num" task_item "$repo" "$num"
+        fi
+      done <<< "$poll_out"
+    elif [ "$poll_rc" -ne 3 ]; then
+      poll_record_failure "$repo" "$TASK_LABEL"
+    fi
 
-    dashboard_update "$repo"
+    # issue #527: once a poll this sweep came back rate-limited, the dashboard
+    # edit stays silent too — its API calls burn the same throttled quota.
+    if ! poll_throttled; then dashboard_update "$repo"; fi
   done
 }
 

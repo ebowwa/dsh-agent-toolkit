@@ -49,6 +49,24 @@ serialization matches the CI flow: the worker takes the **last** trusted
 `/dsh` comment as the task, and the **last** ack comment (matched by the
 `dsh:ack` marker) is edited in place — one living comment per task.
 
+### Throttled polls back off, they never kill the worker (issue #527)
+
+The poll is the one code path a provider throttle wave attacks directly: a
+403/429 from the API is guaranteed to recur fleet-wide, every sweep, until
+the window resets. The worker therefore treats a failed or garbage poll as
+an **empty queue result** — a non-JSON line (gh's error body riding the
+`--jq` fallback) can never reach an uncaught `JSON.parse`, and a failed gh
+call never aborts the sweep (`set -e` would kill the process and the next
+cron minute would repeat it — 870 crash-loop receipts on one box). A
+rate-limited poll additionally backs off: 30s × consecutive failures, cap
+15m, state carried in `<data-root>/poll-backoff.state` so it survives the
+per-minute cron process (`--once`). While the window is open the sweep makes
+**zero** gh calls — labels, polls, and the dashboard alike — and logs
+nothing; the log carries ONE line when the throttle starts, one per
+escalated re-probe, and ONE when a poll finally succeeds ("backoff
+cleared"). A non-throttle poll failure (e.g. an expired PAT) logs every
+sweep on purpose: that nag is the pager.
+
 ## Installing the worker on a factory box
 
 **The one-dispatch path (recommended):** fire the `deploy-worker` workflow
