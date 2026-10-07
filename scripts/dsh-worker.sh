@@ -390,7 +390,15 @@ dashboard_update() { # <repo>
   slots="$(ls -1 "$ITEM_SLOTS" 2>/dev/null | wc -l | tr -d ' ')"
   procs="$(pgrep -fc 'dsh --profile headless' 2>/dev/null || echo 0)"
   inflight="$(for lk in "$ITEM_SLOTS"/*.lock; do [ -e "$lk" ] || continue; printf '%s ' "$(basename "$lk" .lock)"; done)"
-  recent="$(ls -1t "$DATA/runs" 2>/dev/null | head -5 | tr '\n' ' ')"
+  # recent runs — $DATA/runs is created lazily only when an item runs, so
+  # on a fresh data root it does not exist yet and a bare `ls` exit-1s
+  # through the pipeline under `set -o pipefail`, killing the sweep every
+  # cron minute until the first run materializes the dir (issue #540) —
+  # guard it the way prune_runs guards the same dir below.
+  recent=""
+  if [ -d "$DATA/runs" ]; then
+    recent="$(ls -1t "$DATA/runs" | head -5 | tr '\n' ' ')"
+  fi
   local tin=0 tout=0 nmeta=0 metaf
   for metaf in "$DATA"/runs/*/dsh-run-meta.env; do
     [ -f "$metaf" ] || continue

@@ -57,6 +57,41 @@ test("--once on an empty queue sweeps cleanly (exit 0, polls the repo)", () => {
   }
 });
 
+test("--once on a FRESH data root reaches the dashboard deep path and exits 0 (issue #540)", () => {
+  const f = fixture();
+  try {
+    // A healthy gh whose dashboard issue EXISTS (number 42): this drives
+    // dashboard_update past its empty-list bail into the deep path — the
+    // slots/procs/recent reads, the meta rollup, the body edit — on a data
+    // root where $DATA/runs does not exist yet (it is created lazily only
+    // when an item runs). Under `set -euo pipefail` the unguarded
+    // `ls -1t "$DATA/runs"` in the recent= assignment exit-1s the whole
+    // sweep there (issue #540); the guard must keep the sweep green and
+    // the body must still post, with the runs cell rendered as none.
+    writeFileSync(path.join(f.shim, "gh"), `#!/usr/bin/env bash
+[ -n "\${GH_LOG:-}" ] && echo "gh: $*" >> "$GH_LOG"
+case " $* " in
+  *"issue edit"*) exit 0 ;;            # dashboard body posted
+  *"dsh/dashboard"*) echo 42 ;;        # the dashboard issue exists
+  *"issues?state=open"*) exit 0 ;;     # empty queue polls
+  *"issue list"*) echo 0 ;;            # queue/running counts
+  *) exit 0 ;;
+esac
+`);
+    spawnSync("chmod", ["+x", path.join(f.shim, "gh")]);
+    const res = spawnSync("bash", [WORKER, "--once"], {
+      encoding: "utf8", env: f.env({ GH_LOG: f.ghLog }),
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.doesNotMatch(res.stdout + res.stderr, /poll FAILED/);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.match(log, /gh: issue edit 42 /, "the dashboard body was actually posted");
+    assert.match(log, /\| recent runs \| none \|/, "a fresh data root renders the runs cell as none");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 test("fails loudly (exit 2) without the required env — never runs half-configured", () => {
   const f = fixture();
   try {
