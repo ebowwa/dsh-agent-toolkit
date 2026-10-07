@@ -54,7 +54,7 @@ const fixture = () => {
   mkdirSync(logs, { recursive: true });
 
   git(["init", "--bare", "-q", bare], { cwd: dir });
-  git(["init", "-q", work]);
+  git(["init", "-q", "-b", "master", work]); // pin the branch: init.defaultBranch differs per lane and the fixture pushes refs/heads/master by name (issue #575)
   git(["config", "user.name", "tester"], { cwd: work });
   git(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
