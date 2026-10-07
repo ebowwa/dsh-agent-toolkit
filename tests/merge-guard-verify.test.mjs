@@ -115,6 +115,19 @@ const runGuard = (t, { legs = [leg()], comments = [], armed = false, apiFail = f
   // consults the channel on an armed lane and reds (live repro on the
   // #489 head: 6 pass / 1 fail).
   delete env.MERGE_GUARD_VERIFY;
+  // #503 — the SIXTH carrier of the #483/#487/#490 env-construction class:
+  // scripts/merge-guard.sh reads CHECK="${MERGE_GUARD_CHECK:-gates}" and
+  // filters check-runs by that name, and every leg this harness builds is
+  // named `gates` (leg() above) — an ambient MERGE_GUARD_CHECK=<other> rides
+  // the process.env spread, the EXPLICIT name matches no leg (the #1132
+  // fallback is default-name-only), and every leg reds (live repro on main:
+  // 0 pass / 7 fail). The harness has no MERGE_GUARD_CHECK literal — it
+  // never arms the name deliberately — so the delete is unconditional: the
+  // same delete-before-arm contract the sibling applies in
+  // tests/merge-guard.test.mjs (issue #483). Without it the "UNARMED
+  // default" leg refuses with "no check run graded head" on a lane that
+  // exports the name.
+  delete env.MERGE_GUARD_CHECK;
   if (armed) env.MERGE_GUARD_VERIFY = "on";
   const r = spawnSync("bash", [GUARD, "merge", "326", "--squash"], {
     encoding: "utf8", env, cwd: gates,
@@ -189,4 +202,38 @@ test("Ordering: RED gates refuse BEFORE the channel is ever read", (t) => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /NOT green \(issue #434\)/);
   assert.equal(channelCalls(channel).length, 0, "the channel is a second signal on an already-green head");
+});
+
+test("an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (issue #483 pin)", (t) => {
+  // The sibling suite (tests/merge-guard.test.mjs:114) deletes this name and
+  // pins it (:201) — but THIS file is a separate process (issue #498's own
+  // framing), so the sibling's delete + pin never mask it: runGuard spread
+  // the ambient name through, the guard's EXPLICIT filter matched no `gates`
+  // leg, and every leg reded (live repro on the #503 head: 0 pass / 7 fail).
+  // Arm the lane INSIDE this process so the harness env's hermeticity is
+  // graded on every machine, not just on mis-configured lanes (the #483 pin
+  // shape, applied to the verify harness). Pins BOTH directions: the
+  // UNARMED leg still merges silently, the ARMED legs still grade — a pass
+  // marker merges GREEN, a fail marker still REFUSES.
+  process.env.MERGE_GUARD_CHECK = "ci/ambient-not-gates";
+  try {
+    const unarmed = runGuard(t, { comments: [] });
+    assert.equal(unarmed.r.status, 0, `the UNARMED leg must still merge (stderr: ${unarmed.r.stderr})`);
+    assert.ok(merged(unarmed.gates)?.length, "pr merge ran under the ambient name");
+    assert.equal(channelCalls(unarmed.channel).length, 0, "unarmed guard must not read the channel");
+    const armedPass = runGuard(t, {
+      armed: true,
+      comments: [marker(1, "independent run: 443/443\ngate-verify: pass\n")],
+    });
+    assert.equal(armedPass.r.status, 0, `the ARMED leg must still grade GREEN (stderr: ${armedPass.r.stderr})`);
+    assert.match(armedPass.r.stdout, /independent verification GREEN/);
+    const armedFail = runGuard(t, {
+      armed: true,
+      comments: [marker(1, "gate-verify: fail\n")],
+    });
+    assert.equal(armedFail.r.status, 1, "the ARMED leg must still refuse a fail marker");
+    assert.equal(merged(armedFail.gates), null, "nothing merged");
+  } finally {
+    delete process.env.MERGE_GUARD_CHECK;
+  }
 });
