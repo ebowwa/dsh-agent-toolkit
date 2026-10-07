@@ -435,9 +435,65 @@ trusted_task() {
 # marker (the newest trigger's ack; the older arc-editing convention of the
 # CI flow collapses to "edit the newest ack in place" here).
 ack_comment() {
-  local repo="$1" num="$2"
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
-    --jq "[.[] | select((.body // \"\") | contains(\"${ACK_MARKER}\")) | .id][-1] // 0" 2>/dev/null || echo 0
+  local repo="$1" num="$2" resp headers body link last p
+  # The marker reaches jq as an env variable, never interpolated into the
+  # filter string (issue #573): an operator marker carrying jq
+  # metacharacters (" \ ] |) shattered the interpolated expression. gh api
+  # has no --arg, but its embedded jq reads $ENV — the per-command
+  # assignment exports it, the filters stay constant literals, and gh/jq
+  # failures surface as typed stderr (never the old 2>/dev/null swallow);
+  # `|| echo 0` keeps the caller's contract (0/empty = post a fresh ack)
+  # for genuine API errors only.
+  #
+  # The list-issue-comments route returns comments ASCENDING (oldest
+  # first; `direction` is ignored on this route — measured on issue #100)
+  # while the ack is posted at trigger time, among the NEWEST comments:
+  # the first per_page=100 page holds the thread's OLDEST 100, so past 100
+  # thread comments a first-page-only scan structurally misses every ack
+  # and every trigger posts a fresh one (issue #581). `gh api -i` prints
+  # the Link header above the jq result, so the rel="last" page — the
+  # newest 100 — is fetched and scanned instead, in at most two calls. A
+  # thread needs >100 comments AFTER the newest ack (the exactly-at-100
+  # page boundary included: rel="last" then names the one-past-end page,
+  # which scans empty and self-heals on the next trigger) for the marker
+  # to fall outside the window, and the fresh-ack fallback is the honest
+  # answer there.
+  if ! resp="$(ACK_MARKER="$ACK_MARKER" gh api -i \
+    "repos/${repo}/issues/${num}/comments?per_page=100" \
+    --jq '[.[] | select((.body // "") | contains($ENV.ACK_MARKER)) | .id][-1] // 0' \
+  )"; then
+    echo 0   # gh's stderr already reached the worker log — surfaced, not swallowed
+    return 0
+  fi
+  # Split the -i envelope: response headers, blank line, then the jq
+  # result. A body with no header block (a shim in tests, a degraded
+  # proxy in the field) is taken as the whole response — a single-page
+  # thread.
+  if [ "${resp#*$'\n\n'}" != "$resp" ]; then
+    headers="${resp%%$'\n\n'*}"
+    body="${resp#*$'\n\n'}"
+  else
+    headers=""
+    body="$resp"
+  fi
+  last=1
+  if [ -n "$headers" ]; then
+    link="$(printf '%s\n' "$headers" | awk 'tolower($1) == "link:" {sub(/^link:[ \t]*/, ""); print; exit}')"
+    p="$(printf '%s' "$link" | sed -n 's/.*<[^>]*[?&]page=\([0-9][0-9]*\)>; rel="last".*/\1/p')"
+    if [ -n "$p" ]; then
+      last="$p"
+    else
+      echo "dsh-worker: ack_comment on $repo#$num — Link header present but no parsable rel=\"last\" page; scanning the first page (issue #581 degradation)" >&2
+    fi
+  fi
+  if [ "$last" -gt 1 ]; then
+    ACK_MARKER="$ACK_MARKER" gh api \
+      "repos/${repo}/issues/${num}/comments?per_page=100&page=${last}" \
+      --jq '[.[] | select((.body // "") | contains($ENV.ACK_MARKER)) | .id][-1] // 0' \
+      || echo 0   # page-1 ids are the thread's OLDEST — never fall back to an ancient ack edit
+    return 0
+  fi
+  printf '%s\n' "$body"
 }
 
 # run_item_bg <slot-key> <func> [args...] — claim a concurrency slot and
