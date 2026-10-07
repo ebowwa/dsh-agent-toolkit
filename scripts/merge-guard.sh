@@ -16,6 +16,14 @@
 # or a check graded before the last push) is not green either: the API is
 # queried for the exact head SHA and only same-SHA runs match.
 #
+# The snapshot is PAGED (issue #566): the check-runs endpoint defaults to
+# per_page=30 and silently truncates, so grading page 1 alone let a red
+# conclusion beyond page 1 pass ANYGREEN. The guard requests per_page=100
+# and follows total_count to exhaustion before computing any verdict.
+# Paging IS the taking of the one snapshot, not polling: every page serves
+# the same single decision, and the guard never re-fetches to look for a
+# newer verdict.
+#
 # Usage:
 #   merge-guard.sh check [pr-number|url|branch]   exit 0 iff green; refuse 1/2
 #   merge-guard.sh merge [gh pr merge args...]    check, then exec gh pr merge
@@ -121,20 +129,69 @@ PR_URL="$(printf '%s' "$PR_JSON" | grep -o '"url":"[^"]*"' | head -n1 | cut -d'"
 REPO_PATH="$(printf '%s' "$PR_URL" | sed -n 's#https://github.com/\([^/]*\)/\([^/]*\)/pull/.*#\1/\2#p')"
 [ -n "$REPO_PATH" ] || unresolvable "cannot parse owner/repo from PR url '$PR_URL'"
 
-RUNS_JSON="$("$GH_BIN" api "repos/$REPO_PATH/commits/$PR_SHA/check-runs" 2>&1)" \
-  || unresolvable "check-runs API failed for $REPO_PATH@${PR_SHA:0:7}:$RUNS_JSON"
+# ONE snapshot of the head's check runs — PAGED to exhaustion (issue #566).
+# The endpoint defaults to per_page=30 and silently truncates; the guard
+# used to grade the rollup from page 1 alone, so a red beyond page 1 passed
+# ANYGREEN. Request per_page=100 and follow total_count, bounded at 20
+# pages (2000 runs — beyond real heads, and a cap that REFUSES rather than
+# grades a truncated rollup). Each page must parse with a runs array and a
+# total_count, or the whole snapshot is unusable (fail-closed, UNPARSEABLE).
+PAGE_SEP=$'\001'   # raw 0x01 never occurs in valid JSON text — the page delimiter
+RUNS_PAGES=""
+FETCHED=0
+TOTAL=""
+SNAPSHOT_BROKEN=""
+for PAGE in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  PAGE_JSON="$("$GH_BIN" api "repos/$REPO_PATH/commits/$PR_SHA/check-runs?page=$PAGE&per_page=100" 2>&1)" \
+    || unresolvable "check-runs API failed for $REPO_PATH@${PR_SHA:0:7} (page $PAGE):$PAGE_JSON"
+  PAGE_FACTS="$(printf '%s' "$PAGE_JSON" | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  try {
+    const j = JSON.parse(s);
+    if (!Array.isArray(j.check_runs) || !Number.isFinite(j.total_count)) { console.log("MALFORMED"); return; }
+    console.log("OK " + j.total_count + " " + j.check_runs.length);
+  } catch { console.log("MALFORMED"); }
+});')"
+  case "$PAGE_FACTS" in
+    "OK "*) ;;
+    *) SNAPSHOT_BROKEN=1; break;;
+  esac
+  TOTAL="${PAGE_FACTS#OK }"; TOTAL="${TOTAL%% *}"
+  PAGE_N="${PAGE_FACTS##* }"
+  RUNS_PAGES="${RUNS_PAGES}${PAGE_SEP}${PAGE_JSON}"
+  FETCHED=$((FETCHED + PAGE_N))
+  [ "$FETCHED" -ge "$TOTAL" ] && break
+  [ "$PAGE_N" -eq 0 ] \
+    && unresolvable "check-runs pagination for $REPO_PATH@${PR_SHA:0:7} stopped short (total_count=$TOTAL, fetched=$FETCHED, page $PAGE empty) — refusing rather than grading a truncated rollup (issue #566)"
+done
 
-# ONE snapshot, filtered to (check name == head SHA) pairs; the highest id
-# wins if the check was re-run on this head (latest attempt is the truth).
+if [ -n "$SNAPSHOT_BROKEN" ]; then
+  VERDICT="UNPARSEABLE"
+elif [ -n "$TOTAL" ] && [ "$FETCHED" -lt "$TOTAL" ]; then
+  unresolvable "check-runs pagination for $REPO_PATH@${PR_SHA:0:7} hit the 20-page cap at $FETCHED of total_count=$TOTAL runs — refusing rather than grading a truncated rollup (issue #566)"
+else
+# ONE decision from the merged pages, filtered to (check name == head SHA)
+# pairs; the highest id wins if the check was re-run on this head (latest
+# attempt is the truth). Pages may straddle a run mid-paging — the id map
+# gives each run exactly one vote.
 # FleetTower issue #1132: when NO run carries the default name, the verdict
 # falls back to the head-wide rollup grade (see the env contract above); an
 # EXPLICIT name never falls back.
-VERDICT="$(printf '%s' "$RUNS_JSON" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
+VERDICT="$(printf '%s' "$RUNS_PAGES" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
 let s = "";
 process.stdin.on("data", (d) => (s += d)).on("end", () => {
-  let j;
-  try { j = JSON.parse(s); } catch { console.log("UNPARSEABLE"); return; }
-  const runs = (j.check_runs || []).filter(
+  let all;
+  try {
+    all = s.split("\u0001").filter((p) => p.trim().length).map((p) => {
+      const j = JSON.parse(p);
+      if (!Array.isArray(j.check_runs)) throw new Error("page without check_runs");
+      return j.check_runs;
+    }).flat();
+  } catch { console.log("UNPARSEABLE"); return; }
+  const byId = new Map();
+  for (const r of all) byId.set(r.id, r);
+  const runs = [...byId.values()].filter(
     (r) => r.head_sha === process.env.MERGE_GUARD_SHA,
   );
   const named = runs.filter((r) => r.name === process.env.MERGE_GUARD_CHECK);
@@ -155,6 +212,7 @@ process.stdin.on("data", (d) => (s += d)).on("end", () => {
   if (reds.length) { console.log("ROLLUPRED " + detail); return; }
   console.log("ABSENT " + detail);
 });')"
+fi
 
 # Independent verification (issue #326) — OPT-IN via MERGE_GUARD_VERIFY=on.
 # Consulted ONLY after the gates check is green: the gate-verify channel is
