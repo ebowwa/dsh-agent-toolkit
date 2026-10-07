@@ -36,6 +36,9 @@
 //      explicitly resolved merge-base, deepening exists and is guarded by
 //      the failed lookup (only on failure, bounded budget), and the
 //      empty-diff wording is honest.
+//   5. STRUCTURAL (issue #545): the BASE_TIP read carries --verify (the
+//      #526 garbage-capture class) — a missing origin/base cannot capture
+//      the literal ref name as a non-empty tip past the [ -n ] guards.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -277,4 +280,17 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
     "an empty diff at a resolved fork point is reported as an empty PR");
   assert.match(rp, /could not be diffed at the resolved fork point/,
     "the unavailable wording survives — but only for a diff that actually FAILED");
+  // Issue #545: the BASE_TIP read carries --verify — the #526 garbage-capture
+  // class. A bare rev-parse echoes the literal ref name to stdout and exits
+  // 128 on a missing ref; `|| true` swallows the exit, so a missing
+  // origin/base would capture "origin/base" into BASE_TIP, non-empty garbage
+  // the [ -n "$BASE_TIP" ] guards cannot see through. Latent today (the
+  // FORK_BASE guard resolves only when origin/base exists, and BASE_TIP is
+  // read only inside that arm) — pinned so one re-ordering cannot arm it:
+  // the failure shape would be a false "HAS advanced" basis line instead of
+  // the honest unresolvable arm.
+  assert.match(rp, /BASE_TIP="\$\(git rev-parse --verify origin\/base 2>\/dev\/null \|\| true\)"/,
+    "the BASE_TIP read uses --verify (issue #545): a missing origin/base must land in the unresolvable-basis arm, not capture the literal ref name as a non-empty tip");
+  assert.ok(!/git rev-parse (?!--verify)origin\/base/.test(code),
+    "no bare (un-verified) rev-parse of origin/base remains in review-pr.sh's code (the #526 garbage-capture trap — currently latent, armed by any re-ordering; issue #545)");
 });
