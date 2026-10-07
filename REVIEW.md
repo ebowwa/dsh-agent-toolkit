@@ -103,9 +103,11 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   Overstatement is a blocking defect, same as a bug.
 - Evidence counts are pasted from the run's own summary block, never
   transcribed by hand (issue #433): a PR's "Tests / evidence" section
-  quotes the runner's printed `# tests / # pass / # fail / # skipped`
-  lines (node --test emits them at the end of every run) instead of a
-  hand-written "N/N pass" claim. Hand-transcribed counts describe an
+  quotes the runner's printed summary block — its `tests` / `pass` /
+  `fail` / `skipped` lines (node --test emits them at the end of every
+  run; `#`-prefixed TAP or `ℹ`-prefixed spec, depending on the
+  reporter/node version — issue #556) — instead of a hand-written "N/N
+  pass" claim. Hand-transcribed counts describe an
   earlier revision of the suite — the PR #415 receipt: the merged body
   said 5 pass / 6/6 / 446 where the tree it merged ran 8 tests / 497.
   A count that overstates is a blocking defect under the rule above;
