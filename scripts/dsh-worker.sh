@@ -357,6 +357,71 @@ wt_prune() { # stale worktree metadata (items rm -rf their dirs)
   done
 }
 
+# newest_window_jq <route> <filter> — run <filter> over the route's NEWEST
+# per_page=100 comment window, in at most two gh api calls. The
+# list-comments routes (issues and pulls alike) return ASCENDING — oldest
+# first; `direction` is ignored on this route, measured on issue #100,
+# receipt in #581 — so the first per_page=100 page holds the thread's
+# OLDEST 100 comments, and a first-page-only scan past 100 comments reads
+# the wrong end of the thread (issue #588: trusted_task lost the newest
+# trigger or ran an ANCIENT one as the task; fetch_context served
+# 100-comment-old context and missed every newer dsh:msg). `gh api -i`
+# prints the Link header above the jq result; when rel="last" names a page
+# past 1, that newest page is fetched and filtered by the second call. A
+# failed LAST-page fetch FAILS the helper (nonzero, nothing on stdout):
+# the caller's no-match path is the honest degradation, never a fallback
+# onto page 1's ancient ids. Same scan ack_comment ships (PR #587, issue
+# #581); the filter stays a constant literal passed whole — never
+# interpolated from comment data.
+#
+# Envelope split — the gh 2.95.0 contract (cli/cli pkg/cmd/api/api.go
+# printHeaders): the status line ends LF, every header line AND the blank
+# separator end CRLF, so the real envelope carries `\r\n\r\n` and never
+# `\n\n`. The envelope is captured to a TEMP FILE, never through "$(...)":
+# command substitution strips trailing newlines, and an EMPTY page-1
+# filter result eats the separator's final newline — the split then
+# silently fails exactly when page 1 has no match, the common case on the
+# >100-comment threads this helper exists for. awk splits the file on the
+# first blank line (CRLF or LF blank); a body with no blank line at all is
+# taken as the whole response — a single-page thread.
+newest_window_jq() {
+  local route="$1" filter="$2" respf link last
+  respf="$(mktemp "${TMPDIR:-/tmp}/dsh-newest-window.XXXXXX")" || return 1
+  if ! gh api -i "${route}?per_page=100" --jq "$filter" >"$respf"; then
+    rm -f "$respf"
+    return 1   # gh's stderr already reached the worker log — surfaced, not swallowed
+  fi
+  # awk exits 1 when a blank line (CRLF or LF) exists — the header/body
+  # separator of the -i envelope.
+  if ! awk '$0=="" || $0=="\r" {exit 1}' "$respf"; then
+    link="$(awk 'f{exit} $0=="" || $0=="\r" {f=1; next} {print}' "$respf" \
+      | awk 'tolower($1) == "link:" {sub(/\r$/, ""); sub(/^link:[ \t]*/, ""); print; exit}')"
+    last="$(printf '%s' "$link" | sed -n 's/.*<[^>]*[?&]page=\([0-9][0-9]*\)>; rel="last".*/\1/p')"
+    if [ -z "$last" ]; then
+      last=1
+      if [ -n "$link" ]; then
+        echo "dsh-worker: newest_window_jq on $route — Link header present but no parsable rel=\"last\" page; scanning the first page (issue #588 degradation)" >&2
+      fi
+    fi
+    if [ "$last" -gt 1 ]; then
+      rm -f "$respf"
+      gh api "${route}?per_page=100&page=${last}" --jq "$filter" \
+        || return 1   # page-1 ids are the thread's OLDEST — never fall back onto them
+      return 0
+    fi
+    # The body after the blank line; empty = no match (gh --jq prints
+    # top-level scalars raw and an empty result prints nothing), so the
+    # callers' -s / empty checks read an honest empty, never a stray newline.
+    awk 'f{print; next} $0=="" || $0=="\r" {f=1; next}' "$respf"
+  else
+    # No blank line anywhere: a headerless body (a shim in tests, a
+    # degraded proxy in the field) — the whole response is the page.
+    cat "$respf"
+  fi
+  rm -f "$respf"
+  return 0
+}
+
 # fetch_context <repo> <num> <outdir> — thread context file (title/body +
 # last 8 comments), same shape the CI flow builds. Outdir is REQUIRED (the
 # review round caught the redirect landing on $1/repo instead of the run
@@ -369,14 +434,16 @@ fetch_context() {
       --jq '"title: " + .title + "\nbody (truncated):\n" + ((.body // "")[0:1600])' || true
     echo
     echo "recent comments (last 8, truncated):"
-    gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
-      --jq '.[-8:][] | "- " + .user.login + ": " + ((.body // "") | gsub("[\\r\\n]+"; " ") | .[0:280])' || true
+    newest_window_jq "repos/${repo}/issues/${num}/comments" \
+      '.[-8:][] | "- " + .user.login + ": " + ((.body // "") | gsub("[\\r\\n]+"; " ") | .[0:280])' || true
   } > "$outdir/thread-context.txt" 2>/dev/null || true
   # AGENT MESSAGES: structured dsh:msg comment blocks become a machine
   # section — agent-to-agent communication over the thread (the schema:
   # <!-- dsh:msg from:<id> to:<id|*> type:<kind> --> ... <!-- /dsh:msg -->).
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" --jq '
-    .[] | .body | scan("<!-- dsh:msg[^>]*-->[\\s\\S]*?<!-- /dsh:msg -->") // empty' 2>/dev/null \
+  # Harvested from the NEWEST window (issue #588): page 1 is the thread's
+  # oldest 100, so blocks past the 100-comment cliff were invisible.
+  newest_window_jq "repos/${repo}/issues/${num}/comments" \
+    '.[] | .body | scan("<!-- dsh:msg[^>]*-->[\\s\\S]*?<!-- /dsh:msg -->") // empty' \
     | head -10 > "$outdir/agent-messages.txt" || true
   if [ -s "$outdir/agent-messages.txt" ]; then
     {
@@ -396,17 +463,23 @@ fetch_context() {
 # Trust is always re-derived from the API — never from the label.
 trusted_task() {
   local repo="$1" num="$2" is_pr="$3" out="$4" body issue_json
-  body="$(gh api "repos/${repo}/issues/${num}/comments?per_page=100" --jq '
+  # Both scans read the NEWEST window (issue #588): page 1 is the thread's
+  # OLDEST 100 comments, so past the 100-comment cliff the first-page scan
+  # missed the just-posted trigger (lost dispatch) or matched an ANCIENT
+  # one and ran it as the task (the wrong-task dispatch). A failed
+  # newest-window fetch leaves body empty — the same fallthrough an API
+  # failure takes today, never a fallback onto the ancient ids.
+  body="$(newest_window_jq "repos/${repo}/issues/${num}/comments" '
     [.[] | select(((.body // "") | startswith("/dsh")) or ((.body // "") | contains("@dsh-agent")))
           | select(.user.type != "Bot")
           | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-    ][-1].body // ""' 2>/dev/null || true)"
+    ][-1].body // ""' || true)"
   if [ -z "$body" ] && [ "$is_pr" = "true" ]; then
-    body="$(gh api "repos/${repo}/pulls/${num}/comments?per_page=100" --jq '
+    body="$(newest_window_jq "repos/${repo}/pulls/${num}/comments" '
       [.[] | select(((.body // "") | startswith("/dsh")) or ((.body // "") | contains("@dsh-agent")))
             | select(.user.type != "Bot")
             | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-      ][-1].body // ""' 2>/dev/null || true)"
+      ][-1].body // ""' || true)"
   fi
   if [ -z "$body" ]; then
     # body/title issuance: the ISSUE itself carries the trigger; the issue
