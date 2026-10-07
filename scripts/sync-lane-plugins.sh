@@ -11,9 +11,10 @@
 # Nothing here mounts anything into a lane home; nothing there clones.
 #
 # Usage: sync-lane-plugins.sh [--verify]
-#   --verify  check state only (exit 1 if stale/missing), change nothing
-# Exit: 0 ok · 1 stale/failed (keepalives run this with `|| true` — loud,
-#       never blocking).
+#   --verify  check state only (a missing canonical copy exits 1; a stale
+#             cache only NOTEs), change nothing
+# Exit: 0 ok · 1 only when a canonical copy is missing — stale caches NOTE,
+#       never fail (keepalives run this with `|| true`: loud, never blocking).
 set -uo pipefail
 TK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$TK_ROOT/config/lane-plugins.json"
