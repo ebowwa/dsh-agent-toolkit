@@ -48,7 +48,27 @@
 //     REAL bounded loop (3 attempts, RC surfacing, cleanup) — only the
 //     waits go.
 //
-// Scope note: every rule here is line-based — catch the observed defect
+// Rule 3 — a test that spawns `dsh` directly — the command the dsh
+//     literal in ANY quote form, a dsh-bound alias const, via the async
+//     `spawn` or the execFile family — must be the fast `["--version"]`
+//     presence probe; every real live leg rides the shared bootProbe
+//     (tests/lib/live-boot.mjs), whose retry is what keeps an under-load
+//     starvation red from grading as a defect (issues #594/#595/#600).
+//     The structural pin that held this contract matched ONLY a
+//     double-quoted spawnSync literal, so a single-quoted, template,
+//     alias-command, or async-spawn bare leg re-introduced the starvation
+//     class with the pin green (issue #607, plus the pr#603 review
+//     receipt for the async form); this rule closes the whole
+//     command-position space, corpus-wide, through the same scanner the
+//     pin test uses (tests/lib/dsh-spawn-scan.mjs — one matcher, two
+//     enforcers, no drift). Unlike rules 1-2 this rule is SOURCE-scoped,
+//     not line-based: an alias binding and the spawn that uses it are
+//     different lines by construction. Shapes it cannot see are
+//     documented in the scanner's header (a transitively computed
+//     command path — the stub-executable shape —, the exec/execSync
+//     string forms, a renamed import), not pretended away.
+//
+// Scope note: rules 1-2 are line-based — catch the observed defect
 // class, not the universe. Rule 2 sees a spawn whose command is bash/sh
 // and whose first script argument is the driver path literal or a
 // same-file `const`/`let` initialized from it. Shapes it cannot see are
@@ -65,6 +85,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dshSpawnScan } from "../tests/lib/dsh-spawn-scan.mjs";
 
 /** Ambient-PATH re-inclusion: the assignment composes with the runner's
  * PATH instead of pretending to replace it — sound on every machine. */
@@ -290,6 +311,17 @@ export const lintTests = (text, name) => {
         env === undefined
           ? `${name}:${win.line}: a spawn of ${DRIVER_SCRIPT} passes an env this lint cannot resolve in-file — pin \`DSH_RETRY_BACKOFF_S: "0"\` in the env object this spawn passes, or the driver's failure path walks the production retry backoff (180s+600s) and a failing stub wedges the suite past any spawn budget until spawnSync kills the driver (status null; gates runs 34748403843, 34788769043, 34795917609, 34803136058).`
           : `${name}:${win.line}: a spawn of ${DRIVER_SCRIPT} (${scriptArg}) does not pin DSH_RETRY_BACKOFF_S — the driver's failure path walks the production retry backoff (180s+600s), so a failing stub wedges the suite past any spawn budget until spawnSync kills the driver (status null; gates runs 34748403843, 34788769043, 34795917609, 34803136058). Set \`DSH_RETRY_BACKOFF_S: "0"\` in the env this spawn passes: it keeps the REAL bounded loop (3 attempts, RC surfacing, cleanup) and removes only the waits.`,
+    });
+  }
+
+  // --- rule 3: a bare dsh command spawn must be the --version probe ---
+  // Shared scanner with the pin test (tests/live-boot-probe.test.mjs) —
+  // one matcher, two enforcers, no drift (issue #607).
+  for (const site of dshSpawnScan(text)) {
+    if (site.versionProbe) continue;
+    errors.push({
+      line: site.line,
+      message: `${name}:${site.line}: a test spawns dsh directly (command ${site.command}) instead of riding bootProbe — a live leg outside tests/lib/live-boot.mjs re-introduces the under-load starvation class the probe exists for (an empty-output termination with no retry; issues #594/#595/#600). The structural pin matched only a double-quoted spawnSync literal, so the single-quoted, template, dsh-bound-alias, and async-spawn spellings all went through with the pin green (issue #607) — this rule covers the whole command-position space (spawnSync, spawn, execFileSync, execFile; both quote forms and a template; an alias const). Route the leg through bootProbe, or, for a presence skip-gate, use the ["--version"] probe argv.`,
     });
   }
   return errors;

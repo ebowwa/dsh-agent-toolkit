@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bootProbe, starvedBoot } from "./lib/live-boot.mjs";
+import { dshSpawnScan } from "./lib/dsh-spawn-scan.mjs";
 
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -143,45 +144,121 @@ test("sanity: the stub mechanism spawns at all in this environment", () => {
   }
 });
 
-// The live legs must RIDE the probe (issue #595): a bare spawnSync("dsh")
-// live leg re-introduces the under-load starvation red this helper exists
-// for. The only bare dsh spawnSync a mount suite may carry is the fast
-// `--version` presence probe (sub-second, no load exposure) — every real
-// leg (boot AND dump-config) goes through bootProbe, whose retry is already
-// pinned above.
-test("the live legs ride the probe — no bare spawnSync(\"dsh\") in the mount suites (issue #595)", () => {
+// The live legs must RIDE the probe (issue #595): a bare live leg — any
+// spawn/spawnSync/execFile-family call whose command is the dsh literal
+// (either quote form or a template) or a dsh-bound alias const —
+// re-introduces the under-load starvation red this helper exists for.
+// The only bare dsh command a mount suite may carry is the fast
+// `["--version"]` presence probe (sub-second, no load exposure) — every
+// real leg (boot AND dump-config) goes through bootProbe, whose retry is
+// already pinned above. The match is the shared widened scanner
+// (tests/lib/dsh-spawn-scan.mjs): the original double-quoted-spawnSync-
+// only pin let single-quoted, alias-const, and async forms through with
+// the pin green (issue #607), so the allowed shape is enforced in
+// symmetric form — the one bare site must BE a --version probe.
+test("the live legs ride the probe — no bare dsh command spawn in the mount suites (issue #595)", () => {
   for (const f of ["session-query-mount.test.mjs", "search-compose-mount.test.mjs"]) {
     const src = readFileSync(join(TESTS_DIR, f), "utf8");
     assert.match(src, /import \{ bootProbe \} from "\.\/lib\/live-boot\.mjs"/, `${f} imports the shared probe`);
-    const bare = [...src.matchAll(/spawnSync\(\s*"dsh"/g)];
+    const sites = dshSpawnScan(src);
     assert.equal(
-      bare.length,
+      sites.length,
       1,
-      `${f}: only the --version presence probe may spawn dsh bare (found ${bare.length} bare spawnSync("dsh") — the live legs go through bootProbe, issue #595)`,
+      `${f}: only the --version presence probe may spawn dsh bare (found ${sites.length} bare dsh command spawns — the live legs go through bootProbe, issue #595)`,
+    );
+    assert.equal(
+      sites[0].versionProbe,
+      true,
+      `${f}: the one bare dsh spawn must be the ["--version"] presence probe (got: ${sites[0].command} — every real leg rides bootProbe, issue #595)`,
     );
   }
 });
 
 // run-dsh-agent's live legs ride the probe too (issue #600): both dump
 // shapes (--dump-config, --dump-default-config) and all three
-// stamped-overlay boots. The mount suites' exactly-one pin above does not
-// transfer as-is — this file skip-gates FOUR tests on the `--version`
-// presence probe (sub-second, no load exposure), so the budget here is
-// SHAPE-based, not count-based: every bare spawnSync("dsh") in the file
-// must be a ["--version"] probe, and the file must import the shared
-// probe. A future bare-spawnSync live leg (single-line OR multi-line
-// formatted — the receipt #600's own grep initially missed the multi-line
-// --dump-config leg for exactly that reason) reds here, offline.
+// stamped-overlay boots. The mount suites' exactly-one pin above does
+// not transfer as-is — this file skip-gates FOUR tests on the
+// `--version` presence probe — so the budget here is SHAPE-based, not
+// count-based: every bare dsh command spawn in the file must be a
+// ["--version"] probe, and the file must import the shared probe. The
+// scan is the shared widened scanner (tests/lib/dsh-spawn-scan.mjs), so
+// a future bare-spawnSync live leg reds here, offline, in ANY of the
+// spellings the original double-quoted-only pin missed — single-quoted,
+// template, alias-const command, async spawn, execFile family (the
+// #600 receipt: a multi-line form first slipped one grep; #607's
+// receipt: the quote-form/variable/async space slipped the whole pin).
 test("the live legs ride the probe — run-dsh-agent's bare dsh spawns are only its --version skip gates (issue #600)", () => {
   const f = "run-dsh-agent.test.mjs";
   const src = readFileSync(join(TESTS_DIR, f), "utf8");
   assert.match(src, /import \{ bootProbe \} from "\.\/lib\/live-boot\.mjs"/, `${f} imports the shared probe`);
-  const bare = [...src.matchAll(/spawnSync\(\s*"dsh"/g)];
-  const versionProbes = [...src.matchAll(/spawnSync\(\s*"dsh"\s*,\s*\["--version"\]/g)];
-  assert.equal(
-    bare.length,
-    versionProbes.length,
-    `${f}: only the --version presence probes may spawn dsh bare (found ${bare.length} bare spawnSync("dsh"), ${versionProbes.length} of them --version probes — the live legs go through bootProbe, issue #600)`,
+  const sites = dshSpawnScan(src);
+  const live = sites.filter((s) => !s.versionProbe);
+  assert.deepEqual(
+    live,
+    [],
+    `${f}: only the --version presence probes may spawn dsh bare (found ${live.length} live-leg-shaped bare dsh command spawn(s): ${live.map((s) => `${s.command} @ line ${s.line}`).join(", ")} — the live legs go through bootProbe, issue #600)`,
   );
-  assert.ok(bare.length > 0, `${f} still skip-gates on the --version presence probe (the gate itself must not vanish)`);
+  assert.ok(sites.length > 0, `${f} still skip-gates on the --version presence probe (the gate itself must not vanish)`);
+});
+
+// The widened scanner's own negative controls — issue #607's acceptance
+// criteria, run offline against text (no fixture file is written, no dsh
+// is spawned). Each evasion spelling the original double-quoted-only pin
+// missed must scan as a bare NON-probe dsh site, and the sanctioned
+// shapes must stay clean. The fixtures ride the `leg()` assembler so no
+// source line of THIS file carries the spawn-head-+-dsh-command
+// adjacency that the corpus lint (tests-lint rule 3) hunts: the pieces
+// are clean; only their runtime join is the defect.
+const LIVE_ARGV = '["--profile", "headless", "reply ok"]';
+const leg = (head, cmd, argv) => `${head}(${cmd}, ${argv}, { encoding: "utf8" });`;
+
+test("negative controls: every evasion spelling the old pin missed now scans as a live leg (issue #607)", () => {
+  const forms = [
+    ["single-quoted command (the issue's exact repro form)", leg("spawnSync", "'dsh'", LIVE_ARGV)],
+    ["template-literal command", leg("spawnSync", "`dsh`", LIVE_ARGV)],
+    ["async spawn (the pr#603 review receipt)", leg("spawn", '"dsh"', LIVE_ARGV)],
+    ["execFileSync (the sync execFile family)", leg("execFileSync", '"dsh"', LIVE_ARGV)],
+    ["dsh-bound alias const, sync form", 'const DSH = "dsh";\n' + leg("spawnSync", "DSH", LIVE_ARGV)],
+    ["dsh-bound alias const, async form", 'const DSH = "dsh";\n' + leg("spawn", "DSH", LIVE_ARGV)],
+    ["dsh-bound alias const, execFile form", 'const dshBin = `dsh`;\n' + leg("execFile", "dshBin", LIVE_ARGV)],
+  ];
+  for (const [name, fixture] of forms) {
+    const sites = dshSpawnScan(fixture);
+    assert.equal(sites.length, 1, `${name}: exactly one bare dsh site`);
+    assert.equal(sites[0].versionProbe, false, `${name}: it is NOT the sanctioned --version probe — the shape invariant reds`);
+  }
+});
+
+test("negative control on the real source: a single-quoted bare leg appended to run-dsh-agent's text reds the shape pin (issue #607 repro)", () => {
+  const f = "run-dsh-agent.test.mjs";
+  const src = readFileSync(join(TESTS_DIR, f), "utf8");
+  const before = dshSpawnScan(src);
+  assert.ok(before.length > 0, "baseline: the file still carries its --version gates");
+  assert.ok(before.every((s) => s.versionProbe), "baseline: unmodified, every bare dsh site is a --version probe");
+  const after = dshSpawnScan(`${src}\n${leg("spawnSync", "'dsh'", LIVE_ARGV)}`);
+  assert.equal(
+    after.filter((s) => !s.versionProbe).length,
+    1,
+    "the appended single-quoted bare leg is a live leg — the shape invariant reds where the old pin stayed green (8/8 on the original)",
+  );
+});
+
+test("sanctioned shapes stay clean: bootProbe legs, stub paths, non-dsh commands, dead comment text", () => {
+  assert.deepEqual(
+    dshSpawnScan('const { boot } = bootProbe({ command: "dsh", args: ["--dump-config"] });'),
+    [],
+    "bootProbe's command option is the sanctioned leg — not a bare spawn",
+  );
+  assert.deepEqual(
+    dshSpawnScan('spawnSync(join(bin, "dsh"), ["--dump-config"]);'),
+    [],
+    "a transitively computed stub path is out of the matcher's reach (documented) — a stub executable is not a live leg",
+  );
+  assert.deepEqual(dshSpawnScan('spawn("sh", ["-c", "exit 0"], { stdio: "ignore" });'), [], "non-dsh commands never mint sites");
+  assert.deepEqual(dshSpawnScan("// spawnSync('dsh', [\"--dump-config\"]);"), [], "commented text is dead");
+  assert.deepEqual(
+    dshSpawnScan('const DSH = "dsh";\nconst present = spawnSync(DSH, ["--version"]).status === 0;'),
+    [{ line: 2, command: "DSH", versionProbe: true }],
+    "an alias-command --version probe is the sanctioned shape, in symmetric form",
+  );
 });

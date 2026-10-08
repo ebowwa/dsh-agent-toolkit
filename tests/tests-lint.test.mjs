@@ -278,6 +278,56 @@ test("a comment-only driver mention does not arm the rule", () => {
   assert.deepEqual(lintTests(source, "commentonly.test.mjs"), []);
 });
 
+// --- rule 3: a bare dsh command spawn rides bootProbe or is the probe ---
+//
+// Regression anchor: issue #607. The structural pins that held the
+// no-bare-live-leg contract matched ONLY a double-quoted spawnSync
+// literal, so a single-quoted, template, dsh-bound-alias, or async-spawn
+// bare leg re-introduced the #594/#595/#600 starvation class with the
+// pin green (the issue's own repro: an appended single-quoted bare leg,
+// 8/8 pass on the original pins). Rule 3 closes the command-position
+// space corpus-wide through the shared scanner
+// (tests/lib/dsh-spawn-scan.mjs) — one matcher with the pin test, no
+// drift. The fixtures below are assembled from pieces whose source lines
+// are themselves clean: the corpus scan scans THIS file too, and a
+// plainly-written bare leg here would trip the very rule these pins
+// prove.
+const R3_QUOTE_DSH = "'" + "dsh" + "'";
+const R3_ALIAS_CMD = "DSH" + "2";
+const R3_DEFECT = [`const stale = spawnSync(${R3_QUOTE_DSH}, ["--dump-config"]);`].join("\n");
+const R3_ALIAS_DEFECT = [
+  `const ${R3_ALIAS_CMD} = "dsh";`,
+  `spawnSync(${R3_ALIAS_CMD}, ["--dump-default-config"]);`,
+].join("\n");
+
+test("rule 3: a single-quoted bare dsh leg is flagged — the form the old pin missed (issue #607)", () => {
+  const errors = lintTests(R3_DEFECT, "bare.test.mjs");
+  assert.equal(errors.length, 1, `stderr-ish: ${JSON.stringify(errors)}`);
+  assert.equal(errors[0].line, 1);
+  assert.match(errors[0].message, /bootProbe/);
+  assert.match(errors[0].message, /issue #607/);
+});
+
+test("rule 3: a dsh-bound alias command is flagged too (the variable-command evasion)", () => {
+  const errors = lintTests(R3_ALIAS_DEFECT, "alias.test.mjs");
+  assert.equal(errors.length, 1, `stderr-ish: ${JSON.stringify(errors)}`);
+  assert.equal(errors[0].line, 2, "the error names the SPAWN line, not the binding line");
+  assert.match(errors[0].message, /DSH2/);
+});
+
+test("rule 3: the sanctioned shapes stay green — probes in every spelling, bootProbe legs, stub paths, dead text", () => {
+  const source = [
+    `const present = spawnSync("dsh", ["--version"]).status === 0;`,
+    `const DSH = "dsh";`,
+    `const gate = spawnSync(DSH, ['--version']).status !== 0;`,
+    `const { boot } = bootProbe({ command: "dsh", args: ["--dump-config"] });`,
+    `spawnSync(path.join(bin, "dsh"), ["--dump-config"]);`,
+    `spawn("sh", ["-c", "exit 0"], { stdio: "ignore" });`,
+    `// spawnSync('dsh', ["--dump-config"]);`,
+  ].join("\n");
+  assert.deepEqual(lintTests(source, "probe.test.mjs"), []);
+});
+
 test("all shipped test files lint clean (revert guard)", () => {
   const files = readdirSync(TESTS_DIR).filter((f) => f.endsWith(".mjs"));
   assert.ok(files.length > 0, "corpus scan found no test files — wrong directory?");
