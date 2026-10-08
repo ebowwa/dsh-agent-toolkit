@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync, copyFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -380,4 +380,111 @@ test("consult: system-prompt — live engine merges the marker block; operator t
     assert.ok(refused.some((l) => l.startsWith("SKIP\tmac-reflex-prompt") && /marker block/.test(l)), "unmarked template skips loud");
     assert.ok(!readFileSync(target, "utf8").includes("v3"), "unmarked template writes nothing");
   });
+});
+
+// --- sync-lane-plugins.sh --verify (issue #548) ------------------------------
+// The VERIFY arm's ref read was a bare `git rev-parse "$SRC_REF"`: on an
+// unresolvable ref it echoes the LITERAL ref name to stdout (stderr
+// suppressed, exit status unused inside $()) while the preceding
+// `diff --quiet "$SRC_REF"` fails for the same missing-ref reason — together
+// the "cache not at $SRC_REF" NOTE fired off garbage, not a comparison (the
+// #526/#545 garbage-capture class). The pin: the NOTE fires only when
+// SRC_REF actually resolves AND the cache sits elsewhere; an unresolvable
+// ref prints no NOTE; the NOTE never sets FAIL (keepalives run --verify
+// `|| true` — loud, never blocking).
+
+function git(dir, ...args) {
+  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+}
+
+function commitAll(dir, msg) {
+  git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A");
+  git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg);
+}
+
+function runSyncVerify(script, home) {
+  return spawnSync("bash", [script, "--verify"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  });
+}
+
+test("sync --verify: NOTE fires only off a real comparison — an unresolvable SRC_REF prints no NOTE (issue #548)", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-sync-"));
+  const home = join(d, "home");
+  const scriptDir = join(d, "scripts");
+  const configDir = join(d, "config");
+  mkdirSync(scriptDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  const script = join(scriptDir, "sync-lane-plugins.sh");
+  copyFileSync(join(ROOT, "scripts", "sync-lane-plugins.sh"), script);
+  chmodSync(script, 0o755);
+  const manifest = join(configDir, "lane-plugins.json");
+
+  // three independent cache repos (the cache path derives from SRC_REPO),
+  // each with two commits touching the synced path p/
+  const cacheFor = (repo) => join(home, ".dsh-plugin-cache", repo.replace(/\//g, "__"));
+  const makeCache = (repo) => {
+    const cache = cacheFor(repo);
+    mkdirSync(join(cache, "p"), { recursive: true });
+    git(cache, "init", "-q");
+    git(cache, "config", "user.email", "t@t");
+    git(cache, "config", "user.name", "t");
+    writeFileSync(join(cache, "p", "f.txt"), "v1\n");
+    commitAll(cache, "c1");
+    const sha1 = git(cache, "rev-parse", "HEAD").trim();
+    writeFileSync(join(cache, "p", "f.txt"), "v2\n");
+    commitAll(cache, "c2");
+    return sha1;
+  };
+  const shaAtRef = makeCache("x/at-ref");
+  const shaBehind = makeCache("x/behind");
+  makeCache("x/bad-ref");
+  git(cacheFor("x/at-ref"), "checkout", "-q", shaAtRef); // HEAD == pinned ref: fresh
+  git(cacheFor("x/behind"), "checkout", "-q", "main"); // HEAD past the pin: stale
+  // x_bad-ref stays at main — its manifest ref (refs/heads/no-such-ref) resolves nowhere
+
+  const destFor = (name) => join(d, "canonical", name);
+  for (const name of ["at-ref", "behind", "bad-ref"]) {
+    mkdirSync(destFor(name), { recursive: true });
+    writeFileSync(join(destFor(name), "package.json"), JSON.stringify({ name: `@local/${name}`, version: "0.0.0-test" }));
+  }
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      macos: [
+        { id: "at-ref", seam: "plugin", nodes: ["*"], source: { repo: "x/at-ref", path: "p", ref: shaAtRef }, canonical_dest: destFor("at-ref") },
+        { id: "behind", seam: "plugin", nodes: ["*"], source: { repo: "x/behind", path: "p", ref: shaBehind }, canonical_dest: destFor("behind") },
+        { id: "bad-ref", seam: "plugin", nodes: ["*"], source: { repo: "x/bad-ref", path: "p", ref: "refs/heads/no-such-ref" }, canonical_dest: destFor("bad-ref") },
+      ],
+    })
+  );
+
+  const r = runSyncVerify(script, home);
+  assert.equal(r.status, 0, `verify exits clean (a NOTE never FAILs), got: ${r.status} stderr=${r.stderr}`);
+  const notes = r.stderr.split("\n").filter((l) => l.includes("VERIFY NOTE"));
+  assert.equal(notes.length, 1, `exactly the meaningful NOTE fired, got: ${JSON.stringify(r.stderr)}`);
+  assert.ok(notes[0].includes(shaBehind), "the stale cache's NOTE names its pinned sha");
+  assert.ok(!r.stderr.includes("no-such-ref"), "the unresolvable ref produced no NOTE (was: the literal ref echoed back as the comparison operand)");
+});
+
+test("sync --verify: missing canonical copy is still a loud FAIL (exit 1) — unchanged verdict path", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-sync-"));
+  const home = join(d, "home");
+  const scriptDir = join(d, "scripts");
+  const configDir = join(d, "config");
+  mkdirSync(scriptDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  const script = join(scriptDir, "sync-lane-plugins.sh");
+  copyFileSync(join(ROOT, "scripts", "sync-lane-plugins.sh"), script);
+  chmodSync(script, 0o755);
+  writeFileSync(
+    join(configDir, "lane-plugins.json"),
+    JSON.stringify({
+      macos: [{ id: "gone", seam: "plugin", nodes: ["*"], source: { repo: "x/gone", path: "p", ref: "d4f0213d31975ea55113de04103a4d91adef4e22" }, canonical_dest: join(d, "canonical", "gone") }],
+    })
+  );
+  const r = runSyncVerify(script, home);
+  assert.equal(r.status, 1, `missing dest FAILs loud, got: ${r.status}`);
+  assert.ok(r.stderr.includes("VERIFY FAIL"), "FAIL names the missing dest");
 });
