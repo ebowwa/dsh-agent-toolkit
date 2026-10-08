@@ -67,6 +67,26 @@ const HERMETIC_ENV = (() => {
   return env;
 })();
 
+// The live-leg `skip:` gates below read ONE shared presence probe
+// (issue #601): four inline `spawnSync("dsh", ["--version"])` gates — one
+// per gated test, each evaluated at file load — were the #598 wedge class
+// one file over: a bare spawnSync waits indefinitely, so a wedged dsh
+// install (a broken shell shim, a hung first-run path) wedged this FILE at
+// load — no assertion reds, no file-level result — until the OUTER budget
+// killed it unnamed (the #423 wedge class). 30s is still ~60x the quiet
+// wall of a `--version`, and one budgeted probe replaces four bare ones.
+const DSH_PROBE = spawnSync("dsh", ["--version"], { timeout: 30_000 });
+const DSH_PRESENT = DSH_PROBE.status === 0;
+// A wedge (the probe died on a signal at/below the budget: status null +
+// signal) is treated as ABSENT — the live legs must still skip — but the
+// skip reason NAMES the wedge: the skip reason is the diagnostic (the
+// mount suites' #598 shape). False when present: the gates must run.
+const DSH_SKIP = DSH_PRESENT
+  ? false
+  : DSH_PROBE.status === null && DSH_PROBE.signal
+    ? `the dsh --version presence probe terminated on signal ${DSH_PROBE.signal} (30s budget) — a wedged or crashing dsh install; treating dsh as absent and skipping the live legs (issue #601: box state, and the named skip is the diagnostic)`
+    : "dsh is absent";
+
 // Extract one shell function from the script by name (sed range from the
 // `name()` definition line to the closing brace at column 0).
 const extractFunction = (name) =>
@@ -944,7 +964,7 @@ test("DSH_SUBAGENT_MODEL without provider/model fails closed before any launch",
   assert.equal(args, "", "dsh must never be launched on a malformed override");
 });
 
-test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5-turbo" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped");
@@ -1063,7 +1083,7 @@ test("DSH_SUBAGENT_MODEL rejects YAML metacharacters and malformed shapes before
 // credential lookup, so with no API key in env it dies fast at credential
 // resolution — and reaching that step IS the pass condition. Skipped when
 // the dsh CLI is absent (lanes without it keep the stub-level coverage).
-test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5.2" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
@@ -1111,7 +1131,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
 // settings.yaml applies to the booted tree (a --dump-config cannot show
 // it: it prints layer views without resolving them). Skipped when the dsh
 // CLI is absent.
-test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   // Children overridden to a provider DIFFERENT from settings' zai so the
   // two halves are distinguishable in the credential-resolution error.
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "opencode-go2/deepseek-v4-flash" });
@@ -1392,7 +1412,7 @@ test("DSH_WEB_SEARCH_BROWSER_BROWSERS pins the browser list into the overlay; me
 // with no credentials in env the run must die at credential resolution —
 // reaching that step proves the restated web/tool-web rows and the
 // insert-listed @local provider tree all passed the real plugins' validation.
-test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "dsh-web-boot-"));
   const { home } = runLauncher(WEB_BASE(makePluginCopy(dir)));
   const overlay = path.join(home, "web-search-browser.patch.yml");
