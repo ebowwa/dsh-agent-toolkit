@@ -21,6 +21,13 @@
 // owner-marker belt (`.dsh-workdir-owner` stamped at mint, verified
 // before each edit batch).
 //
+// Rule 4 (tower#1859, 2026-10-08) is the protocol one level down: a
+// scratch file a POSTED artifact is read back from must be minted random
+// too — two same-box faces drafting `gh pr comment --body-file` bodies
+// at one fixed /tmp name cross-posted each other's drafts under the
+// shared node identity; the head -1 subject-line belt stops a
+// mismatched-body post.
+//
 // Two surfaces, one protocol — these fixtures pin BOTH and keep them in
 // agreement (the shape mirrors tests/branch-hygiene-contract.test.mjs):
 //
@@ -148,8 +155,22 @@ test("issues #333/#374: the prompt assembly appends the workdir-hygiene contract
   assert.match(task, /before each edit batch, re-check the marker matches YOUR session/);
   assert.match(task, /a takeover in progress: stop, do not edit, file it, mint fresh/);
 
+  // Rule 4 — the scratch mint (tower#1859): the posted-artifact body file
+  // is minted random and its subject line is belted in the post chain:
+  assert.match(task, /MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM \(tower#1859\)/);
+  assert.match(task, /mktemp "\$\{TMPDIR:-\/tmp\}\/dsh-<claim>-f1-XXXXXX"/);
+  // trailing-X only: a suffix after the Xs makes macOS mktemp exit 0 while
+  // it mints the LITERAL name (Darwin 25.5.0 probe) — the false-mint recipe
+  // must not ride in the stamped task
+  assert.match(task, /The Xs must be TRAILING/);
+  assert.doesNotMatch(task, /dsh-<claim>-f1-XXXXXX\.md/);
+  assert.match(task, /head -1 "\$body_file"/);
+  assert.match(task, /a mismatched subject line stops the post/);
+  assert.match(task, /cross-post each other's drafts under the shared node identity/);
+
   // The acceptance sentence (three layers, zero shared worktrees):
   assert.match(task, /Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree/);
+  assert.match(task, /between its compose and its post \(scratch mint, tower#1859\)/);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -203,9 +224,14 @@ const WORKDIR_RULES = [
     /3\. THE OWNER-MARKER BELT — at mint, stamp ownership/,
     /\*\*THE OWNER-MARKER BELT\*\* — mint stamps ownership, edit batches verify/,
   ],
+  [
+    "MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM",
+    /4\. MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM \(tower#1859\)/,
+    /\*\*MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM\*\*/,
+  ],
 ];
 
-test("issues #333/#374: driver and contract doc both carry the three rules", () => {
+test("issues #333/#374: driver and contract doc both carry the four rules", () => {
   // The driver stamp lives inside a double-quoted shell string, so the
   // recipe's quotes and dollars are backslash-escaped IN SOURCE and
   // expand to their plain forms in the launched task; the contract doc
@@ -228,6 +254,13 @@ test("issues #333/#374: driver and contract doc both carry the three rules", () 
     assert.match(surface, /NEVER via glob reuse \(`?ls -d work-<issue>-\* \| head -1`?\)/i);
     assert.match(surface, /\.dsh-workdir-owner/);
     assert.match(surface, /structurally impossible collisions/i);
+    // rule 4 (tower#1859): the scratch mint + the subject-line belt —
+    // trailing Xs only (a suffix after them mints the LITERAL name on
+    // macOS, exit 0), so the .md-suffixed recipe is banned on both surfaces
+    assert.match(surface, /mktemp "\$\{TMPDIR:-\/tmp\}\/dsh-<claim>-f1-XXXXXX"/);
+    assert.doesNotMatch(surface, /dsh-<claim>-f1-XXXXXX\.md/);
+    assert.match(surface, /head -1 "\$/); // "$F" in the doc, "$body_file" in the driver
+    assert.match(surface, /mismatched subject line stops the post/);
   }
 });
 

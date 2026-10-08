@@ -492,6 +492,11 @@ Acceptance — zero orphans: at exit, every branch the session pushed is in exac
 # silently replaced the first agent's confirmed edits mid-session (#374).
 # The concurrent-maintenance wave (factory#869: 14 identical-prompt agents
 # on one box) makes same-second mints the normal case, not the tail.
+# tower#1859 extends the protocol one level down (rule 4): a scratch file
+# a POSTED artifact is read back from is minted random too — a fixed /tmp
+# name cross-posts sibling drafts under the shared node identity. The Xs
+# must be TRAILING: a suffix after them makes macOS mktemp exit 0 while it
+# mints the LITERAL name — a false mint no subject-line belt catches.
 # Static repo-controlled prose, appended after the input scrub pass and
 # before the launch line below. Long-form reference + receipts:
 # .agents/README.md; fixtures: tests/workdir-collision-contract.test.mjs.
@@ -501,7 +506,8 @@ AGENT CONTRACT — workdir hygiene (issues #333, #374): a workdir is yours only 
 1. MINT A RANDOM WORKDIR PER CLAIM — a timestamp is NOT uniqueness: workdir=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/dsh-<repo>-XXXXXX\")\" (a \$HOME-anchored census dir works the same way: mktemp -d \"\$HOME/dsh-node/work-<issue>-<repo>-XXXXXX\"). The bare \$(date +%s) suffix is banned — same-issue siblings collide inside one second (the #327 branch-mint lesson, applied to directories); the shared-path recipe rm -rf /tmp/<repo> && gh repo clone ... is banned outright — rm -rf is legal only inside a dir YOUR session minted.
 2. RE-ENTER ONLY A PATH YOU RECORDED — a workdir is re-entered via the exact path your own session minted and recorded, NEVER via glob reuse (ls -d work-<issue>-* | head -1): a matching dir can be a sibling's live tree at ANY time, and landing there silently replaces your edits mid-session. A dir you did not mint is not yours.
 3. THE OWNER-MARKER BELT — at mint, stamp ownership: printf 'session=%s\nclaim=%s\n' \"\$\$\" \"\$ISSUE\" > \"\$workdir/.dsh-workdir-owner\"; before each edit batch, re-check the marker matches YOUR session. A tree whose marker is not yours — or a dir you didn't mint, marker or not — is a takeover in progress: stop, do not edit, file it, mint fresh.
-Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree — neither names a path the other could guess (random mint), neither lands in a dir the other minted (recorded-path re-entry), and any takeover that slips those rules is detected before the next edit batch (owner marker)."
+4. MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM (tower#1859) — the same rule one level down: every temp file a posted artifact is composed into and read back from (gh pr comment / gh pr review / gh issue comment --body-file) is minted with mktemp, never a fixed name: body_file=\"\$(mktemp \"\${TMPDIR:-/tmp}/dsh-<claim>-f1-XXXXXX\")\" — and belt the post: [ \"\$(head -1 \"\$body_file\")\" = '<intended first line>' ] && gh pr comment <N> --body-file \"\$body_file\" (a mismatched subject line stops the post). The Xs must be TRAILING: a suffix after them (an .md extension) makes macOS mktemp exit 0 while it mints the LITERAL name — a false mint the belt cannot catch. Two same-box faces drafting at one fixed /tmp name cross-post each other's drafts under the shared node identity.
+Acceptance — structurally impossible collisions: two same-box siblings working the same issue never share a worktree — neither names a path the other could guess (random mint), neither lands in a dir the other minted (recorded-path re-entry), and any takeover that slips those rules is detected before the next edit batch (owner marker); and no sibling can swap a posted artifact's content between its compose and its post (scratch mint, tower#1859)."
 
 # Per-job harness home by default: two runner lanes on one machine MUST NOT
 # share $DSH_HOME (settings regeneration on one lane would race an in-flight
