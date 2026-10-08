@@ -409,15 +409,50 @@ agents on one box). The contract:
    not — is a takeover in progress: stop, do not edit, file it, mint
    fresh. This is the belt for rule 2's suspenders: it catches the reuse
    vectors no naming discipline can close.
+4. **MINT EVERY SCRATCH FILE A POSTED ARTIFACT IS READ BACK FROM**
+   (tower#1859) — the same rule one level down: it is not only clone
+   targets that must be unguessable, it is every scratch file a posted
+   artifact is composed into and read back from (`gh pr comment`,
+   `gh pr review`, `gh issue comment` with `--body-file`). A body draft
+   at a predictable shared path (`/tmp/f1.md`, `/tmp/verdict.md`,
+   `/tmp/comment.md` …) is a cross-face write hazard the moment two
+   faces work one box: between the loser's write and the loser's read,
+   the sibling's write wins, and the loser's post ships the sibling's
+   draft under the SHARED node identity onto a live human-read thread —
+   the measured collision posted a sibling's terminal-detail finding as
+   another PR's review record (ebowwa/FleetTower#1859, 2026-10-08).
+   Mint the body with `mktemp`, and belt the post by reading its
+   subject line back in the same `&&` chain:
+
+   ```bash
+   F="$(mktemp "${TMPDIR:-/tmp}/dsh-<claim>-f1-XXXXXX")"
+   # ...compose the body into "$F"...
+   [ "$(head -1 "$F")" = '<intended first line>' ] \
+     && gh pr comment <N> --body-file "$F"
+   ```
+
+   The Xs in the mint must be TRAILING. A suffix after them (the
+   `.md`-suffixed shape) is a FALSE MINT on the mac lane: mktemp
+   exits 0 and creates the LITERAL name (probed on Darwin 25.5.0,
+   `mktemp d/probe-XXXXXX.md` → rc=0, `probe-XXXXXX.md` on disk) —
+   a fully guessable fixed path the belt cannot catch, because both
+   faces read a valid subject line from the same fixed file. No
+   extension is needed: `gh --body-file` does not care.
+
+   A mismatched subject line stops the post. Even without the
+   comparison, `head -1 "$F"` belongs in the chain — the transcript
+   then carries the posted subject beside the comment URL, so a
+   wrong-file post is one scroll away from visible.
 
 **Acceptance — structurally impossible collisions:** two same-box
 siblings working the same issue can never share a worktree — neither
 names a path the other could guess (random mint), neither lands in a dir
 the other minted (recorded-path re-entry), and any takeover that slips
 the first two rules is detected before the next edit batch (owner
-marker). The prompt assembly stamps this contract into every task it
-builds too (structural + behavioral pins:
-`tests/workdir-collision-contract.test.mjs`).
+marker); and no sibling can swap a posted artifact's content between
+its compose and its post (scratch mint, tower#1859). The prompt
+assembly stamps this contract into every task it builds too (structural
++ behavioral pins: `tests/workdir-collision-contract.test.mjs`).
 
 ## Why this exists
 
