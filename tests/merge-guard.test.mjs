@@ -488,6 +488,59 @@ test("guard source: the snapshot pages with per_page=100 and follows total_count
   );
 });
 
+// --- 2c. the exhaustion backstop: unique ids must cover total_count (issue #627)
+
+test("guard: duplicated pages grade a strict subset — refuses instead of ANYGREEN (issue #627)", (t) => {
+  // The issue's hermetic repro: both pages claim total_count 150, page 2
+  // re-serves ids 1..50 of page 1's 100. FETCHED (raw page lengths) reaches
+  // 150 and the loop stops, but only 100 unique runs exist — and the 50
+  // never-served ids (101..150) are exactly where the issue parks a red no
+  // page can serve. The id map holds 100 of the claimed 150: the verdict
+  // must refuse BEFORE grading, not pass ANYGREEN on the served subset.
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(1, 50)],
+  });
+  assert.equal(res.status, 2, `a duplicated-page snapshot must refuse unresolvable (stdout: ${res.stdout})`);
+  assert.match(res.stderr, /unresolvable/);
+  assert.match(res.stderr, /truncated rollup/, "the refusal carries the cap's own wording");
+  assert.match(res.stderr, /unique=100 claimed=150/, "the refusal names the shortfall it found");
+  assert.doesNotMatch(res.stdout, /GREEN/, "no green may print for a partial rollup");
+});
+
+test("guard: a shifted page with an overlapping window refuses too (issue #627)", (t) => {
+  // Shift, not duplication: a run inserted mid-snapshot moves the window, so
+  // page 2 re-serves ids 51..150 while both pages claim total_count 200 —
+  // FETCHED reaches 200 over only 150 unique ids, and 50 claimed runs were
+  // never served by any page. Same refusal: the id map is the only proof of
+  // coverage, and raw page arithmetic cannot provide it.
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(51, 100)],
+  });
+  assert.equal(res.status, 2, `a shifted-page snapshot must refuse unresolvable (stdout: ${res.stdout})`);
+  assert.match(res.stderr, /unresolvable/);
+  assert.match(res.stderr, /unique=150 claimed=200/);
+});
+
+test("guard: the truncation backstop outranks a green named 'gates' on the served pages (issue #627)", (t) => {
+  // The check fires BEFORE the named/rollup split: a partial snapshot cannot
+  // grade the head by ANY verdict, not even a named success it happens to
+  // hold — the unserved tail is exactly where a named red would hide.
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [[...foreignLegs(1, 99), leg({ id: 100, name: "gates" })], foreignLegs(1, 50)],
+  });
+  assert.equal(res.status, 2, `truncation must outrank the named green (stdout: ${res.stdout})`);
+  assert.match(res.stderr, /truncated rollup/);
+  assert.doesNotMatch(res.stdout, /GREEN/);
+});
+
+test("guard source: the verdict script receives total_count and refuses a unique-id shortfall (issue #627)", () => {
+  const src = readFileSync(GUARD, "utf8");
+  assert.match(src, /MERGE_GUARD_TOTAL="\$TOTAL"/, "the verdict must be handed the snapshot's claimed total");
+  assert.match(src, /byId\.size < claimed/, "the unique-id count must be compared against the claim");
+  assert.match(src, /TRUNCATED unique=/, "the shortfall is a typed verdict, not a silent pass");
+  assert.match(src, /refusing rather than grading a truncated rollup \(issue #627\)/, "the refusal wording is pinned");
+});
+
 // --- 3. fail-closed on unresolvable states ----------------------------------
 
 test("guard: unresolvable PR refuses (exit 2), never passes", (t) => {

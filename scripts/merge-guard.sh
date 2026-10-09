@@ -24,6 +24,14 @@
 # the same single decision, and the guard never re-fetches to look for a
 # newer verdict.
 #
+# The exhaustion arithmetic has a backstop (issue #627): FETCHED sums raw
+# per-page lengths, so pages that overlap or shift mid-snapshot (a check
+# run deleted/re-run between two page fetches, a proxy re-serving a page)
+# can reach total_count while the merged id map holds a strict subset of
+# the runs — the verdict therefore compares UNIQUE id count against
+# total_count and refuses unresolvable on a shortfall, in the cap's own
+# words: refusing rather than grading a truncated rollup.
+#
 # Usage:
 #   merge-guard.sh check [pr-number|url|branch]   exit 0 iff green; refuse 1/2
 #   merge-guard.sh merge [gh pr merge args...]    check, then exec gh pr merge
@@ -178,7 +186,7 @@ else
 # FleetTower issue #1132: when NO run carries the default name, the verdict
 # falls back to the head-wide rollup grade (see the env contract above); an
 # EXPLICIT name never falls back.
-VERDICT="$(printf '%s' "$RUNS_PAGES" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
+VERDICT="$(printf '%s' "$RUNS_PAGES" | MERGE_GUARD_TOTAL="$TOTAL" MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
 let s = "";
 process.stdin.on("data", (d) => (s += d)).on("end", () => {
   let all;
@@ -191,6 +199,15 @@ process.stdin.on("data", (d) => (s += d)).on("end", () => {
   } catch { console.log("UNPARSEABLE"); return; }
   const byId = new Map();
   for (const r of all) byId.set(r.id, r);
+  // issue #627: FETCHED counts raw page entries; only the UNIQUE count of
+  // the id map can prove the snapshot covered total_count. A shortfall
+  // means the pages overlapped or shifted mid-snapshot (a run deleted or
+  // re-run between fetches, a proxy re-serving a page) — grade nothing.
+  const claimed = Number(process.env.MERGE_GUARD_TOTAL);
+  if (Number.isFinite(claimed) && byId.size < claimed) {
+    console.log("TRUNCATED unique=" + byId.size + " claimed=" + claimed);
+    return;
+  }
   const runs = [...byId.values()].filter(
     (r) => r.head_sha === process.env.MERGE_GUARD_SHA,
   );
@@ -249,6 +266,8 @@ case "$VERDICT" in
     ;;
   ROLLUPRED\ *)
     refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM and the head carries red check run(s): ${VERDICT#ROLLUPRED } — a red head is not a green one (the #784 class); if the red job is advisory and a green sibling is the real gate, assert it explicitly with MERGE_GUARD_CHECK=<green job> — an explicit name never falls back (FleetTower issue #1132)";;
+  TRUNCATED\ *)
+    unresolvable "check-runs snapshot for PR #$PR_NUM head ${PR_SHA:0:7} covered only ${VERDICT#TRUNCATED } — pages overlapped or shifted mid-snapshot and FETCHED arithmetic reached total_count over a strict subset of runs; refusing rather than grading a truncated rollup (issue #627)";;
   UNPARSEABLE)
     unresolvable "check-runs response for PR #$PR_NUM head ${PR_SHA:0:7} did not parse — refusing rather than trusting an unreadable rollup (issue #434)";;
   NAMED\ *)
