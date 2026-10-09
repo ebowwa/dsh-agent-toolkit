@@ -31,9 +31,24 @@ test("run-dsh-agent.sh still parses (bash -n)", () => {
   assert.equal(spawnSync("bash", ["-n", DRIVER]).status, 0);
 });
 
-test("the driver exports DSH_FACE_ID when absent, never overrides a minted one", () => {
-  assert.match(SRC, /if \[ -z "\$\{DSH_FACE_ID:-\}" \]; then/);
+test("the driver exports the resolved face into BOTH namespaces, never overrides an injected one (issue #614)", () => {
+  assert.match(
+    SRC,
+    /if \[ -z "\$\{DSH_FACE_ID:-\}" \] && \[ -z "\$\{DISPATCH_FACE_ID:-\}" \]; then/,
+    "the mint fires only when BOTH namespaces are empty — an injected DISPATCH_FACE_ID must never fall through to the pid fallback",
+  );
+  assert.match(
+    SRC,
+    /DSH_FACE_ID="\$\{DISPATCH_FACE_ID:-\$\{DSH_FACE_ID:-\}\}"/,
+    "injection outranks the operator ambient var (bin/face-lock's own precedence)",
+  );
+  assert.match(
+    SRC,
+    /DISPATCH_FACE_ID="\$\{DSH_FACE_ID\}"/,
+    "the resolved face is mirrored into the injected namespace",
+  );
   assert.match(SRC, /export DSH_FACE_ID\n?$/m);
+  assert.match(SRC, /export DISPATCH_FACE_ID\n?$/m);
 });
 
 test("derivation order: session id first, user-p<driver pid> fallback", () => {
@@ -75,6 +90,34 @@ test("the seam mints user-p<driver pid> and never overrides an existing face", (
   assert.equal(
     run({ PATH: process.env.PATH, DSH_FACE_ID: "sess-node-minted", DSH_SESSION_ID: "session-abc" }),
     "sess-node-minted",
+  );
+});
+
+test("the both-namespaces rule (issue #614): the injected DISPATCH_FACE_ID adopts without minting; both namespaces carry ONE resolved face", () => {
+  // bash owns $$ — pin it for the extraction run (the seam itself is
+  // unchanged in the driver source).
+  const block = seamBlock().replace(/-p\$\$/, "-p85681");
+  const runBoth = (env) =>
+    spawnSync("bash", ["-c", `${block}\nprintf "%s %s" "$DSH_FACE_ID" "$DISPATCH_FACE_ID"`], {
+      env,
+      encoding: "utf8",
+    }).stdout;
+  // injected namespace only: adopted verbatim — the pid fallback must NOT
+  // fire (the FleetTower#2047 walked-up-face class)
+  assert.equal(
+    runBoth({ PATH: process.env.PATH, DSH_USER: "ebowwa", DISPATCH_FACE_ID: "sess-node-injected" }),
+    "sess-node-injected sess-node-injected",
+  );
+  // both ambient, divergent: injection outranks the operator ambient var
+  // (bin/face-lock's identity precedence, issue ebowwa/FleetTower#1771)
+  assert.equal(
+    runBoth({ PATH: process.env.PATH, DSH_FACE_ID: "ambient-stale", DISPATCH_FACE_ID: "sess-node-injected" }),
+    "sess-node-injected sess-node-injected",
+  );
+  // operator ambient only: mirrored into the injected namespace, not dropped
+  assert.equal(
+    runBoth({ PATH: process.env.PATH, DSH_FACE_ID: "sess-node-minted" }),
+    "sess-node-minted sess-node-minted",
   );
 });
 
