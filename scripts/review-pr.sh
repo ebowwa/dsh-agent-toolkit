@@ -306,9 +306,11 @@ POST_BODY="$(mktemp)"
 # the driver's meta (this review's own run) supplies the harness version
 DSH_META_FILE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}/dsh-run-meta.env"
 DSH_RUN_DSH_VERSION=""
+DSH_RUN_HARNESS_SHA=""
 [ -f "$DSH_META_FILE" ] && . "$DSH_META_FILE"
 {
-  echo "**dsh review (worker)** — run: ${DSH_RUN_ID:-_} — model: ${DSH_REVIEW_MODEL} — harness: dsh-${DSH_RUN_DSH_VERSION:-?}"
+  # wrapper= carries the spawning checkout's sha (issue #616)
+  echo "**dsh review (worker)** — run: ${DSH_RUN_ID:-_} — model: ${DSH_REVIEW_MODEL} — harness: dsh-${DSH_RUN_DSH_VERSION:-?} — wrapper: ${DSH_RUN_HARNESS_SHA:-unknown}"
   echo
 } > "$POST_BODY"
 # OUTPUT surface (review comment): default mode redacts date shapes —
