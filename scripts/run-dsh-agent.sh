@@ -32,7 +32,12 @@
 #                         driver's OWN pid: concurrent sibling drivers of
 #                         one parent mint distinct faces, issue #278);
 #                         fresh per launch, stable for its lifetime,
-#                         children inherit
+#                         children inherit. The node-injected
+#                         DISPATCH_FACE_ID namespace (FleetTower#1629)
+#                         outranks it — bin/face-lock's own precedence —
+#                         and the resolved face is mirrored into BOTH
+#                         namespaces (issue #614), so every child resolves
+#                         ONE face whichever var it reads.
 #   DSH_WEB_SEARCH_CELLS  comma-separated runner names where the local
 #                         web-search-browser provider is mounted (per-cell
 #                         adoption; unset/empty = off everywhere). Requires the
@@ -746,14 +751,26 @@ export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 # class this identity exists to close), stable for the driver's
 # lifetime, the same fallback shape bin/face-lock's defaultFace mints
 # for bare shells.
-if [ -z "${DSH_FACE_ID:-}" ]; then
+if [ -z "${DSH_FACE_ID:-}" ] && [ -z "${DISPATCH_FACE_ID:-}" ]; then
   if [ -n "${DSH_SESSION_ID:-}" ]; then
     DSH_FACE_ID="$DSH_SESSION_ID"
   else
     DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p$$"
   fi
-  export DSH_FACE_ID
 fi
+# BOTH-NAMESPACES RULE (FleetTower#1629/#1771, issue #614): the node
+# injects the sanitizer-proof DISPATCH_FACE_ID session namespace, and
+# bin/face-lock's identity precedence is DISPATCH_FACE_ID ||
+# DSH_FACE_ID — injection outranks the operator ambient var by design.
+# This derivation knew only DSH_FACE_ID, so a node whose injected face
+# was the ONLY one present fell through to the pid-fallback mint — the
+# walked-up foreign-face class FleetTower#2047 diagnosed on the open
+# lane. The resolved face is mirrored into BOTH namespaces, so every
+# child of this driver resolves ONE face whichever var it reads.
+DSH_FACE_ID="${DISPATCH_FACE_ID:-${DSH_FACE_ID:-}}"
+DISPATCH_FACE_ID="${DSH_FACE_ID}"
+export DSH_FACE_ID
+export DISPATCH_FACE_ID
 DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 
 echo "::group::dsh setup" >&2
