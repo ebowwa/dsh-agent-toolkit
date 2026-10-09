@@ -91,10 +91,11 @@ pr_field() { # <json> <field> — the field value; "" when the json is not JSON 
     try { v = JSON.parse(s)[process.argv[1]]; } catch { v = ""; }
     process.stdout.write(v === null || v === undefined ? "" : String(v));' "$2" 2>/dev/null || true
 }
-PR_JSON="$(gh pr view "$PR_NUM" --repo "$DSH_SHIP_REPO" --json baseRefName,headRefName,title 2>/dev/null || true)"
+PR_JSON="$(gh pr view "$PR_NUM" --repo "$DSH_SHIP_REPO" --json baseRefName,headRefName,headRefOid,title 2>/dev/null || true)"
 [ -n "$PR_JSON" ] || { echo "review-pr: cannot read PR #$PR_NUM in $DSH_SHIP_REPO" >&2; exit 2; }
 BASE_REF="$(pr_field "$PR_JSON" baseRefName)"
 HEAD_REF="$(pr_field "$PR_JSON" headRefName)"
+HEAD_OID="$(pr_field "$PR_JSON" headRefOid)"
 PR_TITLE="$(pr_field "$PR_JSON" title)"
 [ -n "$BASE_REF" ] && [ -n "$HEAD_REF" ] || { echo "review-pr: PR #$PR_NUM has no base/head" >&2; exit 2; }
 
@@ -236,6 +237,35 @@ GATES="$(gh pr checks "$PR_NUM" --repo "$DSH_SHIP_REPO" 2>/dev/null | head -n 15
 VERIFY="$(node "$DSH_AGENT_TOOLKIT_DIR/scripts/pr-verification.mjs" "$PR_NUM" 2>/dev/null || true)"
 [ -n "$VERIFY" ] || VERIFY="none"
 
+# Hollow-carrier check (issue #565): a PR whose head OID is ALSO another
+# open PR's head OID carries ZERO own delta — the claim branch stacked
+# byte-identical on its parent's head (the PR #564 receipt), so the diff
+# above grades the PARENT's content and any completion the PR claims is
+# unexecuted. Surfaced as a CLAIM the reviewer checks (the markers' shape):
+# a failed lookup degrades to "unavailable" — it never fails the review;
+# the shipper's mint-time refusal (ship-changes.sh, exit 4) is the
+# deterministic refuse arm.
+HOLLOW_CARRIER="unavailable (open-PR head lookup failed)"
+if [ -n "$HEAD_OID" ]; then
+  PR_LIST_JSON="$(gh pr list --repo "$DSH_SHIP_REPO" --state open --limit 200 --json number,headRefOid 2>/dev/null || true)"
+  HOLLOW_CARRIER="$(printf '%s' "$PR_LIST_JSON" | HOLLOW_HEAD="$HEAD_OID" HOLLOW_PR="$PR_NUM" node -e '
+    let s = "";
+    try { s = require("fs").readFileSync(0, "utf8"); } catch {}
+    let out = "unavailable (open-PR head lookup failed)";
+    try {
+      const list = JSON.parse(s);
+      if (Array.isArray(list)) {
+        const shared = list
+          .filter((p) => p && p.headRefOid === process.env.HOLLOW_HEAD
+            && String(p.number) !== String(process.env.HOLLOW_PR))
+          .map((p) => "#" + p.number);
+        out = shared.length ? shared.join(", ") : "none";
+      }
+    } catch {}
+    process.stdout.write(out);' 2>/dev/null || true)"
+  [ -n "$HOLLOW_CARRIER" ] || HOLLOW_CARRIER="unavailable (open-PR head lookup failed)"
+fi
+
 # 3. Compose the review task (env-borne, never raw interpolation).
 TASK_FILE="$(mktemp)"
 cat > "$TASK_FILE" <<EOF
@@ -264,6 +294,14 @@ A gate-verify marker is another agent's CLAIM that it ran the gates on
 this PR — check it against the diff and the checks above; a claim you
 cannot reproduce is a finding, and no marker ever substitutes for your
 own verdict.
+
+Hollow-carrier check (issue #565):
+$HOLLOW_CARRIER
+If this names other open PR(s), this PR's head OID equals theirs — the PR
+carries ZERO own delta (a hollow ship, the PR #564 receipt): the diff above
+is the OTHER PR's unmerged content, the claim's own work is absent, and
+any completion this PR claims is unexecuted. That is a blocking honesty
+finding. "unavailable" means the lookup failed — say so, judge without it.
 
 Review for correctness ("no swallowed exits", fail-closed scrubbing, tests
 that actually construct what they claim), workflow discipline, and honesty

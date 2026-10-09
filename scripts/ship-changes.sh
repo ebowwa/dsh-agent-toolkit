@@ -54,6 +54,10 @@
 #                           (mapped to DSH_SCRUB_EXTRA_HOSTS like the driver
 #                           does).
 #
+# Exit codes: 0 shipped/nothing to ship; 2 bad caller context (no repo /
+# no worktree); 3 fail-closed scrub abort (issue #162); 4 HOLLOW SHIP
+# refused (issue #565) — a minted PR would have carried zero own delta.
+#
 # BEFORE-state files the CALLER must have captured before the agent ran
 # (identical to the workflow's old inline capture):
 #   $DSH_SHIP_CACHE/dsh-before-sha            HEAD before the run
@@ -111,6 +115,9 @@ NOTE=""
 # initialized here because `set -u` reads it on every exit path (the tail
 # turns it into exit 3), including the paths that never reach the ship block.
 SHIP_SCRUB_FAILED=""
+# Hollow-ship flag (issue #565): set when a would-be minted PR carries zero
+# own delta; the tail turns it into exit 4 (same set -u reasoning as above).
+HOLLOW_FOUND=""
 
 # ship_milestone <pr-num> <gh-pr-create args...>: milestone carry (issue
 # #185) — a shipped PR inherits the CLOSING TICKET's milestone (milestones
@@ -223,6 +230,30 @@ freshness_preflight() {
   fi
 }
 
+# hollow_ship <branch>: the hollow-ship invariant (issue #565) — a claim
+# branch whose tip TREE equals the session's BEFORE-state tree carries ZERO
+# own delta. The worker checks each task out at its base ref before the run
+# (dsh-worker.sh: origin/taskbase), so the captured dsh-before-sha IS the
+# stacking parent's head; a branch whose tip tree still equals it would
+# mint a PR that grades the PARENT's content — green CI on the parent's
+# unmerged work while the claim's own receipts stay unexecuted (the PR #564
+# receipt: head byte-identical to PR #562's head, DONE posted anyway).
+# Such a mint is REFUSED: no push, no PR, and the run fails loudly (exit 4
+# at the tail) so the retry ladder re-runs the claim instead of grading the
+# parent's content twice. Degrade-safe: a missing/unreadable dsh-before-sha
+# or an unresolvable tree is NEVER hollow — the cache FILE is the only
+# trusted source (the $BEFORE_SHA fallback above is post-run HEAD and would
+# trivially equal a real branch tip), and the guard must never fail a real
+# ship on missing before-state.
+hollow_ship() { # <branch> — exit 0 iff the branch is a hollow ship
+  local b="$1" before tip_t before_t
+  before="$(cat "$DSH_SHIP_CACHE/dsh-before-sha" 2>/dev/null || true)"
+  [ -n "$before" ] || return 1
+  tip_t="$(git rev-parse "$b^{tree}" 2>/dev/null || true)"
+  before_t="$(git rev-parse "$before^{tree}" 2>/dev/null || true)"
+  [ -n "$tip_t" ] && [ -n "$before_t" ] && [ "$tip_t" = "$before_t" ]
+}
+
 # open_pr <head-branch> <title> <gh pr create args...>: create the PR and
 # dispatch its review with the same degrade-or-loud treatment as the
 # relay/reply guards — gh missing is a ::warning:: plus a precise ship note
@@ -291,6 +322,15 @@ fi
 
 for B in $(git for-each-ref refs/heads/dsh --format='%(refname:short)'); do
   if ! grep -qx "$B" "$DSH_SHIP_CACHE/dsh-after-dsh-branches" 2>/dev/null; then
+    # Hollow-ship refusal (issue #565): BEFORE the push — refusing after it
+    # would strand a pushed-but-PR-less branch (the open_pr gh-unavailable
+    # trap's cousin, and a branch-hygiene leak).
+    if hollow_ship "$B"; then
+      echo "::warning::HOLLOW SHIP refused for $B: tip tree == the session's before-state tree — zero own delta; branch NOT pushed, NO PR opened (issue #565)" >&2
+      NOTE="${NOTE:+$NOTE; }HOLLOW SHIP refused: $B carries zero own delta vs the session start tree (issue #565)"
+      HOLLOW_FOUND=1
+      continue
+    fi
     if git push -u origin "$B" 2>&1; then
       NOTE="${NOTE:+$NOTE; }$(open_pr "$B" "dsh: ${DSH_TASK_TITLE:-$B}" \
         --body "Automated PR from agent run ${DSH_RUN_ID} (branch pushed by shipper).${DSH_STAMP:+
@@ -345,7 +385,15 @@ if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
       git add -A -- . ':!.dsh-agent-toolkit'
       git commit -m "dsh: automated ship of agent run ${DSH_RUN_ID}" ${DSH_STAMP:+-m "$DSH_STAMP"} --allow-empty 2>/dev/null || true
     fi
-    if git push -u origin "$BRANCH" 2>&1; then
+    # Hollow-ship refusal (issue #565), auto path: commits ahead of the
+    # before-state whose NET tree is unchanged (the empty-commit class) mint
+    # a zero-own-delta PR exactly like the stacked-branch case. Refused
+    # BEFORE the push, same reasoning as the agent-branch arm above.
+    if hollow_ship "$BRANCH"; then
+      echo "::warning::HOLLOW SHIP refused for $BRANCH: tip tree == the session's before-state tree — zero own delta; branch NOT pushed, NO PR opened (issue #565)" >&2
+      NOTE="${NOTE:+$NOTE; }HOLLOW SHIP refused: $BRANCH carries zero own delta vs the session start tree (issue #565)"
+      HOLLOW_FOUND=1
+    elif git push -u origin "$BRANCH" 2>&1; then
       {
         echo "Automated PR from **dsh agent** run ${DSH_RUN_ID}."
         echo
@@ -389,3 +437,10 @@ fi
 # the worker already treats a nonzero shipper as loud, and a green job that
 # silently failed to ship is the defect class this closes.
 [ -z "$SHIP_SCRUB_FAILED" ] || exit 3
+
+# Hollow-ship refusal (issue #565): the refusal is FATAL for the run — the
+# worker already logs a nonzero shipper loudly, and the retry ladder re-runs
+# the claim; a green run here would let DONE post behind a PR that grades
+# the parent's content twice (the PR #564 class). Exit 4 is distinct from
+# the scrub abort's 3 so the two degradations never read as each other.
+[ -z "$HOLLOW_FOUND" ] || exit 4
