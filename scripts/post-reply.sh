@@ -74,7 +74,11 @@ DSH_META_FILE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}/dsh-run-meta.env"
 DSH_STAMP="dsh-agent"
 if [ -f "$DSH_META_FILE" ]; then
   . "$DSH_META_FILE"
-  DSH_STAMP="model: ${DSH_RUN_MODEL:-?} · harness: dsh-${DSH_RUN_DSH_VERSION:-?}"
+  # wrapper= carries the spawning checkout's sha (issue #616): the npm dsh
+  # version is the CLI; the wrapper sha is the checkout that spawned the
+  # session — a stale wrapper reads as a mystery behavior difference
+  # unless the artifact itself answers it.
+  DSH_STAMP="model: ${DSH_RUN_MODEL:-?} · harness: dsh-${DSH_RUN_DSH_VERSION:-?} · wrapper: ${DSH_RUN_HARNESS_SHA:-unknown}"
 fi
 {
   echo "**dsh agent** — run: ${DSH_RUN_ID:-_} — lane: ${DSH_RUNNER_NAME:-unknown} — ${DSH_STAMP}"

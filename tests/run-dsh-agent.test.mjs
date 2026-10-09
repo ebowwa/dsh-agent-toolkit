@@ -64,6 +64,12 @@ const HERMETIC_ENV = (() => {
     if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
   }
   env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
+  // the harness-drift arm (issue #616) defaults ON at boot — one real
+  // compare (a network round trip against origin) per driver spawn. These
+  // tests pin driver behavior, not the arm's remote verdict, so the suite
+  // stays hermetic and network-free; the arm itself is pinned by
+  // tests/harness-drift.test.mjs (real git, local bare origins).
+  env.DSH_HARNESS_DRIFT = "0";
   return env;
 })();
 

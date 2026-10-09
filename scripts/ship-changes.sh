@@ -86,7 +86,9 @@ DSH_META_FILE="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-/tmp}}/dsh-run-meta.env"
 DSH_STAMP=""
 if [ -f "$DSH_META_FILE" ]; then
   . "$DSH_META_FILE"
-  DSH_STAMP="dsh-agent-toolkit: model=${DSH_RUN_MODEL:-?} harness=dsh-${DSH_RUN_DSH_VERSION:-?} run=${DSH_RUN_ID:-_}"
+  # wrapper= carries the spawning checkout's sha (issue #616) — a stale
+  # wrapper must be answerable from the commit it shipped, not from ssh.
+  DSH_STAMP="dsh-agent-toolkit: model=${DSH_RUN_MODEL:-?} harness=dsh-${DSH_RUN_DSH_VERSION:-?} wrapper=${DSH_RUN_HARNESS_SHA:-unknown} run=${DSH_RUN_ID:-_}"
 fi
 
 # gh may sit outside the runner service PATH on self-hosted cells (secondsee
