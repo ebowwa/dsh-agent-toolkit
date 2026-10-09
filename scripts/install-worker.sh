@@ -4,6 +4,14 @@
 # self-register-factory pattern: a workflow may install a persistent
 # per-user service; cron keepalive needs no sudo).
 #
+# A node that runs the driver WITHOUT this installer (the Hermes-profile
+# macOS cells — sessions spawn from the standing driver, no worker sweep)
+# still needs the re-pin half, or its deployment checkout drifts behind
+# the releases forever (FleetTower issue #2109: 221 commits / ~11 days
+# stale). For those, scripts/arm-re-pin.sh arms ONLY the guarded re-pin —
+# launchd on darwin, markered cron on linux — with no worker sweep and no
+# env file.
+#
 # What it installs:
 #   1. the toolkit checkout (clone if absent) at $DSH_AGENT_TOOLKIT_INSTALL_DIR
 #      (default ~/dsh-agent-toolkit);
