@@ -67,6 +67,11 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   printf 'x\\n' >> "$MG_STUB_DIR/api-count"
+  page="$(printf '%s' "$2" | sed -n 's/.*[?&]page=\\([0-9][0-9]*\\).*/\\1/p')"
+  if [ -n "$page" ] && [ -f "$MG_STUB_DIR/check-runs-page$page.json" ]; then
+    cat "$MG_STUB_DIR/check-runs-page$page.json"
+    exit 0
+  fi
   cat "$MG_STUB_DIR/check-runs.json"
   exit 0
 fi
@@ -93,6 +98,32 @@ const setLegs = (dir, legs) =>
   writeFileSync(path.join(dir, "check-runs.json"),
     JSON.stringify({ total_count: legs.length, check_runs: legs }));
 
+/** Serve a MULTI-PAGE snapshot (issue #566): pages[0] is page 1
+ *  (check-runs.json), pages[N] is check-runs-page(N+1).json. total_count is
+ *  always the FULL leg count across pages, so the guard's follow-total_count
+ *  loop must keep fetching until every page is served. */
+const setSplitLegs = (dir, pages) => {
+  const total = pages.reduce((n, legs) => n + legs.length, 0);
+  pages.forEach((legs, i) => {
+    const body = JSON.stringify({ total_count: total, check_runs: legs });
+    if (i === 0) writeFileSync(path.join(dir, "check-runs.json"), body);
+    else writeFileSync(path.join(dir, `check-runs-page${i + 1}.json`), body);
+  });
+};
+
+/** Raw page body override (for malformed-page pins). */
+const setPageRaw = (dir, page, text) =>
+  writeFileSync(
+    page === 1 ? path.join(dir, "check-runs.json") : path.join(dir, `check-runs-page${page}.json`),
+    text,
+  );
+
+/** N distinct foreign-name legs starting at id `from` — never named `gates`,
+ *  so the head-wide rollup path grades them (the #1132 fallback shape). */
+const foreignLegs = (from, count, over = {}) =>
+  Array.from({ length: count }, (_, i) =>
+    leg({ id: from + i, name: `ci-job-${from + i}`, ...over }));
+
 const ghLog = (dir) => readFileSync(path.join(dir, "gh.log"), "utf8").split("\n").filter(Boolean);
 const apiCalls = (dir) => ghLog(dir).filter((l) => l.startsWith("api ")).length;
 const mergeCapture = (dir) =>
@@ -101,9 +132,11 @@ const mergeCapture = (dir) =>
     : null;
 
 /** Run the guard in `mode` with `args` against a fixture dir. */
-const runGuard = (t, mode, args, { legs = [], env = {} } = {}) => {
+const runGuard = (t, mode, args, { legs = [], pages = null, rawPages = null, env = {} } = {}) => {
   const dir = fixture(t);
-  setLegs(dir, legs);
+  if (pages) setSplitLegs(dir, pages);
+  else setLegs(dir, legs);
+  for (const [p, text] of Object.entries(rawPages ?? {})) setPageRaw(dir, Number(p), text);
   const baseEnv = {
     ...process.env,
     MG_STUB_DIR: dir,
@@ -368,6 +401,113 @@ test("guard source: no sleep/poll loop anywhere in the guard", () => {
   assert.doesNotMatch(src, /\bsleep\b/, "the guard must not sleep");
   assert.doesNotMatch(src, /\bwhile\s+true\b/, "the guard must not loop until green");
   assert.match(src, /ONE snapshot/, "the guard still documents its one-shot contract");
+});
+
+// --- 2b. the paging contract: follow total_count before grading (issue #566) -
+
+test("guard: a red beyond page 1 refuses — page-1 greens never pass ANYGREEN (issue #566)", (t) => {
+  // The receipt: the endpoint defaults to per_page=30 and the guard graded
+  // page 1 alone, so a head carrying 100 greens on page 1 and a red on page
+  // 2 merged on ANYGREEN. The snapshot must be paged to exhaustion BEFORE
+  // the rollup — the red on page 2 must refuse the merge.
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    pages: [
+      foreignLegs(1, 100),
+      [...foreignLegs(101, 50), leg({ id: 999, name: "the-red-job", conclusion: "failure" })],
+    ],
+  });
+  assert.equal(res.status, 1, `a page-2 red must refuse (stdout: ${res.stdout})`);
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /the-red-job/, "the refusal must name the red it found on the later page");
+});
+
+test("guard: a NAMED 'gates' failure beyond page 1 gates the merge (issue #566)", (t) => {
+  // The named path had the same exposure: a 'gates' red on page 2 was
+  // invisible to a page-1-only read, which then graded the page-1 siblings
+  // and passed ANYGREEN. The named check must be found wherever it pages.
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [
+      foreignLegs(1, 100),
+      [...foreignLegs(101, 50), leg({ id: 999, name: "gates", conclusion: "failure" })],
+    ],
+  });
+  assert.equal(res.status, 1, `a page-2 'gates' red must refuse (stdout: ${res.stdout})`);
+  assert.match(res.stderr, /NOT green/);
+  assert.match(res.stderr, /failure/);
+});
+
+test("guard: a NAMED 'gates' success beyond page 1 is GREEN (issue #566)", (t) => {
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [
+      foreignLegs(1, 100),
+      [...foreignLegs(101, 50), leg({ id: 999, name: "gates" })],
+    ],
+  });
+  assert.equal(res.status, 0, `a page-2 'gates' green must pass (stderr: ${res.stderr})`);
+  assert.match(res.stdout, /GREEN — 'gates' completed\/success/);
+});
+
+test("guard: pages with per_page=100 until total_count is covered, then stops (issue #566)", (t) => {
+  // 150 legs cannot fit one 100-run page: the guard must fetch exactly two
+  // pages — per_page=100 on every call, page=2 for the second, and NO
+  // page=3 once total_count is covered (paging to exhaustion is not
+  // endless fetching, and never a poll).
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(101, 50)],
+  });
+  assert.equal(res.status, 0, `an all-green paged head must pass (stderr: ${res.stderr})`);
+  assert.match(res.stdout, /GREEN/);
+  const api = ghLog(dir).filter((l) => l.startsWith("api "));
+  assert.equal(api.length, 2, `exactly two pages for 150 runs (log: ${ghLog(dir).join(" | ")})`);
+  assert.ok(api.every((l) => l.includes("per_page=100")), "every page fetch requests per_page=100");
+  assert.ok(api[0].includes("page=1"), "the first fetch is page 1");
+  assert.ok(api[1].includes("page=2"), "the second fetch is page 2");
+  assert.ok(!api.some((l) => l.includes("page=3")), "no fetch beyond total_count coverage");
+});
+
+test("guard: an unparseable later page refuses unresolvable — fail-closed mid-paging (issue #566)", (t) => {
+  // Page 1 parses (total_count 150) but page 2 is garbage: the guard must
+  // not grade the 100 parsable runs — an unreadable page is an unreadable
+  // rollup, and refusing is the safe direction (REVIEW.md's fail-closed
+  // rule, applied per page).
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(101, 50)],
+    rawPages: { 2: "gateway error: not json" },
+  });
+  assert.equal(res.status, 2, `stderr: ${res.stderr}`);
+  assert.match(res.stderr, /did not parse/);
+});
+
+test("guard: a page without its check-runs array is malformed — fail-closed (issue #566)", (t) => {
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(101, 50)],
+    rawPages: { 2: JSON.stringify({ total_count: 150 }) },
+  });
+  assert.equal(res.status, 2, `stderr: ${res.stderr}`);
+  assert.match(res.stderr, /did not parse/);
+});
+
+test("guard: an empty page while total_count claims more refuses (issue #566)", (t) => {
+  // total_count says 150 but page 2 serves nothing — a truncated snapshot
+  // must refuse rather than grade 100/150 runs.
+  const { res } = runGuard(t, "check", ["434"], {
+    pages: [foreignLegs(1, 100), foreignLegs(101, 50)],
+    rawPages: { 2: JSON.stringify({ total_count: 150, check_runs: [] }) },
+  });
+  assert.equal(res.status, 2, `stderr: ${res.stderr}`);
+  assert.match(res.stderr, /stopped short/);
+});
+
+test("guard source: the snapshot pages with per_page=100 and follows total_count (issue #566)", () => {
+  const src = readFileSync(GUARD, "utf8");
+  assert.match(src, /per_page=100/, "the check-runs fetch must request a full page");
+  assert.match(src, /total_count/, "the fetch loop must follow total_count");
+  assert.match(src, /PAGED to exhaustion/, "the paged snapshot contract is documented");
+  assert.doesNotMatch(
+    src,
+    /check-runs"/,
+    "no unpaged check-runs call may remain (the endpoint defaults to per_page=30)",
+  );
 });
 
 // --- 3. fail-closed on unresolvable states ----------------------------------
