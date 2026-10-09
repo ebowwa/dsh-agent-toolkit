@@ -116,7 +116,7 @@ cat > "${store}"
 };
 
 const runArm = (args, env) =>
-  spawnSync("bash", [SCRIPT, ...args], {
+  spawnSync("/bin/bash", [SCRIPT, ...args], {
     encoding: "utf8",
     env: { ...HERMETIC_ENV, ...env },
   });
@@ -219,7 +219,11 @@ test("linux arm installs exactly one markered cron line; re-arm does not duplica
 test("linux arm fails typed when flock is missing (exit 3, the installer's typed provisioning failure)", () => {
   const tk = toolkitFixture();
   const f = shimFixture({ noFlock: true });
-  const r = runArm([tk.box], linuxEnv(f));
+  // The shim dir is the ONLY PATH entry: a Linux cell carries a real
+  // system flock further down the ambient PATH (the CI red that shaped
+  // this pin), so "missing" must mean absent from the whole search path
+  // the script sees — not merely absent from the shim dir.
+  const r = runArm([tk.box], { ...linuxEnv(f), PATH: f.shim });
   assert.equal(r.status, 3);
   assert.match(r.stderr, /flock \(util-linux\) required/);
   rmSync(f.dir, { recursive: true, force: true });
