@@ -28,9 +28,13 @@
 # Both arms are IDEMPOTENT: re-running replaces this arm's own unit/line
 # (label / marker matched) and never duplicates. After arming, the guarded
 # re-pin runs ONCE synchronously and its exit contract is reported (0
-# pinned / 3 refused — live work in the checkout, the keepalive keeps
-# refusing until cleaned / 4 degraded — network or checkout failure, the
-# keepalive retries next interval). A refused/degraded FIRST pin does NOT
+# pinned / 3 refused — the checkout carries live work (tracked
+# modifications, or an untracked file whose path the pin tracks), the
+# keepalive keeps refusing until the tree is committed or cleaned / 4
+# degraded — a fetch, checkout, or stamp failure, the keepalive retries
+# next interval). A clean tree on a WORKING BRANCH is not a refusal: the
+# keepalive converges it onto the pin, loudly (issues #614/#639). A
+# refused/degraded FIRST pin does NOT
 # fail the arm — the unit is correct; the checkout state is separate and
 # printed loud.
 #
@@ -170,8 +174,8 @@ PIN_RC=0
 bash "$RE_PIN" "$DIR" || PIN_RC=$?
 case $PIN_RC in
   0) echo "arm-re-pin: first pin landed — $DIR at $(GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$DIR" -C "$DIR" describe --tags 2>/dev/null || echo v1)" ;;
-  3) echo "arm-re-pin: WARNING — first pin REFUSED (live work in the checkout: tracked mods or a working branch). The arm is correct; the keepalive refuses re-pins until the tree is cleaned (issue #276 contract)." >&2 ;;
-  4) echo "arm-re-pin: WARNING — first pin degraded (fetch/checkout failed); the keepalive retries next interval" >&2 ;;
+  3) echo "arm-re-pin: WARNING — first pin REFUSED (the checkout carries tracked modifications, or an untracked file whose path the pin tracks — the never-destroy gates, issue #276/#666). The arm is correct; the keepalive refuses re-pins until the tree is committed or cleaned. A CLEAN tree on a working branch does not land here — the keepalive converges it onto the pin instead (issues #614/#639)." >&2 ;;
+  4) echo "arm-re-pin: WARNING — first pin degraded (fetch, checkout, or stamp failed — transient, nothing in the tree needs cleaning); the keepalive retries next interval" >&2 ;;
   *) echo "arm-re-pin: WARNING — first pin exited $PIN_RC (unexpected); the keepalive retries next interval" >&2 ;;
 esac
 
