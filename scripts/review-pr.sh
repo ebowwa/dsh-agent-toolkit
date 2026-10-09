@@ -146,24 +146,42 @@ gh_fetch() { # <refspec:local-ref>
     GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
     git -c credential.helper= fetch -q --depth 1 origin "$1"
 }
-fetch_merge() { gh_fetch "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"; }
-fetch_base()   { gh_fetch "refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
+# Issue #631: every tracking refspec is FORCED (+). These refs live in the
+# shared mirror store (dsh-worker.sh: one bare mirror per repo, worktrees
+# share the refs namespace) and OUTLIVE the per-task worktree — a checkout
+# that already carries them from a PREVIOUS review of the same PR makes a
+# force-pushed head's refspec update non-fast-forward, git REFUSES it, and
+# an un-forced ref leaves the OLD ref in place for merge-base to grade: a
+# freshness claim about the wrong graph. Forced, the tracking ref can never
+# trail the live remote ref.
+fetch_merge() { gh_fetch "+refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"; }
+fetch_base()   { gh_fetch "+refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
 # Issue #628: the PR's true fork point is a property of the PR HEAD, not of
 # the merge preview — fetch the head ref too (the freshness prose below is
 # derived from it; the preview's merge-base is the base tip by construction).
-fetch_head()   { gh_fetch "refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"; }
+fetch_head()   { gh_fetch "+refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"; }
 # Issue #519: widen the shallow boundary of BOTH fetched refs by <depth>
 # commits — the recover arm for the disconnected graph the --depth 1
 # fetches construct. Same env-borne auth seam as gh_fetch. Issue #628: the
 # PR head rides the same deepen so its merge-base with base can resolve too.
+# Issue #631: the deepen re-fetches are forced for the same reason.
 gh_deepen() { # <depth>
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
     git -c credential.helper= fetch -q --deepen="$1" origin \
-      "refs/heads/${BASE_REF}:refs/remotes/origin/base" \
-      "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge" \
-      "refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"
+      "+refs/heads/${BASE_REF}:refs/remotes/origin/base" \
+      "+refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge" \
+      "+refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"
 }
+# Issue #631, arm 2: a fetch that fails for any reason (a refused update
+# under an older script, network, auth) must never grade a STALE graph —
+# delete the tracking refs BEFORE the fetches, so a failed fetch leaves NO
+# ref and every downstream lookup degrades to its typed terminal state
+# (UNVERIFIED freshness prose / withheld diff / the base-fetch-failed arm),
+# never a positive claim computed off a ref from a previous review round.
+git update-ref -d refs/remotes/origin/pr-merge 2>/dev/null || true
+git update-ref -d refs/remotes/origin/base 2>/dev/null || true
+git update-ref -d refs/remotes/origin/pr-head 2>/dev/null || true
 fetch_merge 2>/dev/null \
   || { echo "review-pr: cannot fetch PR #$PR_NUM merge ref" >&2; rm -f "$RULES_TMP"; exit 2; }
 fetch_base 2>/dev/null || true
