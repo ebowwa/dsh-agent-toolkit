@@ -71,14 +71,18 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   rules contract is read from the PR's BASE ref — a PR must not be able to
   edit the REVIEW.md that grades it.
 - Independent verification of a sibling PR rides the `gate-verify:`
-  comment channel (issue #326): the fleet mints every PR under one shared
+  marker channel (issue #326): the fleet mints every PR under one shared
   account, so `gh pr review --approve` is structurally impossible for any
-  agent — the verifying agent posts a PR comment whose line
-  `gate-verify: pass` (or `gate-verify: fail`) IS the verification,
+  agent — the verifying agent posts the marker line
+  `gate-verify: pass` (or `gate-verify: fail`) as a PR comment or a
+  formal review body (issue #560: a `gh pr review --comment` submission
+  is not an issue comment; either surface IS the verification),
   parsed line-strict by `scripts/gate-verify.mjs` (label REQUIRED — a
   bare `pass` line in prose never qualifies) and aggregated per PR by
-  `scripts/pr-verification.mjs` (last marker wins; comment bodies never
-  pass through — only verdict + id/author/URL). The marker is evidence,
+  `scripts/pr-verification.mjs` (both channels merged into one
+  time-ordered stream — comment created_at / review submitted_at, PENDING
+  reviews skipped; last marker wins; bodies never pass through — only
+  verdict + id/author/URL). The marker is evidence,
   never an auto-approval: labels still come only from `review-verdict.mjs`,
   the review stage receives prior markers as CLAIMS to check (an
   unreproducible claim is a finding, the honesty rule), and the merge
