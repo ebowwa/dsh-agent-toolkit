@@ -189,15 +189,28 @@ test("issue #276: a reinstall on a DIRTY shared checkout refuses the refresh and
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
     };
-    const git = (args) =>
-      spawnSync("git", ["-C", f.botDir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
-        encoding: "utf8",
-        env: hermeticEnv,
-      });
-    git(["init", "--quiet", "--initial-branch=main"]);
+    // issue #582/#621: spawnSync NEVER throws — a failed seed call used to
+    // resolve silently, leaving this test exercising a botDir with no seeded
+    // history while staying green. The seed CONSTRUCTS the fixture, so every
+    // call asserts (the PR #589 gitSetup shape): non-zero exit or spawn error
+    // throws with the failed argv + captured stderr.
+    const gitSetup = (args) => {
+      const r = spawnSync(
+        "git",
+        ["-C", f.botDir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args],
+        { encoding: "utf8", env: hermeticEnv },
+      );
+      if (r.error || r.status !== 0) {
+        throw new Error(
+          `fixture setup failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+        );
+      }
+      return r;
+    };
+    gitSetup(["init", "--quiet", "--initial-branch=main"]);
     writeFileSync(path.join(f.botDir, "settings.zai.yaml"), "# template v1\n");
-    git(["add", "settings.zai.yaml"]);
-    git(["commit", "--quiet", "-m", "seed"]);
+    gitSetup(["add", "settings.zai.yaml"]);
+    gitSetup(["commit", "--quiet", "-m", "seed"]);
     writeFileSync(path.join(f.botDir, "settings.zai.yaml"), "# agent mid-edit marker DSH-276\n");
 
     const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
