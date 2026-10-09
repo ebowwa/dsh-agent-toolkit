@@ -49,6 +49,13 @@ const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins
 // harness then re-pins exactly the vars each test wants (DSH_HOME,
 // DSH_RETRY_BACKOFF_S, extraEnv, ...). CI's clean env is unaffected.
 //
+// The DISPATCH_* fleet namespace rides the same rule (issue #617): a suite
+// running INSIDE a dispatched session has the node's ambient
+// DISPATCH_FACE_ID / DISPATCH_FLEET_API / DISPATCH_CLAIMS_PATH in its env,
+// and the wrapper deliberately lets an existing DISPATCH_FACE_ID win — so
+// the face-id pins below would observe the harness author's own session
+// face instead of the shapes they inject.
+//
 // Stripping the name seams is NOT enough (review finding 1 on this PR): the
 // driver re-derives node identity from the BOX when the env is quiet —
 // run-dsh-agent.sh's `${DSH_RUNNER_NAME:-${DSH_NODE_ID:-$(hostname)}}` — and
@@ -61,7 +68,7 @@ const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins
 const HERMETIC_ENV = (() => {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key === "RUNNER_NAME" || key.startsWith("DSH_")) delete env[key];
+    if (key === "RUNNER_NAME" || key.startsWith("DSH_") || key.startsWith("DISPATCH_")) delete env[key];
   }
   env.DSH_LANE_PLUGINS_MANIFEST = HERMETIC_LANE_PLUGINS;
   return env;
@@ -801,6 +808,7 @@ const runLauncher = (extraEnv = {}) => {
   const home = path.join(dir, "home");
   const runnerTemp = path.join(dir, "runner");
   const argsFile = path.join(dir, "dsh-args.txt");
+  const stubEnvFile = path.join(dir, "dsh-env.txt");
   mkdirSync(bin);
   mkdirSync(runnerTemp);
   writeFileSync(
@@ -815,6 +823,14 @@ const runLauncher = (extraEnv = {}) => {
       "#!/bin/sh",
       'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
       'printf "%s\\n" "$@" > "$STUB_ARGS_FILE"',
+      // Issue-#617 seam: when the harness pins STUB_ENV_FILE, record the
+      // DISPATCH_*/DSH_FACE_ID/DSH_SESSION_ID env the REAL launch chain
+      // handed the dsh process (the doppler stub passes through; the env -u
+      // chain still runs for real). Guarded — unset for every other test.
+      // The DISPATCH_ arm needs its own [A-Z_]* run: a bare `DISPATCH_`
+      // alternation only matches the literal name `DISPATCH_` — the
+      // false-loss that cost this suite its first green run.
+      '[ -n "${STUB_ENV_FILE:-}" ] && { env | grep -E "^(DISPATCH_[A-Z_]*|DSH_FACE_ID|DSH_SESSION_ID)=" | sort > "$STUB_ENV_FILE" || :; }',
       'prev=""',
       'for a in "$@"; do',
       '  if [ "$prev" = "--patch" ]; then',
@@ -841,6 +857,7 @@ const runLauncher = (extraEnv = {}) => {
     DSH_HOME: home,
     DSH_PERSISTENT_HOME: "1",
     STUB_ARGS_FILE: argsFile,
+    STUB_ENV_FILE: stubEnvFile,
     GH_BIN: path.join(bin, "gh"),
     DOPPLER_BIN: path.join(bin, "doppler"),
     CELL_PROBE_DIRS: "",
@@ -870,7 +887,8 @@ const runLauncher = (extraEnv = {}) => {
     timeout: 60_000,
   });
   const args = existsSync(argsFile) ? readFileSync(argsFile, "utf8") : "";
-  return { proc, dir, home, args };
+  const envRecord = existsSync(stubEnvFile) ? readFileSync(stubEnvFile, "utf8") : "";
+  return { proc, dir, home, args, envRecord };
 };
 
 // The launcher's --patch argv carries two families of overlay: the feature-owned
@@ -1839,5 +1857,124 @@ test("issue #96 structural pins: capture feeds the classifier, archive precedes 
   assert.match(
     src,
     /case "\$ATTEMPT" in 2\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-180\}" ;; \*\) BACKOFF="\$\{DSH_RETRY_BACKOFF_S:-600\}" ;; esac/,
+  );
+});
+
+// --- 10. the DISPATCH_* face-id namespace survives the wrapper's env
+// handling (issue #617) -----------------------------------------------------
+//
+// The FleetTower#2038 incident class: a node-injected ambient session
+// identity that dies between the spawn and the session's own bin/face-lock
+// steps walks `faceHolderPid` up to the shared daemon anchor, and every
+// session of that daemon shares ONE claim face. FleetTower#2047 pinned the
+// incident's actual mechanism (reader vintage — a pre-#1629 bin/face-lock),
+// and the live re-measure this issue demanded (air16, 2026-10-09, through
+// the exact production chain: DISPATCH_FACE_ID=<uuid> -> doppler run ->
+// run-dsh-agent.sh -> dsh --profile headless) proved the DISPATCH_* channel
+// itself arrives intact — no stage in the wrapper stack strips it. Three
+// contracts keep it that way and close the residual gap the same measure
+// exposed (the wrapper's DSH_FACE_ID fallback-mint rode ONLY the namespace
+// the session-env sanitizer strips — @deepseek-ai/dsh-subprocess
+// scrubbedParentEnv drops every parent DSH_* var from the agent's own tool
+// shells, so the minted face never reached the session's face-lock steps):
+//
+//   behavioral (probe-shaped): a node-shaped DISPATCH_FACE_ID injection
+//   reaches the dsh launch env byte-identical through the wrapper's whole
+//   env chain — this test passes on the parent BY DESIGN (the wrapper never
+//   stripped the namespace); what it pins is that it cannot come back
+//   unnoticed (same posture as the run-32797020619 class guard).
+//
+//   behavioral (the fix): when only the legacy DSH_FACE_ID twin exists, or
+//   when the wrapper mints the fallback itself, the ambient face rides BOTH
+//   namespaces — the sanitizer-proof DISPATCH_* twin (#1629's node-side
+//   shape, now wrapper-side) so even a node-less spawn carries a session-
+//   stable face into the agent's own bin/face-lock steps. An existing
+//   DISPATCH_FACE_ID always wins: never clobbered, never re-minted.
+//
+//   structural: every `-u NAME` in the doppler->dsh launch chain stays
+//   DOPPLER_-namespaced — a future `env -u DSH_FACE_ID`-style edit would
+//   re-open the walked-up-face class silently.
+
+const envLinesFor = (envRecord) =>
+  envRecord.split("\n").filter((l) => l !== "" && !l.startsWith("#"));
+const faceLines = (envRecord, name) =>
+  envLinesFor(envRecord).filter((l) => l.startsWith(`${name}=`));
+
+test("a node-shaped DISPATCH_FACE_ID injection reaches the dsh launch env byte-identical (issue #617 probe shape, class guard)", () => {
+  const { proc, envRecord } = runLauncher({ DISPATCH_FACE_ID: "sess-617-probe" });
+  assert.equal(proc.status, 0, `wrapper must boot, stderr: ${proc.stderr}`);
+  assert.deepEqual(
+    faceLines(envRecord, "DISPATCH_FACE_ID"),
+    ["DISPATCH_FACE_ID=sess-617-probe"],
+    `the injected value must pass through doppler + the env -u chain untouched, got: ${envRecord}`,
+  );
+});
+
+test("a legacy DSH_FACE_ID twin is mirrored into the sanitizer-proof DISPATCH_* namespace (issue #617)", () => {
+  const { proc, envRecord } = runLauncher({ DSH_FACE_ID: "sess-617-legacy" });
+  assert.equal(proc.status, 0, `wrapper must boot, stderr: ${proc.stderr}`);
+  assert.deepEqual(
+    faceLines(envRecord, "DSH_FACE_ID"),
+    ["DSH_FACE_ID=sess-617-legacy"],
+    "the legacy twin must pass through untouched",
+  );
+  assert.deepEqual(
+    faceLines(envRecord, "DISPATCH_FACE_ID"),
+    ["DISPATCH_FACE_ID=sess-617-legacy"],
+    `the DISPATCH_* twin must carry the SAME value — the session-env sanitizer strips every parent DSH_* var from the agent shell (#950/#1629), so a DSH_-only face never reaches bin/face-lock; got: ${envRecord}`,
+  );
+});
+
+test("the wrapper's own fallback mint rides BOTH namespaces with one value (issue #617)", () => {
+  const { proc, envRecord } = runLauncher({});
+  assert.equal(proc.status, 0, `wrapper must boot, stderr: ${proc.stderr}`);
+  const dsh = faceLines(envRecord, "DSH_FACE_ID");
+  const dispatch = faceLines(envRecord, "DISPATCH_FACE_ID");
+  assert.equal(dsh.length, 1, `exactly one DSH_FACE_ID line expected, got: ${envRecord}`);
+  assert.equal(dispatch.length, 1, `exactly one DISPATCH_FACE_ID line expected, got: ${envRecord}`);
+  assert.equal(
+    dispatch[0],
+    dsh[0].replace(/^DSH_/, "DISPATCH_"),
+    `the mint must carry the SAME value in both namespaces, got: ${envRecord}`,
+  );
+  assert.match(
+    dsh[0],
+    /-p\d+$/,
+    `the fallback shape stays user-p<pid of the driver> (issue #278), got: ${dsh[0]}`,
+  );
+});
+
+test("a both-namespaces node injection (#1629 shape) wins — never clobbered, never re-minted (issue #617)", () => {
+  const { proc, envRecord } = runLauncher({
+    DISPATCH_FACE_ID: "sess-617-node",
+    DSH_FACE_ID: "sess-617-node",
+  });
+  assert.equal(proc.status, 0, `wrapper must boot, stderr: ${proc.stderr}`);
+  assert.deepEqual(
+    faceLines(envRecord, "DISPATCH_FACE_ID"),
+    ["DISPATCH_FACE_ID=sess-617-node"],
+    `the node's injected DISPATCH_FACE_ID must win verbatim, got: ${envRecord}`,
+  );
+  assert.deepEqual(
+    faceLines(envRecord, "DSH_FACE_ID"),
+    ["DSH_FACE_ID=sess-617-node"],
+    `the node's injected DSH_FACE_ID must win verbatim, got: ${envRecord}`,
+  );
+});
+
+test("every -u NAME in the doppler->dsh launch chain stays DOPPLER_-namespaced (issue #617 structural guard)", () => {
+  const lines = readFileSync(SCRIPT, "utf8").split("\n");
+  const launchAt = lines.findIndex((l) => /^  doppler run -- /.test(l));
+  assert.ok(launchAt > 0, "the doppler launch line must exist");
+  const dshAt = lines.findIndex((l, i) => i > launchAt && l.includes("dsh --profile headless"));
+  assert.ok(dshAt > launchAt, "the dsh launch must follow the doppler line");
+  const chain = lines.slice(launchAt, dshAt + 1).join("\n");
+  const stripped = [...chain.matchAll(/-u ([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+  assert.ok(stripped.length >= 5, `the launch chain must still strip the doppler scope set, got: ${stripped.join(", ")}`);
+  const foreign = stripped.filter((n) => !n.startsWith("DOPPLER_"));
+  assert.deepEqual(
+    foreign,
+    [],
+    `the launch chain must only ever -u DOPPLER_* names — stripping the ambient face namespaces here re-opens the walked-up-face class (issue #617); offenders: ${foreign.join(", ")}`,
   );
 });
