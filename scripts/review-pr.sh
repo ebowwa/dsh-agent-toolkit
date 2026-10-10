@@ -174,7 +174,14 @@ if [ -z "$FORK_BASE" ]; then
     fi
   done
 fi
-BASE_TIP="$(git rev-parse origin/base 2>/dev/null || true)"
+# Issue #545: the #526 garbage-capture class — a bare `git rev-parse` echoes
+# the literal ref name to stdout and exits 128 on a missing ref; `|| true`
+# swallows the exit, so a missing origin/base would capture "origin/base"
+# into BASE_TIP, non-empty garbage the [ -n "$BASE_TIP" ] guards cannot see
+# through. Currently latent (FORK_BASE resolves only when origin/base
+# exists, and BASE_TIP is read only in that arm) — the pin in
+# tests/review-pr-diff.test.mjs keeps one re-ordering from arming it.
+BASE_TIP="$(git rev-parse --verify origin/base 2>/dev/null || true)"
 DIFF=""
 DIFF_STAT=""
 DIFF_BASIS=""
