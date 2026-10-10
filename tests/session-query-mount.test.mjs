@@ -16,6 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootProbe } from "./lib/live-boot.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = join(ROOT, "plugins", "tool-session-query");
@@ -186,13 +187,25 @@ test("the live-half gate pins its own contract: backend packages absent → skip
 
 test("the three overlays compose into the real profile (live: needs dsh + the box backend packages)", { skip: LIVE_SKIP_REASON }, () => {
   const { home, patches } = stampOverlays();
-  const dump = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"], {
-    encoding: "utf8",
-    env: { ...HERMETIC_ENV, DSH_HOME: home },
-    timeout: 90_000,
+  // Starvation retry (issue #595): the dump-config leg carries the same
+  // under-load starvation exposure #594 fixed for the boot leg below — a
+  // starved child terminates empty and reds HERE, at the status assert
+  // (nonzero/null), not at a match. The dump's starvation shape is the same
+  // both-streams-empty discriminator bootProbe pins: the composed config
+  // (stdout) and the diagnostic (stderr) are both OUTPUT, so both streams
+  // empty is exactly "neither a composed config nor a diagnostic" — a
+  // starvation artifact, retried once; a diagnostic-bearing attempt is a
+  // verdict and returns immediately. Pins: tests/live-boot-probe.test.mjs.
+  const { boot: dump, attemptsRan, starvationRetried } = bootProbe({
+    command: "dsh",
+    args: ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "--dump-config"],
+    options: { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_HOME: home }, timeout: 90_000 },
   });
-  assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
-  assert.match(dump.stdout, /- id: session-query-sqlite\n\s+name: ['"]@deepseek-ai\/dsh-session-query-sqlite['"]\n\s+config:\n\s+openAt: first-search/, "backend row ON in the composed tree");
+  const dumpLoad = starvationRetried
+    ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #595)`
+    : "";
+  assert.equal(dump.status, 0, `dump-config must compose${dumpLoad}, stderr: ${dump.stderr}`);
+  assert.match(dump.stdout, /- id: session-query-sqlite\n\s+name: ['"]@deepseek-ai\/dsh-session-query-sqlite['"]\n\s+config:\n\s+openAt: first-search/, `backend row ON in the composed tree${dumpLoad}`);
   assert.doesNotMatch(dump.stdout, /openAt: never/, "shipped-off default must not survive the restatement");
   assert.match(dump.stdout, /- id: tool-session-query\n\s+name: ['"]@deepseek-ai\/dsh-tool-session-query['"]/, "tool row resolved (not warn-and-skipped)");
   assert.match(dump.stdout, /root: .*\/\.dsh\/sessions/, "corpus rooted at the shared store");
@@ -207,14 +220,23 @@ test("the composed tree BOOTS: all three plugins load, boot dies at the credenti
   // exactly the failure that caught the alpha-line API drift (SessionSeq).
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
-  const boot = spawnSync("dsh", ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "reply ok"], {
-    encoding: "utf8",
-    timeout: 120_000,
-    cwd,
-    env,
+  // Starvation retry (issue #594): under the full suite's parallel file
+  // execution this child can starve to an EMPTY-output termination
+  // (measured: 125s wall, both streams empty) while the quiet single-file
+  // rerun is green on the same tree. bootProbe retries exactly that shape
+  // once; a diagnostic-bearing attempt returns immediately — a real defect
+  // prints (the alpha-line drift shape dies loudly), so the retry never
+  // masks one. Pins: tests/live-boot-probe.test.mjs.
+  const { boot, attemptsRan, starvationRetried } = bootProbe({
+    command: "dsh",
+    args: ["--profile", "headless", ...patches.flatMap((p) => ["--patch", p]), "reply ok"],
+    options: { timeout: 120_000, cwd, env },
   });
-  assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+  const load = starvationRetried
+    ? ` (attempt 1 starved to empty output and was retried once — ${attemptsRan} attempts; a STILL-empty result is box load, not the diff — issue #594)`
+    : "";
+  assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${load}`);
   const combined = `${boot.stdout}\n${boot.stderr}`;
-  assert.match(combined, /MISSING_CREDENTIAL/, `boot must reach the credential wall with every plugin loaded, got: ${combined.slice(0, 800)}`);
+  assert.match(combined, /MISSING_CREDENTIAL/, `boot must reach the credential wall with every plugin loaded${load}, got: ${combined.slice(0, 800)}`);
   assert.doesNotMatch(combined, /failed to apply loader entry|does not provide an export/, "no plugin-load failure (the alpha-line drift shape)");
 });
