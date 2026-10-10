@@ -33,6 +33,31 @@ for (const name of ["ZAI_API_KEY", "DOPPLER_SERVICE_TOKEN", "GH_TOKEN", "GITHUB_
   if (v && v.length > 8) rules.push([new RegExp(escapeRe(v), "g"), `[redacted:${name}]`, "secret"]);
 }
 
+// Layer 1b — exact values harvested from this process env by credential
+// SHAPE (issue dsh-agent-toolkit#608): a credential injected into the
+// session env under a name outside the fixed list above (the launchd-level
+// `*_PAT_*` class — the harness child-env strip covers only
+// KEY/PASSWORD/SECRET/TOKEN names) redacts by its EXACT value on every
+// surface this scrubber guards, even where a shape rule's boundaries miss
+// (a token riding a composite string, a `.`/`_` separator the shape class
+// does not cross). Deliberately over-broad, same doctrine as layer 2: a
+// false [redacted] costs nothing. Multiline and oversized values are
+// skipped — the scrubber is line-oriented, a newline value can never match.
+const ENV_SHAPE_SCAN = [
+  /\b[0-9a-f]{32}\.[A-Za-z0-9_-]{8,}\b/,
+  /\bsk-[A-Za-z0-9_-]{16,}/,
+  /\bdp\.[a-z]{2}\.[A-Za-z0-9_.-]{16,}/,
+  /\bgh[posr]_[A-Za-z0-9_.-]{20,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+];
+for (const [name, v] of Object.entries(process.env)) {
+  if (!v || v.length < 12 || v.length > 1024 || v.includes("\n")) continue;
+  if (ENV_SHAPE_SCAN.some(re => re.test(v))) {
+    rules.push([new RegExp(escapeRe(v), "g"), `[redacted:${name}]`, "secret"]);
+  }
+}
+
 // Layer 2 — shapes. Credential shapes are "secret" (redacted in BOTH modes);
 // identifying metadata is "meta" (default mode only).
 rules.push(

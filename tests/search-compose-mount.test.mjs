@@ -74,10 +74,12 @@ const materializeLauncher = (base, { withPlugin = true, pluginFiles = null } = {
   // Same closure rule as decompose-contract's materializeLauncher: the
   // driver spawns scripts/settings-write.mjs (preserve-by-default settings
   // write, FleetTower #642), which imports settings-normalize.mjs +
-  // lane-settings-guard.mjs — the copy must carry the whole closure.
+  // lane-settings-guard.mjs — the copy must carry the whole closure,
+  // including scrub-env.mjs (issue #608 — the fail-closed agent-env sweep).
   for (const f of [
     "run-dsh-agent.sh",
     "scrub-output.mjs",
+    "scrub-env.mjs",
     "settings-write.mjs",
     "settings-normalize.mjs",
     "lane-settings-guard.mjs",
@@ -284,7 +286,7 @@ test("same-tree guard: a DSH_HOME at the plugin itself copies nothing and delete
     // Same script dependency closure as materializeLauncher above: the
     // driver spawns settings-write.mjs (+ its two lib imports, FleetTower
     // #642) out of its own scripts/ dir.
-    for (const f of ["run-dsh-agent.sh", "scrub-output.mjs", "settings-write.mjs", "settings-normalize.mjs", "lane-settings-guard.mjs"]) {
+    for (const f of ["run-dsh-agent.sh", "scrub-output.mjs", "scrub-env.mjs", "settings-write.mjs", "settings-normalize.mjs", "lane-settings-guard.mjs"]) {
       cpSync(path.join(ROOT, "scripts", f), path.join(modules, "scripts", f));
     }
     cpSync(path.join(ROOT, "config", "settings.zai.yaml"), path.join(modules, "config", "settings.zai.yaml"));

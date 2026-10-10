@@ -818,6 +818,29 @@ if [ -n "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
   export GH_CONFIG_DIR="$GH_BOT_DIR"
 fi
 
+# --- 2b-2. agent-env secret sweep (issue #608) -------------------------------
+# The node shell may carry credentials the harness child-env strip does NOT
+# cover: dsh-subprocess strips only KEY/PASSWORD/SECRET/TOKEN names, so a
+# launchd-level `GH_PAT_*` (fine-grained PAT, repo read/write scope) or a
+# `*_P12_*` signing blob rides into every agent shell — and the session
+# transcript keeps whatever a tool result echoes (`env | grep -i GITHUB` is
+# a one-line leak). scripts/scrub-env.mjs prints the NAMES to drop (never
+# values); the driver unsets them BEFORE the harness spawns, so the
+# credential never enters any agent surface at all. Fail-closed (REVIEW.md
+# scrubbing law): a sweep failure aborts the run — never an unswept launch.
+ENV_SWEEP_NAMES="$(node "$SCRIPT_DIR/scrub-env.mjs")" || {
+  echo "::error::agent-env secret sweep failed — aborting rather than launching an agent with an unswept env (issue #608)" >&2
+  exit 1
+}
+if [ -n "$ENV_SWEEP_NAMES" ]; then
+  while IFS= read -r sweep_name; do
+    [ -n "$sweep_name" ] || continue
+    unset "$sweep_name" 2>/dev/null || true
+  done <<< "$ENV_SWEEP_NAMES"
+  echo "agent-env sweep: dropped $(printf '%s\n' "$ENV_SWEEP_NAMES" | wc -l | tr -d ' ') env var(s) by name/shape (names only, never values):" >&2
+  printf '%s\n' "$ENV_SWEEP_NAMES" | sed 's/^/  swept: /' >&2
+fi
+
 # --- 2c. gh/git scrub shims: the scrubber BETWEEN agent and GitHub ---------
 # The agent is told not to post comments, but instruction is not enforcement.
 # These shims ARE enforcement: installed at the front of the agent's PATH,
