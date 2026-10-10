@@ -27,7 +27,20 @@ const SKILL = join(ROOT, ".agents", "skills", "verify-before-dismissal", "SKILL.
 // live boot proof fails them (measured: 0.1.7-alpha.2 imports SessionSeq).
 const PINNED_VERSION = "0.1.0-rc.8";
 
-const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+// The presence probe carries a spawn budget (issue #598): a bare spawnSync
+// waits indefinitely, so a wedged dsh install (a broken shell shim, a hung
+// first-run path) would wedge this FILE — no assertion reds, no file-level
+// result — until the OUTER budget kills it unnamed (the #423 wedge class).
+// 30s is still ~60x the quiet wall of a `--version`.
+const DSH_PROBE = spawnSync("dsh", ["--version"], { timeout: 30_000 });
+const DSH_PRESENT = DSH_PROBE.status === 0;
+// A wedge (the probe terminated on a signal at/below the budget: status
+// null + signal) is treated as ABSENT — the live half must still skip —
+// but the skip reason NAMES the wedge: the skip reason is the diagnostic.
+const DSH_SKIP_REASON =
+  DSH_PROBE.status === null && DSH_PROBE.signal
+    ? `the dsh --version presence probe terminated on signal ${DSH_PROBE.signal} (30s budget) — a wedged or crashing dsh install; treating dsh as absent and skipping the live half (issue #598: box state, and the named skip is the diagnostic)`
+    : "dsh is absent";
 
 // The live legs need MORE than the CLI: stampOverlays symlinks the box's
 // real backend packages (~/.dsh/profiles/node_modules/@deepseek-ai/...) —
@@ -45,7 +58,7 @@ function backendPackagesPresent(home) {
   );
 }
 const LIVE_SKIP_REASON = !DSH_PRESENT
-  ? "dsh is absent"
+  ? DSH_SKIP_REASON
   : backendPackagesPresent(process.env.HOME)
     ? false
     : `box profile tree lacks the backend packages under ~/.dsh/profiles/node_modules/@deepseek-ai (dsh-session-query-sqlite, dsh-session-persistence-jsonl) — box state, not a code regression (issue #273)`;

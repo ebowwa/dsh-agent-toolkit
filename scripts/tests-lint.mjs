@@ -48,6 +48,17 @@
 //     REAL bounded loop (3 attempts, RC surfacing, cleanup) — only the
 //     waits go.
 //
+// Rule 3 — in the two mount suites (search-compose-mount.test.mjs,
+//     session-query-mount.test.mjs — the same corpus PR #597's live-boot
+//     probe pin covers), a spawnSync whose command is the literal "dsh"
+//     must carry a `timeout:` option. A bare spawnSync waits
+//     indefinitely, so a wedged dsh install (a broken shell shim, a hung
+//     first-run path) wedges the FILE silently: no assertion reds, no
+//     file-level result — the #423 wedge class, named only by the outer
+//     budget (issue #598). Scope note: run-dsh-agent.test.mjs's inline
+//     `skip:` presence probes are the same class one file over, outside
+//     this rule's scope by design (issue #601, filed separately).
+//
 // Scope note: every rule here is line-based — catch the observed defect
 // class, not the universe. Rule 2 sees a spawn whose command is bash/sh
 // and whose first script argument is the driver path literal or a
@@ -102,6 +113,25 @@ const BASH_ARRAY_HEAD = /^\(\s*(["'])(?:bash|sh)\1\s*,\s*\[/;
 
 /** The seam pin: the env key with a value (`DSH_RETRY_BACKOFF_S: "0"`). */
 const SEAM_PIN = /\bDSH_RETRY_BACKOFF_S\s*:/;
+
+// --- rule 3 helpers: the mount suites' dsh spawn budget (issue #598) ------
+
+/** The suites this rule guards — the same corpus PR #597's live-boot probe
+ * pin covers (exactly one bare `spawnSync("dsh"` there; here: every one of
+ * them budgeted). Matched against the file's basename, so both the CLI's
+ * path form and the corpus scan's bare-name form hit. */
+const MOUNT_SUITE = /^(search-compose-mount|session-query-mount)\.test\.mjs$/;
+
+/** A spawn whose command is the literal "dsh" — the mount suites' live
+ * legs and their `--version` presence probe. spawnWindows returns the
+ * parenthesized ARGUMENTS (the window starts at its own `(`), so the head
+ * anchors on the window's first argument, and the spawnSync-only precision
+ * rides the head line (`spawn(` is async — it cannot wedge the file). */
+const DSH_FIRST_ARG = /^\(\s*"dsh"/;
+const SPAWN_SYNC_CALL = /\bspawnSync\s*\(/;
+
+/** The budget pin: a `timeout:` option anywhere in the spawn's arguments. */
+const TIMEOUT_OPT = /\btimeout\s*:/;
 
 const isCommentLine = (raw) => /^(\/\/|\*|#)/.test(raw.trimStart());
 
@@ -291,6 +321,26 @@ export const lintTests = (text, name) => {
           ? `${name}:${win.line}: a spawn of ${DRIVER_SCRIPT} passes an env this lint cannot resolve in-file — pin \`DSH_RETRY_BACKOFF_S: "0"\` in the env object this spawn passes, or the driver's failure path walks the production retry backoff (180s+600s) and a failing stub wedges the suite past any spawn budget until spawnSync kills the driver (status null; gates runs 34748403843, 34788769043, 34795917609, 34803136058).`
           : `${name}:${win.line}: a spawn of ${DRIVER_SCRIPT} (${scriptArg}) does not pin DSH_RETRY_BACKOFF_S — the driver's failure path walks the production retry backoff (180s+600s), so a failing stub wedges the suite past any spawn budget until spawnSync kills the driver (status null; gates runs 34748403843, 34788769043, 34795917609, 34803136058). Set \`DSH_RETRY_BACKOFF_S: "0"\` in the env this spawn passes: it keeps the REAL bounded loop (3 attempts, RC surfacing, cleanup) and removes only the waits.`,
     });
+  }
+
+  // --- rule 3: every dsh spawn in a mount suite carries a budget (issue
+  // #598) — a bare spawnSync waits indefinitely, so a wedged dsh install
+  // (broken shell shim, hung first-run path) wedges the FILE silently: no
+  // assertion reds, no file-level result, until the OUTER budget kills it
+  // unnamed (the #423 wedge class). Scope: the two mount suites only —
+  // run-dsh-agent.test.mjs's inline `skip:` probes are the same class one
+  // file over, outside this rule by design (issue #601, filed separately).
+  const baseName = name.split(/[\\/]/).pop();
+  if (MOUNT_SUITE.test(baseName)) {
+    for (const win of spawnWindows(lines)) {
+      if (!DSH_FIRST_ARG.test(win.text)) continue;
+      if (!SPAWN_SYNC_CALL.test(lines[win.line - 1])) continue;
+      if (TIMEOUT_OPT.test(win.text)) continue;
+      errors.push({
+        line: win.line,
+        message: `${name}:${win.line}: a spawnSync("dsh", …) without a timeout — spawnSync waits indefinitely, so a wedged dsh install (broken shell shim, hung first-run path) wedges this file silently: no assertion reds, no file-level result, until the outer budget kills it unnamed (issue #598, the #423 wedge class). Pin \`timeout: 30_000\` (the --version presence probe) or the leg's own budget in this spawn's options.`,
+      });
+    }
   }
   return errors;
 };

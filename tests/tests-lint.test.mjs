@@ -278,6 +278,64 @@ test("a comment-only driver mention does not arm the rule", () => {
   assert.deepEqual(lintTests(source, "commentonly.test.mjs"), []);
 });
 
+// --- rule 3: the mount suites' dsh spawns carry a budget (issue #598).
+// A bare spawnSync("dsh", …) waits indefinitely, so a wedged dsh install
+// (broken shell shim, hung first-run path) wedges the FILE silently — no
+// assertion reds, no file-level result — until the outer budget kills it
+// unnamed (the #423 wedge class). The fixtures are safe to write plainly:
+// THIS file is not a mount suite, so rule 3 never sees its own fixtures.
+
+test("an un-budgeted dsh spawn in a mount suite is rejected (issue #598)", () => {
+  const source = [
+    'import { spawnSync } from "node:child_process";',
+    'const probe = spawnSync("dsh", ["--version"]);',
+    "",
+  ].join("\n");
+  const errors = lintTests(source, "search-compose-mount.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].line, 2);
+  assert.match(errors[0].message, /issue #598/);
+  assert.match(errors[0].message, /timeout/);
+});
+
+test("a multi-line un-budgeted dsh spawn is caught too (the window spans lines)", () => {
+  const source = [
+    'import { spawnSync } from "node:child_process";',
+    "const boot = spawnSync(",
+    '  "dsh",',
+    '  ["--profile", "headless"],',
+    '  { encoding: "utf8" },',
+    ");",
+    "",
+  ].join("\n");
+  const errors = lintTests(source, "session-query-mount.test.mjs");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].line, 2);
+});
+
+test("budgeted dsh spawns in a mount suite lint clean (probe + live leg)", () => {
+  const source = [
+    'import { spawnSync } from "node:child_process";',
+    'const probe = spawnSync("dsh", ["--version"], { timeout: 30_000 });',
+    'const boot = spawnSync("dsh", ["--profile", "headless"], { encoding: "utf8", timeout: 120_000 });',
+    "",
+  ].join("\n");
+  assert.deepEqual(lintTests(source, "search-compose-mount.test.mjs"), []);
+});
+
+test("rule 3 is scoped to the mount suites: the same spawn elsewhere stays green", () => {
+  // run-dsh-agent.test.mjs's inline `skip:` probes are the same class one
+  // file over — outside this rule's scope by design (issue #601, filed
+  // separately), the lint's standing catch-the-observed-class discipline.
+  const source = [
+    'import { test } from "node:test";',
+    'import { spawnSync } from "node:child_process";',
+    'test("a task", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {});',
+    "",
+  ].join("\n");
+  assert.deepEqual(lintTests(source, "run-dsh-agent.test.mjs"), []);
+});
+
 test("all shipped test files lint clean (revert guard)", () => {
   const files = readdirSync(TESTS_DIR).filter((f) => f.endsWith(".mjs"));
   assert.ok(files.length > 0, "corpus scan found no test files — wrong directory?");
