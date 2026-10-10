@@ -132,6 +132,10 @@ test("the docs carry the channel rule and conduct (REVIEW.md, CONTRIBUTING.md)",
   const contributing = readFileSync(path.join(ROOT, "CONTRIBUTING.md"), "utf8");
   assert.ok(proseHas(contributing, "When you independently verify a sibling PR"),
     "CONTRIBUTING.md carries the verifying agent's conduct");
-  assert.ok(proseHas(contributing, "the LAST marker in the comment wins"),
-    "CONTRIBUTING.md states the last-wins contract");
+  assert.ok(proseHas(contributing, "the LAST marker in the merged stream wins"),
+    "CONTRIBUTING.md states the last-wins contract (over the merged comments+reviews stream, issue #560)");
+  assert.ok(proseHas(contributing, "as a PR comment or a formal review body (issue #560"),
+    "CONTRIBUTING.md states the two-channel marker surface (issue #560: review bodies too)");
+  assert.ok(proseHas(contributing, "a same-second cross-channel tie goes to the formal review — issue #571"),
+    "CONTRIBUTING.md states the #571 tie policy (ids never compare across channels)");
 });
