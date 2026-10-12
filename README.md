@@ -66,6 +66,7 @@ the agent inside a 120-min Actions job, `agent-comment.yml` +
 | `scripts/gh-scrub-shim`, `git-scrub-shim` | the scrubber BETWEEN agent and GitHub/git (KEEP_DATES: authored prose carries dates; redacting at POST corrupts the stored body). Fail-closed (REVIEW.md): a scrubber failure aborts the invocation — the real binary is never exec'd with unscrubbed text. Both shims run the real binary as a child and unlink every scrubbed temp the moment it's done (issue #154 for gh's `*-file` calls, issue #180 for git's `-F`/`--file=`/`-F -` commit messages: the old `exec` tail leaked a post-scrub copy into TMPDIR on every path, success or failure); pinned by `tests/scrub-shims.test.mjs` |
 | `scripts/dsh-progress.mjs` | live JSON trace of reasoning/tool events |
 | `scripts/workflow-lint.mjs` | structural workflow-YAML lint (block-indent consistency; gates runs it — run 32705244305 regression) |
+| `scripts/bounded-gate.mjs` | the bounded per-file local test gate (issues #398 + #521): enumerates exactly what CI's bare `node --test` grades — node's recursive default discovery (every `*.test.mjs` anywhere, every `.mjs` under any `test/` dir, not just the parity form's narrow set), via node's own glob engine — and grades it one `node --test` child per suite, with a per-suite watchdog (`DSH_TEST_GATE_TIMEOUT_S`, default 120s) that kills a wedged suite's whole process group and reports HANG with a typed diagnostic + the pinpoint recipe — the gate degrades loud naming the seam instead of wedging to the cell's external kill with zero diagnostics; pinned by `tests/test-gate.test.mjs` |
 | `scripts/tests-lint.mjs` | structural test-source lint: (1) rejects PATH assignments that hard-code system dirs without the ambient PATH — they cannot construct a lane-installed CLI's absence (run 32933615526 regression); (2) rejects a spawn of `run-dsh-agent.sh` whose env does not pin `DSH_RETRY_BACKOFF_S` — the driver's failure path walks the production retry backoff (180s+600s), so an unpinned failing stub wedges the suite past any spawn budget until `status` comes back `null` (runs 34748403843/34788769043/34795917609/34803136058; the corpus test rides `node --test`) |
 | `scripts/drift-verdict.mjs` | line-strict verdict extraction for drift-check (TAG / TAG-WITH-FINDINGS / BLOCK; fail-closed on absence) + scrubbed review-body surfacing to the run log |
 | `scripts/resolve-push-token.sh` | Doppler-first git push credential for agent jobs, called by the worker (the checkout's ephemeral token cannot push workflows) |
@@ -99,6 +100,33 @@ the parity form instead (the smoke suites need their deps first:
 ```bash
 node --test tests/*.test.mjs plugins/*/test/smoke.mjs
 ```
+
+Even the parity form is narrower than what CI's bare `node --test` grades:
+discovery is recursive — every `*.test.mjs` anywhere in the tree (under
+`tests/fixtures/`, a build dir, anywhere), every `.mjs` under any directory
+named `test/` (not just `smoke.mjs`), plus the `-test`/`_test`/`test-*`/
+`test.mjs` name shapes — while `node_modules` and dot-directories are
+skipped (issue #521).
+
+**Inside an agent session, gate with the bounded runner instead** (issues
+#398 + #521): it enumerates exactly that bare-discovery set and grades it
+one `node --test` child at a time, kills a suite that outlives its bound,
+and reports HANG with a typed diagnostic naming the file and the pinpoint
+recipe — the bare invocation runs every suite in one process with no
+per-suite bound, so one wedged suite holds the whole gate until the cell's
+external timeout, with zero diagnostics:
+
+```bash
+node scripts/bounded-gate.mjs                                  # the bare-discovery set
+DSH_TEST_GATE_TIMEOUT_S=30 node scripts/bounded-gate.mjs --only run-dsh-agent  # pinpoint one suite
+```
+
+`DSH_TEST_GATE_TIMEOUT_S` (default 120) is the per-suite kill bound. A
+suite that cannot run hermetically must fail loud naming the seam — never
+hang the gate. A malformed bound fails louder still: a non-numeric or
+sub-1 value is a typed bad-knob error (exit 2, before any suite runs) —
+never a NaN bound that insta-kills a green suite as a false HANG
+(issue #538).
 
 ## Adopting (consumer repo)
 
