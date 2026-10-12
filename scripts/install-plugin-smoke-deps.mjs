@@ -168,7 +168,14 @@ export function registryPeers(name, spec) {
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
   } catch {
-    return {}; // unresolvable here; the verify phase names it loudly
+    // Deliberate swallow, NOT the issue #512 trap: the walk also runs on
+    // warm cells whose tree already satisfies the closure — a transport
+    // throw here would false-red every install-once run during a
+    // registry blip. Degraded peer discovery only matters when an
+    // install is genuinely needed, and that path names the transport
+    // loudly: resolveUnionSpecs throws NpmTransportError for multi-spec
+    // names, npm install fails on its own network error for the rest.
+    return {};
   }
   raw = raw.trim();
   if (!raw || raw === "undefined" || raw === "{}") return {};
@@ -231,27 +238,91 @@ export function resolveUnionSpecs(
   return out;
 }
 
+// A registry TRANSPORT failure — npm missing, offline or DNS-broken
+// cell, registry 5xx, an unparseable answer. Typed and distinct from a
+// genuine registry no-match so a gate red during a registry blip names
+// the blip, not a phantom unsatisfiable range (issue #512; REVIEW.md
+// Honesty: "Failures surface as typed errors with context; no swallowed
+// exits").
+export class NpmTransportError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "NpmTransportError";
+  }
+}
+
+// Split npm view's failure surface. Returns null when npm POSITIVELY
+// identified a registry no-match (its E404 error code on stderr — the
+// only failure that may honestly read as "the registry has no version
+// under this spec"), or a transport-detail string for everything else:
+// a spawn-level failure (no exit status — npm never ran, the ENOENT off
+// a PATH-stripped or binary-less cell), and any non-E404 exit (offline,
+// DNS, registry E5xx, auth). Unrecognized exits are fail-closed
+// transport too: flattening them into [] made resolveUnionSpecs
+// mis-diagnose the red as "unsatisfiable spec" (issue #512).
+export function classifyNpmViewFailure(err) {
+  if (typeof err?.status !== "number") {
+    const why =
+      typeof err?.code === "string"
+        ? err.code
+        : "no exit status — spawn or signal failure";
+    return `npm did not run (${why})`;
+  }
+  const stderr = typeof err.stderr === "string" ? err.stderr : "";
+  const code =
+    stderr.match(/(?:^|\n)\s*npm (?:error|ERR!) code (\S+)/)?.[1] ?? null;
+  if (code === "E404") return null;
+  const tail = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(-5)
+    .join(" | ");
+  return (
+    `npm view exited ${err.status}` +
+    (code ? ` (${code})` : "") +
+    (tail ? `: ${tail}` : "")
+  );
+}
+
 // The versions the registry offers under name@spec — [] reads as "none",
-// and resolveUnionSpecs turns that into the loud refusal.
+// and resolveUnionSpecs turns that into the loud refusal. [] now means
+// npm SAID so (its E404): every transport failure throws
+// NpmTransportError instead, so a registry blip cannot masquerade as an
+// unsatisfiable spec (issue #512).
 function npmViewVersions(name, spec) {
   let raw;
   try {
     raw = execFileSync(
       "npm",
       ["view", `${name}@${spec}`, "version", "--json"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      // stderr is CAPTURED, not discarded: the npm error code it carries
+      // is the only discriminator between a genuine no-match and a
+      // transport failure (issue #512).
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
-  } catch {
-    return []; // the registry cannot satisfy this spec — resolved loudly above
+  } catch (e) {
+    const detail = classifyNpmViewFailure(e);
+    if (detail)
+      throw new NpmTransportError(
+        `registry transport failure resolving ${name}@${spec} — ` +
+          `${detail} (issue #512)`,
+      );
+    return []; // npm's own E404: genuinely no version under this spec
   }
   raw = raw.trim();
-  if (!raw) return [];
+  if (!raw) return []; // npm exited 0 and named no versions
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    return [];
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    // a truncated or garbled answer is not evidence of an empty registry
+    throw new NpmTransportError(
+      `registry returned an unparseable version list for ${name}@${spec}` +
+        ` — ${e.message} (issue #512)`,
+    );
   }
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 // The registry's full version list for name, in registry (ascending)

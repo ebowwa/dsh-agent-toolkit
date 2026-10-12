@@ -30,6 +30,8 @@ import {
   closureSeamsAbsent,
   testedPlugins,
   allPlugins,
+  NpmTransportError,
+  classifyNpmViewFailure,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -364,6 +366,148 @@ test("re-walking a converged walk-accumulated union adds nothing (anti-oscillati
   assert.equal(rounds, 0, "already converged — zero further rounds");
   assert.deepEqual(union.specs(), once, "re-walking changes nothing");
 });
+
+// ---- issue #512: a transport failure is NOT an unsatisfiable spec -------
+//
+// `npm view` exits non-zero for a GENUINE no-match (E404) and for every
+// TRANSPORT failure (npm missing, offline/DNS-broken cell, registry 5xx)
+// alike; flattening both into [] made resolveUnionSpecs refuse a
+// transport red as "unsatisfiable spec" — a phantom root cause an
+// operator bisects trust against (REVIEW.md Honesty: failures surface
+// as typed errors with context; no swallowed exits).
+
+// A fake npm on PATH drives the REAL default seam (npmViewVersions)
+// hermetically: stdout+exit scripts for the registry's answer shapes.
+const fakeNpmOnPath = (script) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-npm-"));
+  fs.writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${script}\n`, {
+    mode: 0o755,
+  });
+  return bin;
+};
+const withPath = (bin, fn) => {
+  const keep = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${keep}`;
+  try {
+    fn();
+  } finally {
+    process.env.PATH = keep;
+  }
+};
+
+test("classifyNpmViewFailure: only a positively-identified E404 reads as a genuine no-match (issue #512)", () => {
+  assert.equal(
+    classifyNpmViewFailure({
+      status: 1,
+      stderr: "npm error code E404\nnpm error 404 No match found for version ^9.0.0\n",
+    }),
+    null,
+    "npm's own E404 is the registry speaking: no version under this spec",
+  );
+  for (const [label, err] of [
+    [
+      "spawn failure (npm missing, the #512 repro)",
+      Object.assign(new Error("spawn npm ENOENT"), { code: "ENOENT", status: null }),
+    ],
+    [
+      "network failure",
+      {
+        status: 1,
+        stderr: "npm error code ECONNREFUSED\nnpm error network request to https://registry.npmjs.org/pkg failed\n",
+      },
+    ],
+    ["registry 5xx", { status: 1, stderr: "npm error code E500\nnpm error 500 Internal Server Error - GET\n" }],
+    ["unrecognized non-zero exit — fail-closed", { status: 1, stderr: "" }],
+    [
+      "killed by signal — no exit status",
+      { status: null, signal: "SIGTERM", stderr: "" },
+    ],
+  ]) {
+    const detail = classifyNpmViewFailure(err);
+    assert.equal(typeof detail, "string", `${label} must classify as transport, not no-match`);
+    assert.doesNotMatch(
+      detail ?? "",
+      /unsatisfiable/,
+      `the transport detail never borrows the unsatisfiable-spec voice (${label})`,
+    );
+  }
+  assert.match(
+    classifyNpmViewFailure({
+      status: 1,
+      stderr: "npm error code ECONNREFUSED\nnpm error network request failed\n",
+    }),
+    /ECONNREFUSED/,
+    "the transport detail names npm's own error code",
+  );
+});
+
+test("the #512 repro: an unspawnable npm reds as NpmTransportError — never 'unsatisfiable spec'", () => {
+  const u = new Union();
+  u.add("pkg", "^1.0.0", "walk");
+  u.add("pkg", "^2.0.0", "walk");
+  const keep = process.env.PATH;
+  process.env.PATH = "/nonexistent"; // npm cannot spawn — transport failure, not an empty match
+  try {
+    assert.throws(
+      () => resolveUnionSpecs(u),
+      (e) =>
+        e instanceof NpmTransportError &&
+        /npm did not run/.test(e.message) &&
+        !/unsatisfiable spec/.test(e.message),
+      "the gate red names the transport (npm never ran), not a phantom unsatisfiable range",
+    );
+  } finally {
+    process.env.PATH = keep;
+  }
+});
+
+test("the real default seam: registry answers classify through fake npm on PATH (issue #512)", () => {
+  const multi = new Union();
+  multi.add("pkg", "^1.0.0", "plugin");
+  multi.add("pkg", ">=9.0.0", "plugin");
+
+  // npm's E404 no-match → the UNSATISFIABLE refusal, now trustworthy
+  // evidence (the registry itself said there is no version)
+  withPath(
+    fakeNpmOnPath('echo "npm error code E404" >&2\necho "npm error 404 No match found" >&2\nexit 1'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) => !(e instanceof NpmTransportError) && /unsatisfiable spec: pkg@\^1\.0\.0 has no registry version/.test(e.message),
+        "a genuine E404 still refuses as unsatisfiable — the refusal keeps its shape",
+      ),
+  );
+
+  // network failure → NpmTransportError naming npm's code
+  withPath(
+    fakeNpmOnPath('echo "npm error code ECONNREFUSED" >&2\nexit 1'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) =>
+          e instanceof NpmTransportError &&
+          /ECONNREFUSED/.test(e.message) &&
+          !/unsatisfiable spec/.test(e.message),
+        "a dead registry reds as transport with the right root cause",
+      ),
+  );
+
+  // a truncated/garbled success is NOT evidence of an empty registry
+  withPath(
+    fakeNpmOnPath('echo "registry-garbage-not-json"\nexit 0'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) =>
+          e instanceof NpmTransportError &&
+          /unparseable/.test(e.message) &&
+          !/unsatisfiable spec/.test(e.message),
+        "a garbled registry answer must not collapse into []",
+      ),
+  );
+});
+
+
 
 const splitSpec = (spec) => {
   const i = spec.lastIndexOf("@");
