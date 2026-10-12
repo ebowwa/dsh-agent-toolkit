@@ -754,6 +754,24 @@ if [ -z "${DSH_FACE_ID:-}" ]; then
   fi
   export DSH_FACE_ID
 fi
+# The SAME identity in the sanitizer-proof namespace (issue #617; the
+# node-side shape is ebowwa/FleetTower#1629): the session-env sanitizer
+# (@deepseek-ai/dsh-subprocess scrubbedParentEnv) strips EVERY parent
+# DSH_* var from the agent's own tool shells — measured as #950
+# (2026-10-04 and again 2026-10-06) and re-measured live through air16's
+# production chain 2026-10-09 — so a DSH_-only ambient face never reaches
+# the bin/face-lock steps the session itself runs, and those walk
+# `faceHolderPid` up to the shared daemon anchor. DISPATCH_* demonstrably
+# survives that scrub (the DISPATCH_FLEET_API precedent, FleetTower#1299),
+# so the ambient face rides BOTH namespaces: DSH_FACE_ID for readers
+# inside the spawned env copy, DISPATCH_FACE_ID for the shell the session
+# actually runs in. An existing DISPATCH_FACE_ID — the node's #1629
+# injection, verified arriving on air16 2026-10-09 — always wins: never
+# clobbered, never re-minted.
+if [ -z "${DISPATCH_FACE_ID:-}" ] && [ -n "${DSH_FACE_ID:-}" ]; then
+  DISPATCH_FACE_ID="$DSH_FACE_ID"
+  export DISPATCH_FACE_ID
+fi
 DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 
 echo "::group::dsh setup" >&2
