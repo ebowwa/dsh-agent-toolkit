@@ -61,6 +61,24 @@
 #                       the node boot sweep (-mtime +7 on sessions/) never
 #                       touches — and the archive is pruned to the newest
 #                       DSH_ARCHIVE_KEEP files (default 50).
+#   DSH_HARNESS_DRIFT   harness checkout self-heal switch (issue #616;
+#                       default on): at boot the wrapper stamps its own
+#                       checkout (scripts/HARNESS_DEPLOYED_SHA — sha +
+#                       commit date), compares it against origin's tip of
+#                       the expected ref, and fast-forward-heals a stale
+#                       checkout (guarded: never over a dirty tree, a
+#                       working branch, or a non-fast-forward head — the
+#                       refused/degraded outcomes are LOUD and non-fatal).
+#                       0 disables the arm. The stamp + verdict surface in
+#                       the boot log, boot-tombstones.jsonl, and
+#                       dsh-run-meta.env (the wrapper= field on posted
+#                       artifacts).
+#   DSH_HARNESS_DRIFT_REF  expected ref override for the drift compare
+#                       (default: the tag a detached pin sits on, else
+#                       origin's default branch — the DEPLOY ref, never
+#                       the incidental branch HEAD sits on; REQUIRED to
+#                       heal a bare detached checkout — one without an own
+#                       identity is skipped, never guessed).
 #
 # Run accounting (issue #96), both best-effort, never fatal:
 #   $DSH_HOME/boot-tombstones.jsonl — one JSONL line per FAILED attempt
@@ -204,6 +222,70 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# --- 0. harness checkout stamp + drift self-heal (issue #616) ----------------
+# The node home's deploy-drift (FleetTower scripts/1o/lib/deploy-drift.mjs,
+# #776) reconciles the NODE HOME only; the checkout this wrapper spawns
+# through had no stamp, no compare, and no self-heal — air16's sat 10 days
+# behind while the node home beside it converged within minutes of every
+# main landing, and no artifact could answer "what wrapper version spawned
+# this session" (the FleetTower#2047 diagnosis needed a node-side ssh
+# session to pin it). Same STAMP/COMPARE/LOUD contract, wrapper-sized, run
+# BEFORE anything reads this tree (the input scrub below spawns scripts
+# from it):
+#   STAMP   scripts/HARNESS_DEPLOYED_SHA beside this wrapper (untracked,
+#           gitignored): the checkout sha + commit date the tree carries,
+#           refreshed after every heal — boot is this repo's sync point.
+#   COMPARE one bounded `git ls-remote`/fetch round trip against the
+#           expected ref (the checkout's branch, or the tag a detached pin
+#           sits on) — scripts/harness-drift.sh owns the details.
+#   LOUD    the verdict rides the boot log's setup group below, every
+#           boot-tombstone line, and dsh-run-meta.env (the `wrapper=`
+#           field the reply/shipper/review stamps onto posted artifacts).
+# Best-effort, never fatal: a REFUSED heal (dirty tree, working branch,
+# non-fast-forward head — the issue #276 class) or a degraded compare keeps
+# this boot on the current tree, loudly. DSH_HARNESS_DRIFT=0 disables the
+# arm; DSH_HARNESS_DRIFT_REF names the expected ref for a bare detached
+# checkout.
+HARNESS_SHA="" HARNESS_REF="" HARNESS_COMMITTED_AT=""
+HARNESS_DRIFT_VERDICT="off" HARNESS_DRIFT_LOG=""
+# -f, not -x: the arm ships 644 like its sibling re-pin-toolkit.sh and is
+# bash-invoked — an exec-bit probe would silently disable it on every
+# checkout whose mode git did not carry.
+if [ -f "$SCRIPT_DIR/harness-drift.sh" ]; then
+  if [ "${DSH_HARNESS_DRIFT:-1}" = "0" ]; then
+    HARNESS_DRIFT_VERDICT="off"
+  else
+    HARNESS_DRIFT_LOG="$(bash "$SCRIPT_DIR/harness-drift.sh" heal "$SCRIPT_DIR/.." 2>&1 || true)"
+    HARNESS_DRIFT_VERDICT="$(printf '%s\n' "$HARNESS_DRIFT_LOG" | sed -n 's/^verdict=//p' | tail -n 1)"
+    # the verdict token set is owned by harness-drift.sh; anything else
+    # reads as degraded, never crashes the boot
+    case "$HARNESS_DRIFT_VERDICT" in
+      fresh|drift|healed|refused-dirty|refused-branch|refused-not-fast-forward|refused-lock|diverged|ahead|degraded|skipped-no-remote|skipped-detached) ;;
+      *) HARNESS_DRIFT_VERDICT="degraded" ;;
+    esac
+  fi
+fi
+# The stamp answers provenance even where the arm is off or skipped.
+if [ -f "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" ]; then
+  _h_raw_sha="$(sed -n 's/^sha=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
+  _h_raw_ref="$(sed -n 's/^ref=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
+  _h_raw_date="$(sed -n 's/^committed_at=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
+  # charset guards: these values ride JSON tombstones and shell-sourced
+  # meta env — a malformed stamp degrades to empty, never injects
+  case "$_h_raw_sha" in
+    *[!0-9a-f]*) _h_raw_sha="" ;;
+  esac
+  [ "${#_h_raw_sha}" -eq 40 ] 2>/dev/null && HARNESS_SHA="$_h_raw_sha" || HARNESS_SHA=""
+  case "$_h_raw_ref" in
+    ""|*[!A-Za-z0-9._/-]*) HARNESS_REF="" ;;
+    *) HARNESS_REF="$_h_raw_ref" ;;
+  esac
+  case "$_h_raw_date" in
+    ""|*[!0-9A-Za-z:+-]*) HARNESS_COMMITTED_AT="" ;;
+    *) HARNESS_COMMITTED_AT="$_h_raw_date" ;;
+  esac
+fi
 
 # Model-input hygiene (fail-closed): credentials are scrubbed from everything
 # headed to the provider — the task text and the thread context. Paths/IPs/
@@ -770,16 +852,29 @@ if ! command -v dsh >/dev/null 2>&1; then
   fi
 fi
 dsh --version >&2
+# Harness checkout signature (issue #616): the stamp the boot heal wrote /
+# refreshed, plus the heal verdict — the boot-log answer to "what wrapper
+# version spawned this session" that air16's 10-day drift made expensive.
+if [ -n "$HARNESS_DRIFT_LOG" ]; then
+  printf '%s\n' "$HARNESS_DRIFT_LOG" >&2
+fi
+echo "harness checkout: ${HARNESS_SHA:+${HARNESS_SHA:0:7} }ref=${HARNESS_REF:-unknown} drift=${HARNESS_DRIFT_VERDICT}${HARNESS_COMMITTED_AT:+ committed $HARNESS_COMMITTED_AT}" >&2
 # Run meta: every downstream surface (reply comments, PR bodies, shipper
 # commits, review headers) stamps the model + harness version — the
 # driver is the only place that knows both. Written where the shipper and
-# reply steps read it (DSH_SHIP_CACHE, else the runner temp).
+# reply steps read it (DSH_SHIP_CACHE, else the runner temp). The wrapper
+# sha rides along (#616): the npm dsh version is the CLI, the checkout sha
+# is the wrapper that spawned the session — a stale wrapper is invisible
+# unless the artifact itself carries it.
 DSH_META_DIR="${DSH_SHIP_CACHE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
 DSH_VERSION_RESOLVED="$(dsh --version 2>/dev/null | tail -n1 | tr -d '[:space:]')"
 {
   echo "DSH_RUN_MODEL=${MODEL_ID}"
   echo "DSH_RUN_PROVIDER=${PROVIDER}"
   echo "DSH_RUN_DSH_VERSION=${DSH_VERSION_RESOLVED}"
+  echo "DSH_RUN_HARNESS_SHA=${HARNESS_SHA}"
+  echo "DSH_RUN_HARNESS_REF=${HARNESS_REF}"
+  echo "DSH_RUN_HARNESS_DRIFT=${HARNESS_DRIFT_VERDICT}"
 } > "$DSH_META_DIR/dsh-run-meta.env" 2>/dev/null || true
 export DSH_META_ACC="$DSH_META_DIR/dsh-run-meta.env"
 
@@ -1253,13 +1348,17 @@ classify_attempt_failure() {
 # dirs against 19 transcripts), the ledger survives the claim workdir
 # rm -rf AND the boot sweep, so boot-death counts become real: transcript
 # present = ran; tombstone = booted and died; neither = never booted.
-# Best-effort everywhere — accounting must never break the run.
+# The harness signature fields (issue #616) ride every line: a boot death
+# on a STALE wrapper is distinguishable from one on a fresh wrapper
+# without ssh-ing the box — the air16 diagnosis's exact gap. Values are
+# charset-guarded at extraction (empty, never injected).
 write_attempt_tombstone() {
   local class="$1" life="$2" rc="$3" had="$4" lines had_json
   # real JSON booleans — the census reads this with jq, not regex
   [ "$had" = "1" ] && had_json=true || had_json=false
-  { mkdir -p "$DSH_HOME" && printf '{"at":"%s","lifetime_s":%s,"exit_code":%s,"class":"%s","had_session":%s,"attempt":%s}\n' \
+  { mkdir -p "$DSH_HOME" && printf '{"at":"%s","lifetime_s":%s,"exit_code":%s,"class":"%s","had_session":%s,"attempt":%s,"harness_sha":"%s","harness_ref":"%s","harness_drift":"%s"}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$life" "$rc" "$class" "$had_json" "$ATTEMPT" \
+      "${HARNESS_SHA:-}" "${HARNESS_REF:-}" "${HARNESS_DRIFT_VERDICT:-off}" \
       >> "$DSH_HOME/boot-tombstones.jsonl"; } 2>/dev/null || true
   # Bound the ledger: failures are rare post-classification, but a
   # pathological cell must not grow it unboundedly — keep the newest 5000.

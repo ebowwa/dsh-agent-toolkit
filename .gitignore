@@ -1,1 +1,4 @@
 node_modules/
+# harness-drift.sh per-checkout stamp (issue #616) — runtime state of a
+# deployed checkout, never repo content
+scripts/HARNESS_DEPLOYED_SHA
