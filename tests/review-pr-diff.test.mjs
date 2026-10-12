@@ -48,7 +48,24 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REVIEW_PR = path.join(ROOT, "scripts", "review-pr.sh");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
-const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
+// issue #582/#621: spawnSync NEVER throws — a failed fixture-SETUP call used
+// to resolve silently: a non-zero init/commit/push changed nothing the asserts
+// could see, so the suite stayed green while measuring a different fixture
+// topology than the one the docblock describes. Fixture CONSTRUCTION asserts
+// every call: a non-zero exit (or a spawn-level error) throws with the failed
+// argv + captured stderr, so fixture breakage goes red naming the exact call
+// (the PR #589 gitSetup shape). Every git call in this suite IS construction —
+// the review stage's own git traffic runs inside the script-under-test, behind
+// the PATH git shim — so the plain unchecked helper has no remaining users.
+const gitSetup = (args, opts = {}) => {
+  const r = spawnSync("git", args, { encoding: "utf8", ...opts });
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `fixture setup failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
 
 // This lane's `git` may be the dsh scrub shim (a script whose shebang needs
 // PATH); the fixture bakes the REAL git into its PATH shim so the shim's
@@ -77,33 +94,33 @@ const fixture = ({ baseAhead = 1, emptyPR = false } = {}) => {
   const dir = mkdtempSync(path.join(tmpdir(), "review-pr-diff-test-"));
   const bare = path.join(dir, "origin.git");
   const seed = path.join(dir, "seed");
-  git(["init", "-q", "--bare", "-b", "master", bare]);
-  git(["init", "-q", "-b", "master", seed]);
-  git(["config", "user.name", "tester"], { cwd: seed });
-  git(["config", "user.email", "tester@example.com"], { cwd: seed });
+  gitSetup(["init", "-q", "--bare", "-b", "master", bare]);
+  gitSetup(["init", "-q", "-b", "master", seed]);
+  gitSetup(["config", "user.name", "tester"], { cwd: seed });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: seed });
   writeFileSync(path.join(seed, "REVIEW.md"), "# rules contract fixture\n");
   writeFileSync(path.join(seed, "a.txt"), "base content\n");
-  git(["add", "-A"], { cwd: seed });
-  git(["commit", "-q", "-m", "c1 fork point"], { cwd: seed });
-  const fork = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
+  gitSetup(["add", "-A"], { cwd: seed });
+  gitSetup(["commit", "-q", "-m", "c1 fork point"], { cwd: seed });
+  const fork = gitSetup(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
   writeFileSync(path.join(seed, "sibling.txt"), "sibling-landed work\n");
-  git(["add", "-A"], { cwd: seed });
-  git(["commit", "-q", "-m", "c2 sibling lands on base"], { cwd: seed });
+  gitSetup(["add", "-A"], { cwd: seed });
+  gitSetup(["commit", "-q", "-m", "c2 sibling lands on base"], { cwd: seed });
   for (let i = 2; i <= baseAhead; i++) {
     // base keeps advancing past the fork; deep enough, no deepen budget
     // within review-pr.sh's steps (1+2+4 ⇒ boundary depth 8) can reconnect
     // the graph (baseAhead=12 ≫ 8 pins the budget-exhaustion terminal).
-    git(["commit", "-q", "--allow-empty", `-m base advance ${i}`], { cwd: seed });
+    gitSetup(["commit", "-q", "--allow-empty", `-m base advance ${i}`], { cwd: seed });
   }
-  git(["push", "-q", bare, "master"], { cwd: seed });
-  const baseTip = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["checkout", "-q", "-b", "pr-branch", fork], { cwd: seed });
+  gitSetup(["push", "-q", bare, "master"], { cwd: seed });
+  const baseTip = gitSetup(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
+  gitSetup(["checkout", "-q", "-b", "pr-branch", fork], { cwd: seed });
   writeFileSync(path.join(seed, "pr-file.txt"), "the PR's own change\n");
-  git(["add", "-A"], { cwd: seed });
-  git(["commit", "-q", "-m", "c3 the PR change"], { cwd: seed });
-  git(["push", "-q", bare, "pr-branch:refs/heads/pr-branch"], { cwd: seed });
-  const prTip = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["--git-dir", bare, "update-ref", "refs/pull/77/merge", emptyPR ? baseTip : prTip]);
+  gitSetup(["add", "-A"], { cwd: seed });
+  gitSetup(["commit", "-q", "-m", "c3 the PR change"], { cwd: seed });
+  gitSetup(["push", "-q", bare, "pr-branch:refs/heads/pr-branch"], { cwd: seed });
+  const prTip = gitSetup(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
+  gitSetup(["--git-dir", bare, "update-ref", "refs/pull/77/merge", emptyPR ? baseTip : prTip]);
   return { dir, bare };
 };
 
@@ -133,7 +150,7 @@ const runReviewPr = ({ dir, bare }) => {
   // transport the review stage's --depth 1 fetches then graft base and
   // pr-merge into disconnected roots — verified: `git merge-base` exits 1
   // here, the exact #495 failure.)
-  git(["clone", "-q", "--depth", "1", bare, worktree]);
+  gitSetup(["clone", "-q", "--depth", "1", bare, worktree]);
   const shims = path.join(dir, "shim");
   const logs = path.join(dir, "logs");
   mkdirSync(shims, { recursive: true });

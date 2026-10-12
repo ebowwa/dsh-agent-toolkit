@@ -42,13 +42,30 @@ const git = (cwd, args) =>
     env: HERMETIC_ENV,
   });
 
+// issue #582/#621: spawnSync NEVER throws — a failed fixture-CONSTRUCTION
+// call used to resolve silently (commitFile()'s discarded result meant a
+// failed add/commit swapped the checkout topology the re-pin guard is graded
+// against while every assert stayed green). Construction asserts (the PR
+// #589 gitSetup shape): non-zero exit or spawn error throws with the failed
+// argv + captured stderr. Runtime probes that READ state for the asserts
+// (rev, head, onBranch) keep the plain `git` helper.
+const gitSetup = (cwd, args) => {
+  const r = git(cwd, args);
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `fixture setup failed: git -C ${cwd} ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
+
 const runScript = (dir, args = []) =>
   spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env: { ...HERMETIC_ENV, DSH_AGENT_TOOLKIT_DIR: dir } });
 
 const commitFile = (cwd, name, body) => {
   writeFileSync(path.join(cwd, name), body);
-  git(cwd, ["add", name]);
-  return git(cwd, ["commit", "-m", `add ${name}`]);
+  gitSetup(cwd, ["add", name]);
+  return gitSetup(cwd, ["commit", "-m", `add ${name}`]);
 };
 
 /**
@@ -63,24 +80,24 @@ const fixture = () => {
   const seed = path.join(dir, "seed");
   const box = path.join(dir, "toolkit");
   mkdirSync(seed, { recursive: true });
-  git(seed, ["init", "--quiet", "--initial-branch=main"]);
+  gitSetup(seed, ["init", "--quiet", "--initial-branch=main"]);
   commitFile(seed, "settings.zai.yaml", "# template v1\n");
-  git(seed, ["clone", "--quiet", "--bare", ".", origin]);
-  git(seed, ["push", "--quiet", origin, "main"]);
-  git(seed, ["tag", "v1"]);
-  git(seed, ["push", "--quiet", origin, "v1"]);
-  spawnSync("git", ["clone", "--quiet", origin, box], { encoding: "utf8", env: HERMETIC_ENV });
+  gitSetup(seed, ["clone", "--quiet", "--bare", ".", origin]);
+  gitSetup(seed, ["push", "--quiet", origin, "main"]);
+  gitSetup(seed, ["tag", "v1"]);
+  gitSetup(seed, ["push", "--quiet", origin, "v1"]);
+  gitSetup(dir, ["clone", "--quiet", origin, box]);
   const rev = (ref) => git(box, ["rev-parse", ref]).stdout.trim();
   return {
     dir, origin, seed, box,
     revA: rev("v1"),
     advance: () => {
       commitFile(seed, "drift.md", "# next release\n");
-      git(seed, ["push", "--quiet", origin, "main"]);
-      git(seed, ["tag", "-f", "v1"]);
-      git(seed, ["push", "--quiet", "--force", origin, "v1"]);
+      gitSetup(seed, ["push", "--quiet", origin, "main"]);
+      gitSetup(seed, ["tag", "-f", "v1"]);
+      gitSetup(seed, ["push", "--quiet", "--force", origin, "v1"]);
     },
-    detachAtPin: () => git(box, ["checkout", "--quiet", "v1"]),
+    detachAtPin: () => gitSetup(box, ["checkout", "--quiet", "v1"]),
     head: () => rev("HEAD"),
     onBranch: () => git(box, ["symbolic-ref", "--short", "-q", "HEAD"]).stdout.trim(),
     cleanUp: () => rmSync(dir, { recursive: true, force: true }),
@@ -128,7 +145,7 @@ test("the #276 receipt: tracked modifications REFUSE the re-pin and survive it",
     assert.equal(readFileSync(file, "utf8"), "# agent mid-edit marker DSH-276\n", "the mid-edit work SURVIVES");
     assert.equal(f.head(), f.revA, "HEAD kept at the previous pin");
     // and the cure works: once the tree is clean, the same script re-pins
-    git(f.box, ["checkout", "--", "settings.zai.yaml"]);
+    gitSetup(f.box, ["checkout", "--", "settings.zai.yaml"]);
     const again = runScript(f.box);
     assert.equal(again.status, 0, again.stderr);
     assert.notEqual(f.head(), f.revA, "resumed re-pins after the tree was cleaned");
@@ -143,7 +160,7 @@ test("a STAGED modification refuses too (diff-index sees the index, not just the
     f.detachAtPin();
     const file = path.join(f.box, "settings.zai.yaml");
     writeFileSync(file, "# staged edit\n");
-    git(f.box, ["add", "settings.zai.yaml"]);
+    gitSetup(f.box, ["add", "settings.zai.yaml"]);
     const res = runScript(f.box);
     assert.equal(res.status, 3, res.stderr);
     assert.match(res.stderr, /REFUSING re-pin/);
@@ -157,7 +174,7 @@ test("a working branch (not main) refuses; the branch stays checked out", () => 
   const f = fixture();
   try {
     f.detachAtPin();
-    git(f.box, ["checkout", "--quiet", "-b", "dsh/issue-276-work"]);
+    gitSetup(f.box, ["checkout", "--quiet", "-b", "dsh/issue-276-work"]);
     const res = runScript(f.box);
     assert.equal(res.status, 3, res.stderr);
     assert.match(res.stderr, /REFUSING re-pin/);
@@ -202,7 +219,7 @@ test("fetch failure degrades (exit 4, previous pin kept, tree untouched)", () =>
   const f = fixture();
   try {
     f.detachAtPin();
-    git(f.box, ["remote", "set-url", "origin", path.join(f.dir, "no-such-origin.git")]);
+    gitSetup(f.box, ["remote", "set-url", "origin", path.join(f.dir, "no-such-origin.git")]);
     const res = runScript(f.box);
     assert.equal(res.status, 4, res.stderr);
     assert.match(res.stderr, /fetch failed/);
