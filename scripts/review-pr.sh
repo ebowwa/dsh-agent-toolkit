@@ -35,6 +35,47 @@
 # PR and is reported as one — never as an unavailable diff (the issue #519
 # adjacent nit).
 #
+# The fork point is a property of the PR HEAD, never of the merge preview
+# (issue #651, receipts #554 + #550): GitHub builds refs/pull/N/merge against
+# the base tip at LAST PR UPDATE, so on a PR whose base has moved since,
+# merge-base(base, pr-merge) legitimately resolves to the PREVIEW BASE — a
+# base-side commit (d2a47b3a on #554, c173b02b on #550) that the old
+# narration then mislabeled as the PR's "fork point". The only fork-point
+# value that may ever be narrated is a VALIDATED one:
+#   <head>^                      — the head is a single commit whose parent
+#                                  sits on base's line of history
+#   merge-base(base_tip, head)   — otherwise
+# validated against `git rev-list --parents -1` of the PR head (parent
+# hashes ride the head commit object at ANY depth — no deepening needed).
+# A resolved value that is neither is a TYPED error (FORK_HEAD_UNREADABLE /
+# FORK_POINT_UNRESOLVED / FORK_POINT_NOT_REACHABLE — stderr + a typed token
+# in the basis line), never narrated prose; the review still POSTS on the
+# withheld / preview-scoped basis, because a nonzero exit here drops the
+# whole review (dsh-worker.sh has no auto-retry) and the #516 availability
+# doctrine holds. And before the review prompt is minted, the narrated fork
+# point is CROSS-CHECKED against the diff actually shown: the branch's own
+# diff from the validated fork point (the parent-diff stat on the
+# head-parent arm) must agree with the shown preview diff, and the basis
+# line says VERIFIED / MISMATCH (typed FORK_DIFF_MISMATCH, both stats shown)
+# / UNAVAILABLE — the reviewer is never left to assume the shown stat is the
+# branch's own.
+#
+# Freshness is computed against the PR HEAD, never the merge preview (issue
+# #628, adopted verbatim from open carrier PR #630 so the two carriers
+# compose instead of conflicting): GitHub constructs refs/pull/N/merge by
+# merging the PR head into the CURRENT base tip, so the preview's FIRST
+# PARENT is the base tip and `merge-base(base, pr-merge)` resolves to the
+# base tip BY CONSTRUCTION whenever the preview is fresh — and on a stale
+# preview it resolves to the OLDER preview base (the #554/#550 receipt
+# shape). The freshness line below is derived from HEAD_FORK_BASE =
+# merge-base(base, refs/pull/N/head): the only hash that may carry a
+# "NOT advanced" claim is one proven to be that merge-base; when the shallow
+# graph cannot connect base and the PR head within the deepen budget, the
+# prose degrades to "freshness UNVERIFIED" — never a positive claim. The
+# DIFF itself stays scoped on the merge preview (FORK_BASE→pr-merge, the
+# three-dot semantics issues #516/#519 pinned): that content was correct on
+# the receipts; only the fork-point narration lied.
+#
 # Env contract:
 #   GH_TOKEN                the worker's PAT (read + comment/label on the repo)
 #   DSH_SHIP_REPO           owner/repo of the PR under review
@@ -132,19 +173,34 @@ gh_fetch() { # <refspec:local-ref>
 }
 fetch_merge() { gh_fetch "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"; }
 fetch_base()   { gh_fetch "refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
+# Issue #628 (adopted from carrier PR #630 verbatim): the PR's true fork
+# point is a property of the PR HEAD, not of the merge preview — fetch the
+# head ref too (the freshness prose and the #651 validation below are
+# derived from it; the preview's merge-base is the preview base).
+fetch_head()   { gh_fetch "refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"; }
 # Issue #519: widen the shallow boundary of BOTH fetched refs by <depth>
 # commits — the recover arm for the disconnected graph the --depth 1
-# fetches construct. Same env-borne auth seam as gh_fetch.
+# fetches construct. Same env-borne auth seam as gh_fetch. Issue #628: the
+# PR head rides the same deepen so its merge-base with base can resolve too
+# — but as its OWN fetch (a git fetch is all-or-nothing across refspecs,
+# and the head ref can vanish on a raced PR close): a missing head ref must
+# never kill the load-bearing #519 base/preview recovery.
 gh_deepen() { # <depth>
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
     git -c credential.helper= fetch -q --deepen="$1" origin \
       "refs/heads/${BASE_REF}:refs/remotes/origin/base" \
-      "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"
+      "refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge" \
+    && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
+    git -c credential.helper= fetch -q --deepen="$1" origin \
+      "refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head" \
+    || true
 }
 fetch_merge 2>/dev/null \
   || { echo "review-pr: cannot fetch PR #$PR_NUM merge ref" >&2; rm -f "$RULES_TMP"; exit 2; }
 fetch_base 2>/dev/null || true
+fetch_head 2>/dev/null || true
 # Issue #516: the diff fallback must never change diff SEMANTICS. The old
 # chain's `|| echo origin/base` turned a FAILED merge-base lookup — exactly
 # the shallow-checkout case — into a TWO-DOT base→pr-merge diff, folding
@@ -155,6 +211,16 @@ fetch_base 2>/dev/null || true
 # merge-base explicitly; when it cannot be resolved, hand (diff unavailable)
 # and say so in the prompt — never silently degrade to a two-dot diff.
 FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+# Issue #628 (adopted from carrier PR #630): HEAD_FORK_BASE is the PR's TRUE
+# fork point — merge-base of the base tip and the PR HEAD ref. The preview's
+# merge-base (FORK_BASE) can NEVER carry the freshness claim or be narrated
+# as the fork point: fresh preview ⇒ it is the base tip by construction,
+# stale preview ⇒ it is an older base-side commit — either way it is a
+# property of the PREVIEW, not of the branch (the #554/#550 mislabel).
+# Degrade-safe like every lookup here: empty means unresolvable, and the
+# prose says UNVERIFIED rather than claiming.
+HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
+HEAD_DEEPEN_STEPS=""
 DEEPEN_STEPS=""
 # Issue #519: the --depth 1 fetches above (and the worker's --depth 1 clone)
 # disconnect base and pr-merge by construction — the lookup exits 1 on the
@@ -168,11 +234,81 @@ if [ -z "$FORK_BASE" ]; then
   for DEEPEN_STEP in 1 2 4; do
     gh_deepen "$DEEPEN_STEP" 2>/dev/null || true
     FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+    HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
     if [ -n "$FORK_BASE" ]; then
       DEEPEN_STEPS="$DEEPEN_STEP"
       break
     fi
   done
+fi
+# Issue #628 (adopted from carrier PR #630): the preview's merge-base can
+# resolve while the PR-head fork point is still disconnected (the preview's
+# first parent is a ref already held, the head's history is not). The head
+# fork point gets the SAME guarded, bounded recovery — never an unbounded
+# loop; an unresolvable head fork degrades to UNVERIFIED prose and the #651
+# typed error below, never to a claim.
+if [ -n "$FORK_BASE" ] && [ -z "$HEAD_FORK_BASE" ]; then
+  for HEAD_DEEPEN_STEP in 1 2 4; do
+    gh_deepen "$HEAD_DEEPEN_STEP" 2>/dev/null || true
+    HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
+    if [ -n "$HEAD_FORK_BASE" ]; then
+      HEAD_DEEPEN_STEPS="$HEAD_DEEPEN_STEP"
+      break
+    fi
+  done
+fi
+# ── Issue #651: fork-point VALIDATION (the resolution-side anti-graft layer) ──
+# The narrated fork point must be a VALIDATED value: <head>^ when the head
+# is a single commit whose parent sits on base's line of history (proven by
+# merge-base(base_tip, head) == head^), else merge-base(base_tip, head).
+# The parentage read needs NO deepening — `rev-list --parents -1` prints the
+# head's parent hashes straight off the head commit object at any shallow
+# depth (the exact command both receipts ran) — so the check is cheap and
+# always available. A resolved value that is neither is a TYPED error, never
+# narrated prose. The review still posts: a nonzero exit would drop the
+# whole review (the worker has no auto-retry), so the typed token rides the
+# basis line + stderr and the diff stays on the #516/#628 fail-closed shape.
+FORK_OK=""          # the VALIDATED fork point (empty = none may be narrated)
+FORK_SOURCE=""      # head-parent | merge-base — which legal arm produced it
+FORK_ERR=""         # typed token when no legal value could be validated
+HEAD_SHA=""
+HEAD_NPARENTS=0
+HEAD_PARENT1=""
+HEAD_PARENTS_RAW="$(git rev-list --parents -1 origin/pr-head 2>/dev/null || true)"
+if [ -n "$HEAD_PARENTS_RAW" ]; then
+  set -- $HEAD_PARENTS_RAW
+  HEAD_SHA="$1"
+  HEAD_NPARENTS=$(( $# - 1 ))
+  if [ "$HEAD_NPARENTS" -ge 1 ]; then
+    HEAD_PARENT1="$2"
+  fi
+fi
+if [ -z "$HEAD_SHA" ]; then
+  FORK_ERR="FORK_HEAD_UNREADABLE"
+elif [ -z "$HEAD_FORK_BASE" ]; then
+  FORK_ERR="FORK_POINT_UNRESOLVED"
+else
+  FORK_OK="$HEAD_FORK_BASE"
+  if [ "$HEAD_NPARENTS" -eq 1 ] && [ "$HEAD_FORK_BASE" = "$HEAD_PARENT1" ]; then
+    # merge-base(base_tip, head) == head^ ⇒ the head is a single commit
+    # sitting directly on base's line of history: the head-parent arm.
+    FORK_SOURCE="head-parent"
+  else
+    FORK_SOURCE="merge-base"
+  fi
+  # The graft tripwire (the d2a47b3a/c173b02 detector): a fork point IS an
+  # ancestor of the head BY DEFINITION — a resolved value that fails this
+  # walk is a shallow-graft artifact and is refused, never narrated.
+  if ! git rev-parse --verify --quiet "${FORK_OK}^{commit}" >/dev/null 2>&1; then
+    FORK_ERR="FORK_POINT_UNRESOLVED"
+    FORK_OK=""
+  elif ! git merge-base --is-ancestor "$FORK_OK" origin/pr-head 2>/dev/null; then
+    FORK_ERR="FORK_POINT_NOT_REACHABLE"
+    FORK_OK=""
+  fi
+fi
+if [ -n "$FORK_ERR" ]; then
+  echo "review-pr: typed error $FORK_ERR: fork point refused, nothing may narrate one (issue #651 — head ${HEAD_SHA:-unreadable}, parents $HEAD_NPARENTS, candidate ${HEAD_FORK_BASE:-none})" >&2
 fi
 BASE_TIP="$(git rev-parse origin/base 2>/dev/null || true)"
 DIFF=""
@@ -190,15 +326,70 @@ if [ -n "$FORK_BASE" ]; then
   DIFF_STAT_ALL="$(git diff --stat "$FORK_BASE" origin/pr-merge 2>/dev/null)" \
     && STAT_RC=0 || STAT_RC=1
   DIFF_STAT="$(printf '%s' "$DIFF_STAT_ALL" | tail -n 30 || true)"
-  if [ -n "$BASE_TIP" ] && [ "$BASE_TIP" = "$FORK_BASE" ]; then
-    DIFF_BASIS="fork point ${FORK_BASE} — base has NOT advanced since the fork (the diff is the PR's own changes only)"
+  # Issue #628 (adopted from carrier PR #630): the freshness claim keys off
+  # HEAD_FORK_BASE — the merge-base of base and the PR HEAD — never off
+  # merge-base(base, pr-merge), which is the base tip by construction
+  # whenever the preview is fresh (the #574 false prose) and an older
+  # preview base when the preview is stale (the #554/#550 mislabel). Only a
+  # hash PROVEN to be that merge-base may carry the claim; anything less
+  # degrades to UNVERIFIED — never a positive claim.
+  if [ -n "$HEAD_FORK_BASE" ] && [ -n "$BASE_TIP" ] && [ "$BASE_TIP" = "$HEAD_FORK_BASE" ]; then
+    DIFF_BASIS="PR-head fork point ${HEAD_FORK_BASE} (merge-base of base and refs/pull/${PR_NUM}/head) — base has NOT advanced since the fork (the diff is the PR's own changes only; issue #628: verified against the PR HEAD — the merge preview's merge-base is the base tip by construction and asserts nothing)"
+  elif [ -n "$HEAD_FORK_BASE" ] && [ -n "$BASE_TIP" ]; then
+    DIFF_BASIS="PR-head fork point ${HEAD_FORK_BASE} — base tip ${BASE_TIP} HAS advanced since the fork (sibling landings sit between the fork and the tip; the diff below is the PR's own changes over the CURRENT base — judge nothing about base history here; issue #628: the merge preview's merge-base cannot see this advancement, it resolves to the base tip by construction)"
+  elif [ -n "$HEAD_FORK_BASE" ]; then
+    DIFF_BASIS="PR-head fork point ${HEAD_FORK_BASE} — base tip unresolvable (base fetch failed)"
   elif [ -n "$BASE_TIP" ]; then
-    DIFF_BASIS="fork point ${FORK_BASE} — base tip ${BASE_TIP} HAS advanced since the fork (the diff is the PR's own changes only; judge nothing about base history here)"
+    DIFF_BASIS="PR-head fork point UNRESOLVABLE in this shallow graph — base freshness UNVERIFIED, no advancement claim either way (issue #628: a positive claim here would be the merge-preview tautology — merge-base(base, pr-merge) is the base tip by construction); the diff below is still scoped ${FORK_BASE}→pr-merge"
   else
-    DIFF_BASIS="fork point ${FORK_BASE} — base tip unresolvable (base fetch failed)"
+    DIFF_BASIS="merge-preview base ${FORK_BASE} — base tip unresolvable (base fetch failed; issue #651: the preview base is named as what it is, never narrated as the fork point)"
+  fi
+  # A merge-preview merge-base that is NOT the base tip means the preview
+  # ref itself is stale (GitHub rebuilt it against an older tip — the #574
+  # cached-ref shape, and exactly the #554/#550 receipt): say so, so the
+  # diff's scope is never overstated and the preview base is never mistaken
+  # for the branch's fork point.
+  if [ -n "$BASE_TIP" ] && [ "$FORK_BASE" != "$BASE_TIP" ]; then
+    DIFF_BASIS="$DIFF_BASIS — the merge preview is STALE (its merge-base ${FORK_BASE} predates the current tip, so the diff below is scoped to that older base, not the tip)"
   fi
   if [ -n "$DEEPEN_STEPS" ]; then
     DIFF_BASIS="$DIFF_BASIS — the shallow checkout was deepened in bounded steps to resolve this fork point (issue #519: final deepen step $DEEPEN_STEPS); anything the budget cannot still connect stays withheld"
+  fi
+  if [ -n "$HEAD_DEEPEN_STEPS" ]; then
+    DIFF_BASIS="$DIFF_BASIS — the PR-head fork point was deepened for too (issue #628: final deepen step $HEAD_DEEPEN_STEPS)"
+  fi
+  # Issue #651, acceptance criterion 2: cross-check the narrated fork point
+  # against the diff ACTUALLY SHOWN before the review prompt is minted. The
+  # branch's own diff from the VALIDATED fork point (the parent-diff stat
+  # when the head-parent arm held) must agree with the shown preview diff;
+  # the basis line says which it was, and a mismatch is a TYPED token with
+  # BOTH stats shown — the reviewer is never left to assume the shown stat
+  # is the branch's own.
+  if [ -n "$FORK_OK" ] && [ "$DIFF_RC" = "0" ] && [ "$STAT_RC" = "0" ]; then
+    BRANCH_STAT_ALL="$(git diff --stat "$FORK_OK" origin/pr-head 2>/dev/null)" \
+      && BRANCH_RC=0 || BRANCH_RC=1
+    SHOWN_SUMMARY="$(printf '%s' "$DIFF_STAT_ALL" | tail -n 1)"
+    if [ "$BRANCH_RC" = "1" ]; then
+      DIFF_BASIS="$DIFF_BASIS — cross-check (issue #651) UNAVAILABLE: the branch's own diff from the validated fork point could not be computed in this shallow graph; the shown diff is NOT verified against it"
+    else
+      BRANCH_SUMMARY="$(printf '%s' "$BRANCH_STAT_ALL" | tail -n 1)"
+      if [ "$FORK_SOURCE" = "head-parent" ]; then
+        BRANCH_LABEL="parent-diff (head^ → head)"
+      else
+        BRANCH_LABEL="branch diff (fork point → head)"
+      fi
+      if [ -z "$SHOWN_SUMMARY" ] && [ -z "$BRANCH_SUMMARY" ]; then
+        DIFF_BASIS="$DIFF_BASIS — cross-check (issue #651) VERIFIED: both the shown diff and the ${BRANCH_LABEL} from the validated fork point are EMPTY"
+      elif [ -n "$BRANCH_SUMMARY" ] && [ "$BRANCH_SUMMARY" = "$SHOWN_SUMMARY" ]; then
+        DIFF_BASIS="$DIFF_BASIS — cross-check (issue #651) VERIFIED: the shown stat equals the ${BRANCH_LABEL} from the validated fork point (${BRANCH_SUMMARY})"
+      else
+        DIFF_BASIS="$DIFF_BASIS — CROSS-CHECK MISMATCH (typed: FORK_DIFF_MISMATCH, issue #651): the shown stat \"${SHOWN_SUMMARY:-empty}\" does NOT equal the ${BRANCH_LABEL} from the validated fork point ${FORK_OK} (\"${BRANCH_SUMMARY:-empty}\") — same-file base landings inside the merge preview or a stale preview ref: grade the shown diff as base-relative, NOT as the branch's own changes"
+        echo "review-pr: typed error FORK_DIFF_MISMATCH: shown stat '${SHOWN_SUMMARY:-}' vs ${BRANCH_LABEL} '${BRANCH_SUMMARY:-}' (issue #651)" >&2
+      fi
+    fi
+  fi
+  if [ -n "$FORK_ERR" ]; then
+    DIFF_BASIS="$DIFF_BASIS — (typed: $FORK_ERR, issue #651: no VALIDATED fork point exists — no fork-point value anywhere above is trustworthy; the diff basis is the merge preview alone)"
   fi
   if [ "$DIFF_RC" = "1" ] || [ "$STAT_RC" = "1" ]; then
     # The fork RESOLVED but the diff itself failed — genuinely unavailable.
@@ -209,7 +400,7 @@ if [ -n "$FORK_BASE" ]; then
     # clean — an empty result is an EMPTY PR (pr-merge == base at the fork),
     # not an unavailable diff. The old text asserted a failure that never
     # happened; say the truth instead.
-    DIFF="(the diff is EMPTY — pr-merge carries no tree change over base at the resolved fork point ${FORK_BASE}; this is an empty PR, not a withheld diff — verify the emptiness is intended)"
+    DIFF="(the diff is EMPTY — pr-merge carries no tree change over the merge-preview base ${FORK_BASE}; this is an empty PR, not a withheld diff — verify the emptiness is intended)"
     DIFF_STAT="(empty diff — no file changes)"
     DIFF_BASIS="$DIFF_BASIS — the diff ran clean and is EMPTY (an empty PR, not a withheld one)"
   fi
@@ -222,6 +413,9 @@ else
   DIFF="(diff unavailable — the base/pr-merge graph cannot be connected in this shallow checkout, so the PR's own changes could NOT be isolated; do NOT reconstruct them from branch names or checks output)"
   DIFF_STAT="(diff stat unavailable — same shallow-graph cause)"
   DIFF_BASIS="fork point UNRESOLVABLE (shallow graph) — the diff below is WITHHELD, not degraded; ground findings only in what is actually shown, and say the diff was unavailable rather than inferring the change"
+  if [ -n "$FORK_ERR" ]; then
+    DIFF_BASIS="$DIFF_BASIS — (typed: $FORK_ERR, issue #651: the PR-head fork point is unvalidated too — no fork-point value exists anywhere in this basis)"
+  fi
 fi
 DIFF_CAP=6000
 DIFF_LINES="$(printf '%s' "$DIFF" | wc -l | tr -d ' ')"
@@ -249,7 +443,9 @@ PR: #$PR_NUM "$PR_TITLE" ($BASE_REF ← $HEAD_REF)
 
 Diff basis (issue #516): $DIFF_BASIS
 
-Diff (fork point→pr-merge when resolvable, truncated to $DIFF_CAP lines):
+Diff (merge-preview base→pr-merge when resolvable — the fork point and
+freshness above are computed against the PR HEAD per issues #628/#651;
+truncated to $DIFF_CAP lines):
 $DIFF
 
 Diff stat:
