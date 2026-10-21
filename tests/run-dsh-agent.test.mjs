@@ -1107,10 +1107,25 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
 // settings naming zai and the children overridden to a DIFFERENT provider
 // (opencode-go2), credential resolution must name the SETTINGS route
 // ("zai") — if the patch had leaked into the head's model, the error would
-// name opencode-go2 instead. This is also the runtime proof that
-// settings.yaml applies to the booted tree (a --dump-config cannot show
-// it: it prints layer views without resolving them). Skipped when the dsh
-// CLI is absent.
+// name opencode-go2 instead.
+//
+// TWO boots, and why (issue #650: this leg reded on every keyless box whose
+// dsh had drifted to the profile-boot generation). On that generation
+// (measured on 0.2.0-rc.2) the stamped settings.yaml is NOT read at model
+// resolution time: the FIRST boot migrates it into the profile
+// (profiles/headless/cordis.patch.yml; the original is renamed
+// settings.yaml.imported) but resolves its own model BEFORE that migration
+// lands, so a fresh home's first boot names the shipped-template default
+// (deepseek-official) and the single-boot shape reded off-lane on any box
+// carrying such a CLI. The warm-up boot below lets the CLI perform its own
+// migration inside the hermetic DSH_HOME; the SECOND boot then composes the
+// migrated zai rows and the assertions hold on both generations (a CLI that
+// still reads settings.yaml directly names zai on the first boot too —
+// nothing to migrate). The warm-up's output is deliberately unasserted:
+// pre-migration state differs by generation, only termination is pinned.
+// This is also the runtime proof that the stamped settings apply to the
+// booted tree (a --dump-config cannot show it: it prints layer views
+// without resolving them). Skipped when the dsh CLI is absent.
 test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
   // Children overridden to a provider DIFFERENT from settings' zai so the
   // two halves are distinguishable in the credential-resolution error.
@@ -1122,6 +1137,16 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
+    // Settings-migration warm-up (issue #650): boot 1 lets the CLI migrate
+    // the stamped settings.yaml into the profile it actually resolves
+    // against; its output is generation-dependent and never asserted.
+    const warmup = spawnSync("dsh", ["--profile", "headless", "reply ok"], {
+      encoding: "utf8",
+      timeout: 120_000,
+      cwd,
+      env,
+    });
+    assert.notEqual(warmup.status, null, "the settings-migration warm-up boot must terminate, not hang");
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
       encoding: "utf8",
       timeout: 120_000,
@@ -1130,15 +1155,18 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
     });
     assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
     const combined = `${boot.stdout}\n${boot.stderr}`;
-    assert.match(combined, /MISSING_CREDENTIAL/, "the boot must reach credential resolution — proving settings.yaml applies at runtime");
+    assert.match(combined, /MISSING_CREDENTIAL/, "the boot must reach credential resolution — proving the stamped settings apply at runtime (directly, or via the CLI's own settings→profile migration)");
+    // Quote-agnostic on purpose: the message style differs across CLI
+    // generations (provider route "zai" on 0.2.0-rc.2, 'zai' on older
+    // builds) — the pin is WHICH route is named, not the quoting.
     assert.match(
       combined,
-      /provider route "zai"/,
-      "the HEAD resolves its model from settings.yaml (zai/glm-5.3) — the run model, not the override",
+      /provider route ["']zai/,
+      "the HEAD resolves its model from the stamped settings (zai/glm-5.3) — the run model, not the override",
     );
     assert.doesNotMatch(
       combined,
-      /provider route "opencode-go2"/,
+      /provider route ["']opencode-go2/,
       "the subagent override must not become the head's route — that would be this half broken",
     );
     assert.doesNotMatch(combined, /plugin tree failed to load/, "the patched plugin tree must still load");
