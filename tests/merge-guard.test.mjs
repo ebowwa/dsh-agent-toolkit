@@ -48,6 +48,7 @@ import { mkdtempSync, writeFileSync, rmSync, chmodSync, existsSync, readFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GUARD_INPUT_AMBIENT, scrubGuardInputAmbient } from "./lib/guard-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = path.join(ROOT, "scripts", "merge-guard.sh");
@@ -154,24 +155,18 @@ const mergeCapture = (dir) =>
     ? readFileSync(path.join(dir, "merge-capture"), "utf8").split("\n").filter(Boolean)
     : null;
 
-// The guard-input ambient names (issue #612): the MERGE_GUARD_* names
-// scripts/merge-guard.sh reads for GRADING — MERGE_GUARD_CHECK names the
-// check run (CHECK/CHECK_EXPLICIT), MERGE_GUARD_VERIFY / MERGE_GUARD_VERIFY_TOOL
-// arm the independent-verification leg. Every direct-guard env construction in
-// this file scrubs this ONE set through this ONE helper before the caller's
-// own spread, so "default" means default on every machine and a deliberate
-// per-test stamp (applied after the scrub) still wins. One home, not a
-// per-site copy: the two raw-spread legs outside runGuard historically
-// deleted only the VERIFY pair while their comment claimed the whole
-// MERGE_GUARD_* set (issue #612 site 2), and a narrowed copy is exactly the
-// drift this helper pins shut. MERGE_GUARD_GH is deliberately NOT here: it
-// selects the gh binary, every leg sets it explicitly after the spread, and
-// scrubbing it would break the missing-binary leg.
-const GUARD_INPUT_AMBIENT = ["MERGE_GUARD_CHECK", "MERGE_GUARD_VERIFY", "MERGE_GUARD_VERIFY_TOOL"];
-const scrubGuardInputAmbient = (env) => {
-  for (const name of GUARD_INPUT_AMBIENT) delete env[name];
-  return env;
-};
+// The guard-input ambient names live in ONE shared home (issues #490/#503):
+// tests/lib/guard-env.mjs exports the set and the scrub, and BOTH this suite
+// and tests/merge-guard-verify.test.mjs import them, so a suite cannot narrow
+// the set on its own file again. Every direct-guard env construction below
+// scrubs that set before the caller's own spread, so "default" means default
+// on every machine and a deliberate per-test stamp (applied after the scrub)
+// still wins. #503 is the runShim site this unified: it deleted the
+// GH_MERGE_GUARD pair plus MERGE_GUARD_CHECK while leaving
+// MERGE_GUARD_VERIFY / MERGE_GUARD_VERIFY_TOOL ambient. MERGE_GUARD_GH is
+// deliberately NOT in the set: it selects the gh binary, every leg sets it
+// explicitly after the spread, and scrubbing it would break the
+// missing-binary leg.
 
 /** Run the guard in `mode` with `args` against a fixture dir. */
 const runGuard = (t, mode, args, { legs = [], env = {} } = {}) => {
@@ -231,9 +226,16 @@ const runShim = (t, argv, { legs = [], guardEnv = {} } = {}) => {
   // so an ambient MERGE_GUARD_CHECK=<other> on a lane rides this spread
   // through the shim into the guard, flips CHECK_EXPLICIT
   // (CHECK="${MERGE_GUARD_CHECK:-gates}"), and every armed+green shim leg
-  // refuses on a name no leg carries. Delete BEFORE the guardEnv spread so a
-  // deliberate stamp in a specific test still wins.
-  delete env.MERGE_GUARD_CHECK;
+  // refuses on a name no leg carries.
+  //
+  // #503 is this delete's narrowness: the list covered GH_MERGE_GUARD,
+  // GH_MERGE_GUARD_CHECK and MERGE_GUARD_CHECK, so MERGE_GUARD_VERIFY /
+  // MERGE_GUARD_VERIFY_TOOL still rode the spread into every shim leg's guard
+  // call — a shim leg on an armed lane graded an arm its fixture never set.
+  // Scrub the WHOLE guard-input set through the one shared helper
+  // (tests/lib/guard-env.mjs, issues #490/#503) BEFORE the guardEnv spread, so
+  // a deliberate stamp in a specific test still wins.
+  scrubGuardInputAmbient(env);
   const res = spawnSync("bash", [SHIM, ...argv], {
     encoding: "utf8",
     cwd: dir,
@@ -773,6 +775,39 @@ test("pin: no leg of this file bare-deletes a lane arm from process.env — rest
     /^\s*delete process\.env\.(GH_MERGE_GUARD|GH_MERGE_GUARD_CHECK|MERGE_GUARD_CHECK);?\s*$/m,
     "a bare `delete process.env.<lane arm>` launders an armed lane's export (issues #553/#612) — save-and-restore instead",
   );
+});
+
+test("pin: both merge-guard suites scrub the SAME guard-input set from ONE helper (issues #490/#503)", () => {
+  // #490/#503 are one defect class: a suite that inherits a guard-input var it
+  // means to control passes for the WRONG REASON — and only on a lane that
+  // exports it, never on a clean dev box. The two suites were healed at
+  // different times in different shapes (runGuard's set, merge-guard-verify's
+  // bare `delete env.MERGE_GUARD_VERIFY`, runShim's delete list covering only
+  // the GH_MERGE_GUARD pair plus MERGE_GUARD_CHECK), which is exactly how the
+  // set drifted per-file in the first place. Both now import
+  // tests/lib/guard-env.mjs; this pin grades that AGREEMENT from source, so a
+  // re-narrowed per-file copy reds here instead of on an armed lane.
+  const files = {
+    "merge-guard.test.mjs": readFileSync(fileURLToPath(import.meta.url), "utf8"),
+    "merge-guard-verify.test.mjs": readFileSync(path.join(ROOT, "tests", "merge-guard-verify.test.mjs"), "utf8"),
+  };
+  for (const [name, src] of Object.entries(files)) {
+    assert.match(
+      src,
+      /^import \{[^}]*\bscrubGuardInputAmbient\b[^}]*\} from "\.\/lib\/guard-env\.mjs";$/m,
+      `${name} must scrub the guard-input set through the one shared helper (tests/lib/guard-env.mjs)`,
+    );
+    assert.doesNotMatch(
+      src,
+      /^const GUARD_INPUT_AMBIENT = /m,
+      `${name} must not re-declare the set locally — that is the #490/#503 drift shape`,
+    );
+    assert.doesNotMatch(
+      src,
+      /^\s*delete (?:env|baseEnv)\.MERGE_GUARD_(?:CHECK|VERIFY|VERIFY_TOOL);?\s*$/m,
+      `${name} still hand-rolls a guard-input delete — scrub the shared set instead (#490/#503)`,
+    );
+  }
 });
 
 test("shim: the in-process lane-arm pins leave this process exactly as they found it (issue #612 pin)", () => {
