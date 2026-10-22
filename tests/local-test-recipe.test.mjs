@@ -55,10 +55,25 @@ test("CLAUDE.md names the skip at the recipe bullet and carries the parity form"
   const doc = read("CLAUDE.md");
   // the divergence is named at the same bullet that teaches the quick form
   assert.match(doc, /The glob form also SKIPS the plugin/, "the skip must be named where the quick form is taught");
-  // the parity recipe, verbatim — the exact set CI grades
+  // the parity recipe, verbatim — kept as taught (issue #301); the #521
+  // caveat pin below holds the docs to naming that it is still narrower
+  // than what CI's bare discovery grades
   assert.match(doc, /node --test tests\/\*\.test\.mjs plugins\/\*\/test\/smoke\.mjs/, "the parity recipe must appear verbatim");
   // the pre-existing directory-form hazard warning stays intact
   assert.match(doc, /Do NOT use the directory form/, "the directory-form warning is unchanged");
+});
+
+test("the docs name the #521 caveat — even the parity form is narrower than bare discovery", () => {
+  for (const doc of ["CLAUDE.md", "README.md"]) {
+    const text = read(doc);
+    // the discovery truth the narrow forms hide: recursive *.test.mjs and
+    // every .mjs under any test/ dir, not just smoke.mjs (issue #521)
+    assert.match(text, /not just `smoke\.mjs`/, `${doc} must name that every .mjs under any test/ dir is graded (issue #521)`);
+    assert.match(text, /node scripts\/bounded-gate\.mjs/, `${doc} must teach the bounded gate as the exact bare-discovery runner (issue #521)`);
+    // the old false claim must stay gone: the parity form was taught as
+    // "the exact set CI grades" before #521
+    assert.doesNotMatch(text, /smoke\.mjs`, the\s+exact set CI grades/, `${doc} must not teach the parity form as the exact CI set (issue #521)`);
+  }
 });
 
 test("README's testing section carries the same parity recipe", () => {
