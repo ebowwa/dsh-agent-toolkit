@@ -30,6 +30,20 @@ const DRIVER = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
 
+// Issue #575: fixture SETUP gets the same discipline the asserts have. Two
+// things were missing on a bare `git init`: (1) the initial branch came from
+// the ambient init.defaultBranch — this suite pushes a by-name `master`, so a
+// lane defaulting to `main` failed with "src refspec master does not match
+// any"; (2) spawnSync NEVER throws, so a failed init was silent here and
+// surfaced later as a confusing downstream git error. Pin the branch at init
+// (the :360 convention) and assert the status naming the exact call.
+const gitInit = (dir, branch) => {
+  const r = git(["init", "-q", "-b", branch, dir]);
+  assert.equal(r.status, 0,
+    `fixture git init -q -b ${branch} ${dir} failed (exit ${r.status ?? "?"}):\n${r.error ?? r.stderr}`);
+  return r;
+};
+
 // Base child env: inherit the AMBIENT environment minus every DSH_* var, so
 // machine-specific toolchain shims (e.g. a PATH-mounted git wrapper and its
 // GIT_SCRUB_REAL target) keep working here AND on a clean CI cell, while no
@@ -162,7 +176,7 @@ test("shipper: only the retired DSH_BOT_DIR set still ships + opens the PR (exit
   const shim = path.join(dir, "shim");
   mkdirSync(shim, { recursive: true });
   git(["init", "--bare", "-q", bare], { cwd: dir });
-  git(["init", "-q", work]);
+  gitInit(work, "master"); // pinned: the fixture pushes a by-name `master` (issue #575)
   git(["config", "user.name", "tester"], { cwd: work });
   git(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
@@ -221,7 +235,7 @@ test("shipper: NEITHER name set still fails closed naming the required var", () 
   const work = path.join(dir, "work");
   const shim = path.join(dir, "shim");
   mkdirSync(shim, { recursive: true });
-  git(["init", "-q", work]);
+  gitInit(work, "master"); // no by-name branch op here, but the init stays hermetic (issue #575)
   writeFileSync(path.join(shim, "gh"), "#!/usr/bin/env bash\nexit 0\n");
   spawnSync("chmod", ["+x", path.join(shim, "gh")]);
   try {

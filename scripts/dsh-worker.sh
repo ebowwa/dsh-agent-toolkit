@@ -464,7 +464,7 @@ fetch_context() {
 #   3. the TITLE when it opens with /dsh (title-only issuance).
 # Trust is always re-derived from the API — never from the label.
 trusted_task() {
-  local repo="$1" num="$2" is_pr="$3" out="$4" body issue_json
+  local repo="$1" num="$2" is_pr="$3" out="$4" body issue_json issue_rc
 # Both scans read the NEWEST window (issue #588): page 1 is the thread's
   # OLDEST 100 comments, so past the 100-comment cliff a first-page scan
   # missed the just-posted trigger (lost dispatch) or matched an ANCIENT
@@ -493,7 +493,20 @@ trusted_task() {
     # body/title issuance: the ISSUE itself carries the trigger; the issue
     # author's association is the trust (same set as comments). A bare
     # "/dsh" body means "the title IS the task" (#474 shape).
-    issue_json="$(gh issue view "$num" --repo "$repo" --json body,title,authorAssociation 2>/dev/null || true)"
+    # Issue #534: the previous shape (`2>/dev/null || true`) discarded BOTH
+    # gh's stderr and its exit status, so a real 403/429 was indistinguishable
+    # from an empty body: the node parse below was skipped with no diagnostic
+    # at all, and the caller closed the CLAIMED item as "no trusted /dsh
+    # comment". Keep gh's stderr on the worker log (the poll path's
+    # convention) and type the outcome, so the log always says WHICH it was.
+    issue_rc=0
+    issue_json="$(gh issue view "$num" --repo "$repo" --json body,title,authorAssociation)" || issue_rc=$?
+    if [ "$issue_rc" -ne 0 ]; then
+      echo "trusted_task: gh issue view $repo #$num FAILED (exit $issue_rc — 403/429 throttle, auth, or a deleted item) — the body is UNREADABLE, not empty (issue #534); degrading to an empty task" >&2
+      issue_json=""
+    elif [ -z "$issue_json" ]; then
+      echo "trusted_task: gh issue view $repo #$num read OK (exit 0) but printed NOTHING — the body is EMPTY, not a failed read (issue #534); degrading to an empty task" >&2
+    fi
     if [ -n "$issue_json" ]; then
       # The parse is guarded INSIDE the node script (issue #530, the #528
       # poll_field / #529 pr_field shape): a non-JSON body — gh's error text
@@ -610,7 +623,19 @@ dashboard_update() { # <repo>
   slots="$(ls -1 "$ITEM_SLOTS" 2>/dev/null | wc -l | tr -d ' ')"
   procs="$(pgrep -fc 'dsh --profile headless' 2>/dev/null || echo 0)"
   inflight="$(for lk in "$ITEM_SLOTS"/*.lock; do [ -e "$lk" ] || continue; printf '%s ' "$(basename "$lk" .lock)"; done)"
-  recent="$(ls -1t "$DATA/runs" 2>/dev/null | head -5 | tr '\n' ' ')"
+  # Issue #540: $DATA/runs is created LAZILY (only when an item runs), so on a
+  # fresh data root the directory is absent and `ls` exits 1 — 2>/dev/null
+  # hides the message but not the status, pipefail propagates it through the
+  # pipeline, and `set -e` kills the sweep mid-dashboard on every cron minute
+  # until the first run materializes the dir. Guard the read the same way
+  # prune_runs does, and keep the pipeline tolerant so "no runs yet" is a
+  # VALUE (an empty list), never a failure.
+  recent=""
+  if [ -d "$DATA/runs" ]; then
+    # `|| true` (never `|| recent=""`) so a SIGPIPE from `head` after a long
+    # listing cannot discard the rows that WERE captured.
+    recent="$(ls -1t "$DATA/runs" 2>/dev/null | head -5 | tr '\n' ' ')" || true
+  fi
   local tin=0 tout=0 nmeta=0 metaf
   for metaf in "$DATA"/runs/*/dsh-run-meta.env; do
     [ -f "$metaf" ] || continue

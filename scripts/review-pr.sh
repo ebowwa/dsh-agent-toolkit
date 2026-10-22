@@ -240,7 +240,17 @@ if [ -n "$FORK_BASE" ] && [ -z "$HEAD_FORK_BASE" ]; then
     fi
   done
 fi
-BASE_TIP="$(git rev-parse origin/base 2>/dev/null || true)"
+# Issue #545: rev-parse WITHOUT --verify does not fail quiet on an unknown
+# ref — it ECHOES the literal argument to stdout and exits 128, so the old
+# `|| true` handed the string "origin/base" (a non-empty LIE) to every
+# `[ -n "$BASE_TIP" ]` guard below, none of which can see through it.
+# --verify makes the miss a real failure: BASE_TIP stays empty — the honest
+# unresolvable state the `else` arm already reports — and the miss is named
+# once on the worker log instead of dying silently.
+if ! BASE_TIP="$(git rev-parse --verify origin/base 2>/dev/null)"; then
+  BASE_TIP=""
+  echo "review-pr: origin/base does not resolve (git rev-parse --verify failed — the base fetch wrote no tracking ref) — base freshness UNVERIFIED" >&2
+fi
 DIFF=""
 DIFF_STAT=""
 DIFF_BASIS=""

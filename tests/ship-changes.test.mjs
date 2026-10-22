@@ -74,7 +74,11 @@ const fixture = () => {
   mkdirSync(logs, { recursive: true });
 
   git(["init", "--bare", "-q", bare], { cwd: dir });
-  git(["init", "-q", work]);
+  // Issue #575: pin the branch (-b master) AND assert the status — a bare
+  // `git init` takes init.defaultBranch from the lane, and this fixture then
+  // pushes a by-name `master`; spawnSync never throws, so a failed init would
+  // be silent here. gitRead is the suite's status-asserting probe.
+  gitRead(["init", "-q", "-b", "master", work]);
   git(["config", "user.name", "tester"], { cwd: work });
   git(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
