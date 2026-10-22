@@ -32,6 +32,19 @@ for (const name of ["ZAI_API_KEY", "DOPPLER_SERVICE_TOKEN", "GH_TOKEN", "GITHUB_
   const v = process.env[name];
   if (v && v.length > 8) rules.push([new RegExp(escapeRe(v), "g"), `[redacted:${name}]`, "secret"]);
 }
+// Issue #608: fine-grained PATs ride per-owner env names (GH_PAT_*) that no
+// fixed list can enumerate. Sweep the scrub env for the family and register
+// each VALUE as an exact-value rule, so a `GH_PAT_*=github_pat_…` env line
+// stays redacted even in renderings that defeat the boundary-sensitive
+// github_pat_ shape rule below (a value glued to word chars, or split/
+// truncated text an exact substring still covers). The env NAME is not the
+// credential; its value is — so the name survives for transparency, exactly
+// as with the fixed list above.
+for (const [name, v] of Object.entries(process.env)) {
+  if (/^GH_PAT_/.test(name) && v && v.length > 8) {
+    rules.push([new RegExp(escapeRe(v), "g"), `[redacted:${name}]`, "secret"]);
+  }
+}
 
 // Layer 2 — shapes. Credential shapes are "secret" (redacted in BOTH modes);
 // identifying metadata is "meta" (default mode only).
