@@ -8,7 +8,13 @@
 #      fresh machine — declares the `zai` provider route (GLM via Z.AI coding
 #      PAAS) and sets agent-default-model to zai/glm-5.3. Existing settings
 #      are left untouched.
-#   3. Runs `doppler run -- dsh --profile headless "<task>"` so Doppler injects
+#   3. Runs ONE credential-stripped settings-migration warm-up boot before the
+#      real attempt (issue #656): on the profile-boot CLI generation (measured
+#      on 0.2.0-rc.2) the first boot resolves its model BEFORE the CLI's own
+#      settings import lands, so a fresh home's first real attempt would
+#      resolve the shipped-template default route, not the stamped one. The
+#      warm-up dies at credential resolution AFTER the import has landed.
+#   4. Runs `doppler run -- dsh --profile headless "<task>"` so Doppler injects
 #      ZAI_API_KEY (and anything else in the project) into the process env.
 #      The service token reaches doppler through the ENVIRONMENT (DOPPLER_TOKEN,
 #      the CLI's env input for --token) — never argv: argv is world-readable
@@ -1316,6 +1322,90 @@ archive_session_transcript() {
     while IFS= read -r f; do rm -f "$arch_dir/$f" 2>/dev/null || true; done <<< "$old"
   fi
 }
+
+# --- 2g. settings-migration warm-up (issue #656) ---------------------------
+# On the profile-boot CLI generation (measured on 0.2.0-rc.2) the stamped
+# settings.yaml is NOT read at model-resolution time: the FIRST boot resolves
+# the shipped-template default route (deepseek-official) — and dies there on a
+# keyless lane — while the CLI's own settings import (dsh-settings
+# importLegacyDocument) lands later in that same boot: it renames
+# settings.yaml to settings.yaml.imported and writes the agent-default-model
+# and llm-pi-ai rows into profiles/headless/cordis.patch.yml. Only the NEXT
+# boot composes the stamped route. The driver spawns ONE boot per attempt on a
+# job-scoped home, so without help attempt 1 always resolves the template
+# default — and because the import re-fires on EVERY boot that finds a
+# settings.yaml, always after that boot's model resolution, the per-run
+# DSH_MODEL restamp above is one boot stale too. Live receipts (2026-10-21,
+# keyless hermetic homes, dsh 0.2.0-rc.2): fresh-home boot 1 names
+# deepseek-official and still lands the import; boot 2 names route "zai";
+# after a restamp to glm-5.2 plus one warm-up the patch composes glm-5.2.
+#
+# The cure here: ONE credential-stripped boot per spawn, after both settings
+# write sites AND after every fail-closed config guard above (a malformed
+# DSH_SUBAGENT_MODEL must still launch NOTHING, warm-up included), directly
+# before the attempt loop. Provider keys are stripped from THIS boot's env
+# only, so it deterministically dies at credential resolution — which happens
+# AFTER the import has landed — and can never reach a model call on any CLI
+# generation: a generation that still reads settings.yaml directly dies at the
+# same gate. The warm-up is best-effort by design: any outcome except a hang
+# leaves the home warmer than before, and a hang times out into a warning —
+# the real launch then behaves exactly as it would have without the warm-up.
+# DSH_SETTINGS_WARMUP=0 skips it (escape hatch, default on).
+settings_warmup_boot() {
+  if [ "${DSH_SETTINGS_WARMUP:-1}" = "0" ]; then
+    echo "settings warm-up: skipped (DSH_SETTINGS_WARMUP=0)" >&2
+    return 0
+  fi
+  if [ ! -f "${DSH_HOME:-}/settings.yaml" ]; then
+    echo "settings warm-up: skipped (no settings.yaml to migrate)" >&2
+    return 0
+  fi
+  if ! command -v dsh >/dev/null 2>&1; then
+    echo "settings warm-up: skipped (no dsh on PATH)" >&2
+    return 0
+  fi
+  echo "settings warm-up: one credential-stripped boot so the CLI's settings→profile migration lands before the real attempt (issue #656)" >&2
+  # timeout is coreutils on Linux but gtimeout via brew coreutils on the mac
+  # lanes — probe both, degrade to no wrapper (the same hang exposure the
+  # real launch below already carries; the runner's job timeout is the backstop).
+  local warmup_wrap warmup_out warmup_rc=0
+  warmup_wrap=()
+  if command -v timeout >/dev/null 2>&1; then
+    warmup_wrap=(timeout "${DSH_WARMUP_TIMEOUT_S:-120}")
+  elif command -v gtimeout >/dev/null 2>&1; then
+    warmup_wrap=(gtimeout "${DSH_WARMUP_TIMEOUT_S:-120}")
+  fi
+  warmup_out="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dsh-settings-warmup.$$"
+  # class: settings-warmup-boot — the credential strip is the token-burn
+  # guard: every provider key family the composition can resolve
+  # (stamped zai routes + the built-in deepseek/openai/anthropic defaults)
+  # leaves THIS boot's env, so its only possible death is MISSING_CREDENTIAL.
+  env -u ZAI_API_KEY -u DEEPSEEK_API_KEY -u OPENAI_API_KEY \
+    -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+    ${warmup_wrap[@]+"${warmup_wrap[@]}"} \
+    dsh --profile headless "settings-migration warm-up boot (issue #656): die at credential resolution before any model call — do not answer" \
+    >"$warmup_out" 2>&1 || warmup_rc=$?
+  case "$warmup_rc" in
+    0)
+      echo "::warning::settings warm-up boot COMPLETED (exit 0) — a keyless boot must die at credential resolution; provider keys leaked past the strip into the warm-up env" >&2
+      tail -5 "$warmup_out" >&2 2>/dev/null || true
+      ;;
+    124)
+      echo "settings warm-up: timed out after ${DSH_WARMUP_TIMEOUT_S:-120}s — proceeding; the real launch resolves as it would have without the warm-up" >&2
+      ;;
+    *)
+      # Output stays in the file (discarded): a raw MISSING_CREDENTIAL line in
+      # the job log would feed the attempt classifier and mislead readers —
+      # this death is the warm-up WORKING, not an attempt failure.
+      echo "settings warm-up: died at credential resolution (exit $warmup_rc) — the settings→profile migration has landed for the real attempt" >&2
+      ;;
+  esac
+  rm -f "$warmup_out"
+  return 0
+}
+echo "::group::settings warm-up (issue #656)" >&2
+settings_warmup_boot
+echo "::endgroup::" >&2
 
 while :; do
 ATTEMPT_START="$(date +%s)"

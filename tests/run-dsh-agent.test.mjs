@@ -1125,10 +1125,25 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
 // settings naming zai and the children overridden to a DIFFERENT provider
 // (opencode-go2), credential resolution must name the SETTINGS route
 // ("zai") — if the patch had leaked into the head's model, the error would
-// name opencode-go2 instead. This is also the runtime proof that
-// settings.yaml applies to the booted tree (a --dump-config cannot show
-// it: it prints layer views without resolving them). Skipped when the dsh
-// CLI is absent.
+// name opencode-go2 instead.
+//
+// TWO boots, and why (issue #650: this leg reded on every keyless box whose
+// dsh had drifted to the profile-boot generation). On that generation
+// (measured on 0.2.0-rc.2) the stamped settings.yaml is NOT read at model
+// resolution time: the FIRST boot migrates it into the profile
+// (profiles/headless/cordis.patch.yml; the original is renamed
+// settings.yaml.imported) but resolves its own model BEFORE that migration
+// lands, so a fresh home's first boot names the shipped-template default
+// (deepseek-official) and the single-boot shape reded off-lane on any box
+// carrying such a CLI. The warm-up boot below lets the CLI perform its own
+// migration inside the hermetic DSH_HOME; the SECOND boot then composes the
+// migrated zai rows and the assertions hold on both generations (a CLI that
+// still reads settings.yaml directly names zai on the first boot too —
+// nothing to migrate). The warm-up's output is deliberately unasserted:
+// pre-migration state differs by generation, only termination is pinned.
+// This is also the runtime proof that the stamped settings apply to the
+// booted tree (a --dump-config cannot show it: it prints layer views
+// without resolving them). Skipped when the dsh CLI is absent.
 test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
   // Children overridden to a provider DIFFERENT from settings' zai so the
   // two halves are distinguishable in the credential-resolution error.
@@ -1140,6 +1155,16 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
+    // Settings-migration warm-up (issue #650): boot 1 lets the CLI migrate
+    // the stamped settings.yaml into the profile it actually resolves
+    // against; its output is generation-dependent and never asserted.
+    const warmup = spawnSync("dsh", ["--profile", "headless", "reply ok"], {
+      encoding: "utf8",
+      timeout: 120_000,
+      cwd,
+      env,
+    });
+    assert.notEqual(warmup.status, null, "the settings-migration warm-up boot must terminate, not hang");
     const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
       encoding: "utf8",
       timeout: 120_000,
@@ -1148,21 +1173,182 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
     });
     assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
     const combined = `${boot.stdout}\n${boot.stderr}`;
-    assert.match(combined, /MISSING_CREDENTIAL/, "the boot must reach credential resolution — proving settings.yaml applies at runtime");
+    assert.match(combined, /MISSING_CREDENTIAL/, "the boot must reach credential resolution — proving the stamped settings apply at runtime (directly, or via the CLI's own settings→profile migration)");
+    // Quote-agnostic on purpose: the message style differs across CLI
+    // generations (provider route "zai" on 0.2.0-rc.2, 'zai' on older
+    // builds) — the pin is WHICH route is named, not the quoting.
     assert.match(
       combined,
-      /provider route "zai"/,
-      "the HEAD resolves its model from settings.yaml (zai/glm-5.3) — the run model, not the override",
+      /provider route ["']zai/,
+      "the HEAD resolves its model from the stamped settings (zai/glm-5.3) — the run model, not the override",
     );
     assert.doesNotMatch(
       combined,
-      /provider route "opencode-go2"/,
+      /provider route ["']opencode-go2/,
       "the subagent override must not become the head's route — that would be this half broken",
     );
     assert.doesNotMatch(combined, /plugin tree failed to load/, "the patched plugin tree must still load");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+// --- 8-12b. the settings-migration warm-up (issue #656) ---------------------
+//
+// On the profile-boot CLI generation (measured on 0.2.0-rc.2) the stamped
+// settings.yaml is not read at model-resolution time; the CLI's own settings
+// import lands LATER in the first boot (settings.yaml is renamed
+// settings.yaml.imported, the rows move into profiles/headless/
+// cordis.patch.yml) and only the NEXT boot composes them. The driver spawns
+// ONE boot per attempt, so the warm-up boot is what makes attempt 1 resolve
+// the stamped route — and because the import re-fires after every restamp,
+// the warm-up must run on EVERY spawn (once per spawn, not once per home).
+// Three pins: the script structure (order + credential strip + non-fatal
+// capture), the live boot contract, and the strip's LOCALITY (warm-up
+// keyless, real launch keyed).
+
+test("settings warm-up structure: one credential-stripped boot per spawn, after every fail-closed guard, before the attempt loop (issue #656)", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+
+  // The warm-up carries its class token (issue #360 greppability) and the
+  // escape hatch defaults ON — a revert to default-off launders the fix.
+  assert.match(src, /class: settings-warmup-boot/, "the warm-up block must carry its greppable class token");
+  assert.match(
+    src,
+    /DSH_SETTINGS_WARMUP:-1/,
+    "the warm-up must default ON; the escape hatch skips it only when set to 0",
+  );
+
+  // The credential strip is the token-burn guard: every provider key family
+  // the composition can resolve must leave the warm-up's env. Pinned
+  // leg-by-leg — dropping one leg reopens a keyhole a future provider
+  // default could walk through.
+  assert.match(
+    src,
+    /env -u ZAI_API_KEY -u DEEPSEEK_API_KEY -u OPENAI_API_KEY \\\n\s+-u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN/,
+    "the warm-up boot must strip every provider key family from ITS env only",
+  );
+
+  // Non-fatal + captured: the warm-up's exit never kills the spawn (set -e),
+  // and its output never reaches the attempt stderr — a raw
+  // MISSING_CREDENTIAL line in the job log would feed the attempt classifier
+  // and mislead readers (the death is the warm-up WORKING).
+  assert.match(src, />"\$warmup_out" 2>&1 \|\| warmup_rc=\$\?/, "the warm-up must be captured and non-fatal under set -e");
+
+  // Order: both settings write sites first, then every fail-closed config
+  // guard, THEN the warm-up, THEN the doppler launch. A malformed
+  // DSH_SUBAGENT_MODEL must still launch nothing — warm-up included (the
+  // two fail-closed pins below taught this the hard way).
+  const idxStamp = src.indexOf('settings-write.mjs" "$DSH_HOME/settings.yaml"');
+  const idxGuard = src.indexOf('DSH_SUBAGENT_MODEL must be provider/model');
+  const idxWarmFn = src.indexOf("settings_warmup_boot() {");
+  const idxWarmCall = src.indexOf("settings_warmup_boot\n");
+  // lastIndexOf: the header comment also names the launch; the REAL launch
+  // line is the last occurrence in the file.
+  const idxLaunch = src.lastIndexOf("doppler run --");
+  assert.ok(idxStamp > -1, "the settings stamp site must exist");
+  assert.ok(idxGuard > -1, "the subagent-model fail-closed guard must exist");
+  assert.ok(idxWarmFn > -1 && idxWarmCall > -1, "the warm-up function and its call must exist");
+  assert.ok(idxLaunch > -1, "the doppler launch must exist");
+  assert.ok(idxStamp < idxWarmCall, "the warm-up must run AFTER the settings stamp (it migrates the stamped file)");
+  assert.ok(idxGuard < idxWarmCall, "the warm-up must run AFTER the fail-closed config guards — a malformed override launches nothing");
+  assert.ok(idxWarmCall < idxLaunch, "the warm-up must run BEFORE the real doppler launch");
+});
+
+test("the warm-up boot lands the CLI's settings migration: the stamped route resolves on the first post-warm-up boot (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "dsh-warmup-boot-"));
+  const home = path.join(cwd, "home");
+  mkdirSync(home);
+  const env = { ...HERMETIC_ENV, DSH_HOME: home, RUNNER_TEMP: cwd };
+  for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
+  try {
+    // Stamp exactly as the driver does, then run the DRIVER'S OWN warm-up
+    // function — extracted, not re-implemented, so a shape change in the
+    // script cannot strand this pin on a paraphrase.
+    const stamped = spawnSync("node", [path.join(ROOT, "scripts", "settings-write.mjs"), path.join(home, "settings.yaml"), path.join(ROOT, "config", "settings.zai.yaml"), "glm-5.3"], { encoding: "utf8", env, cwd });
+    assert.equal(stamped.status, 0, `the stamp must succeed, stderr: ${stamped.stderr}`);
+    const fn = extractFunction("settings_warmup_boot");
+    const warmup = spawnSync("bash", ["-c", `${fn}\nsettings_warmup_boot`], { encoding: "utf8", env, cwd, timeout: 120_000 });
+    assert.notEqual(warmup.status, null, "the warm-up must terminate, not hang");
+    assert.equal(warmup.status, 0, "the warm-up function itself must succeed (the boot's failure is captured, not fatal)");
+    assert.match(
+      warmup.stderr,
+      /settings warm-up: died at credential resolution/,
+      "the keyless warm-up boot must die at credential resolution — that death is the migration landing",
+    );
+    // The migration artifact: a migration-generation CLI renames the file;
+    // a generation that reads settings.yaml directly leaves it. Exactly one
+    // of the two states may hold after the warm-up.
+    const migrated = existsSync(path.join(home, "settings.yaml.imported"));
+    const direct = existsSync(path.join(home, "settings.yaml"));
+    assert.ok(migrated !== direct, "exactly one of settings.yaml.imported / settings.yaml must remain after the warm-up");
+    // The contract: the FIRST boot after the warm-up composes the stamped
+    // route (quote-agnostic — the pin is WHICH route, per the #650 leg).
+    const boot = spawnSync("dsh", ["--profile", "headless", "reply ok"], { encoding: "utf8", env, cwd, timeout: 120_000 });
+    assert.notEqual(boot.status, null, "the post-warm-up boot must terminate, not hang");
+    const combined = `${boot.stdout}\n${boot.stderr}`;
+    assert.match(combined, /provider route ["']zai/, "the first post-warm-up boot must resolve the stamped route");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the warm-up is the FIRST dsh boot and the ONLY keyless one: the credential strip is local to it (issue #656)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "dsh-warmup-strip-"));
+  const bin = path.join(dir, "bin");
+  const home = path.join(dir, "home");
+  const runnerTemp = path.join(dir, "runner");
+  const callsFile = path.join(dir, "dsh-calls.txt");
+  mkdirSync(bin);
+  mkdirSync(runnerTemp);
+  writeFileSync(path.join(bin, "doppler"), "#!/bin/sh\nshift; shift\nexec \"$@\"\n");
+  // dsh stub: --version answers, otherwise APPEND one record per invocation:
+  // the full argv plus whether ZAI_API_KEY survived into this boot's env.
+  writeFileSync(
+    path.join(bin, "dsh"),
+    [
+      "#!/bin/sh",
+      'case "$1" in --version) echo "dsh-stub-0.0.0" >&2; exit 0;; esac',
+      'echo "argv: $*" >> "$STUB_CALLS_FILE"',
+      'if [ -n "${ZAI_API_KEY:-}" ]; then echo "zai: present" >> "$STUB_CALLS_FILE"; else echo "zai: absent" >> "$STUB_CALLS_FILE"; fi',
+      "echo STUB-FINAL-ANSWER",
+      "exit 1",
+    ].join("\n") + "\n",
+  );
+  writeFileSync(path.join(bin, "zstd"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+  for (const f of readdirSync(bin)) spawnSync("chmod", ["+x", path.join(bin, f)]);
+
+  const env = {
+    ...HERMETIC_ENV,
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: dir,
+    RUNNER_TEMP: runnerTemp,
+    DSH_HOME: home,
+    DOPPLER_SERVICE_TOKEN: "stub-token",
+    ZAI_API_KEY: "stub-inference-key",
+    STUB_CALLS_FILE: callsFile,
+    GH_BIN: path.join(bin, "gh"),
+    DOPPLER_BIN: path.join(bin, "doppler"),
+    CELL_PROBE_DIRS: "",
+    DSH_RETRY_BACKOFF_S: "0", // tests-lint rule 2: every driver spawn pins the seam
+  };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_ENV;
+
+  const proc = spawnSync("bash", [SCRIPT, "integration test task"], { encoding: "utf8", env, timeout: 60_000 });
+  assert.notEqual(proc.status, null, "the driver must terminate inside the budget, not hang");
+  const calls = readFileSync(callsFile, "utf8").split("\n");
+  const argvLines = calls.filter((l) => l.startsWith("argv: "));
+  const keyLines = calls.filter((l) => l.startsWith("zai: "));
+  assert.equal(argvLines.length, keyLines.length, "each dsh boot records exactly one argv+key pair");
+  assert.equal(argvLines.length, 4, `one warm-up + 3 attempts must boot dsh, got ${argvLines.length}`);
+  assert.match(argvLines[0], /settings-migration warm-up boot/, "the FIRST dsh boot must be the warm-up");
+  assert.equal(keyLines[0], "zai: absent", "the warm-up boot must NOT see the provider key — the strip is the token-burn guard");
+  assert.match(argvLines[1], /integration test task/, "the second boot must be the real attempt");
+  assert.equal(keyLines[1], "zai: present", "the real attempt MUST see the provider key — the strip is warm-up-local, never global");
+
+  rmSync(dir, { recursive: true, force: true });
 });
 
 // --- 8-13. DSH_WEB_SEARCH_CELLS: mount the local key-free ctx.web provider
