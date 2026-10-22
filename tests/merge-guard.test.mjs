@@ -29,6 +29,14 @@
 //      boolean pin keeps passing).
 //   5. The driver actually arms it next to the shim env contract and
 //      carries the arm through GITHUB_ENV (the #251 later-step belt).
+//   6. The rollup reads ALL pages of the head's check runs (issue #566):
+//      the endpoint defaults to per_page=30, so a red parked beyond page 1
+//      used to be invisible and a red head PASSED ANYGREEN. The guard now
+//      requests ?per_page=100 and pages until the fetched count covers
+//      total_count — still ONE snapshot, never a poll loop. The stub gh
+//      serves real page shapes (paged calls get per_page slices, unpaged
+//      calls get the default-30 truncation), so a regression to the bare
+//      call reopens the exact blind spot the pins grade.
 //
 // Hermetic: a stub gh serves fixtures from a temp dir, counts its api
 // calls, and records any `pr merge` argv; no network, no real repo.
@@ -58,6 +66,7 @@ const fixture = (t) => {
   writeFileSync(path.join(dir, "pr-view.json"),
     JSON.stringify({ number: 434, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/434" }));
   writeFileSync(path.join(dir, "check-runs.json"), JSON.stringify({ total_count: 0, check_runs: [] }));
+  writeFileSync(path.join(dir, "legs-all.json"), JSON.stringify({ total_count: 0, check_runs: [] }));
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$MG_STUB_DIR/gh.log"
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
@@ -67,7 +76,32 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   printf 'x\\n' >> "$MG_STUB_DIR/api-count"
-  cat "$MG_STUB_DIR/check-runs.json"
+  # Issue #566: the guard now pages check-runs (?per_page=100&page=N). Serve
+  # REAL GitHub page shapes from legs-all.json. A PAGED call sees the full
+  # page slice the endpoint would return; an UNPAGED call — the regression
+  # shape — sees only the endpoint's default per_page=30 truncation, so a
+  # guard that stops paging reopens the page-1 blind spot these pins grade.
+  if printf '%s' "$*" | grep -q 'per_page=100'; then
+    page="$(printf '%s' "$*" | sed -n 's/.*[?&]page=\\([0-9][0-9]*\\).*/\\1/p')"
+    [ -n "$page" ] || page=1
+    MG_STUB_DIR="$MG_STUB_DIR" node -e '
+      const { readFileSync } = require("fs");
+      const path = require("path");
+      const dir = process.env.MG_STUB_DIR;
+      const page = Number(process.argv[1]);
+      const all = JSON.parse(readFileSync(path.join(dir, "legs-all.json"), "utf8")).check_runs;
+      const slice = all.slice((page - 1) * 100, page * 100);
+      process.stdout.write(JSON.stringify({ total_count: all.length, check_runs: slice }));
+    ' "$page"
+  else
+    MG_STUB_DIR="$MG_STUB_DIR" node -e '
+      const { readFileSync } = require("fs");
+      const path = require("path");
+      const dir = process.env.MG_STUB_DIR;
+      const all = JSON.parse(readFileSync(path.join(dir, "legs-all.json"), "utf8")).check_runs;
+      process.stdout.write(JSON.stringify({ total_count: all.length, check_runs: all.slice(0, 30) }));
+    '
+  fi
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
@@ -89,9 +123,15 @@ const leg = (over = {}) => ({
   conclusion: over.conclusion ?? "success",
 });
 
-const setLegs = (dir, legs) =>
+const setLegs = (dir, legs) => {
+  // legs-all.json is the FULL page-ordered run set the page-aware stub
+  // slices (issue #566); check-runs.json stays written for any arg-blind
+  // consumer that still reads it.
+  writeFileSync(path.join(dir, "legs-all.json"),
+    JSON.stringify({ total_count: legs.length, check_runs: legs }));
   writeFileSync(path.join(dir, "check-runs.json"),
     JSON.stringify({ total_count: legs.length, check_runs: legs }));
+};
 
 const ghLog = (dir) => readFileSync(path.join(dir, "gh.log"), "utf8").split("\n").filter(Boolean);
 const apiCalls = (dir) => ghLog(dir).filter((l) => l.startsWith("api ")).length;
@@ -248,6 +288,55 @@ test("guard: a RED sibling refuses even when another check is green (no 'gates' 
   assert.equal(res.status, 1, "a red sibling must refuse even with a green sibling");
   assert.match(res.stderr, /red check run/);
   assert.match(res.stderr, /MERGE_GUARD_CHECK=/, "the refusal must name the explicit-name escape");
+});
+
+test("guard: a red beyond the default page-1 truncation refuses — the rollup reads ALL pages (issue #566)", (t) => {
+  // GitHub's check-runs endpoint defaults to per_page=30; the guard used to
+  // grade the rollup from page 1 only, so a head with >30 check runs could
+  // park a red beyond page 1 and PASS ANYGREEN (issue #566). Pin the fix on
+  // the issue's literal shape: 45 runs (beyond the default 30), the ONLY
+  // red at position 35, every other run green on the SAME head SHA — the
+  // rollup must see it and refuse ROLLUPRED, in the same ONE snapshot (a
+  // single ?per_page=100 call covers 45 runs).
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    legs: Array.from({ length: 45 }, (_, i) => {
+      const id = i + 1;
+      return id === 35 ? leg({ id, name: "job-35", conclusion: "failure" }) : leg({ id, name: `job-${id}` });
+    }),
+  });
+  assert.equal(res.status, 1, `a page-2-of-30 red must refuse even with 34 green page-1 runs (stderr: ${res.stderr})`);
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /job-35/, "the refusal must name the beyond-page-1 red");
+  assert.equal(apiCalls(dir), 1, "45 runs arrive in ONE ?per_page=100 call — still one snapshot");
+});
+
+test("guard: a red on page 2 of per_page=100 refuses — the rollup pages to total_count (issue #566)", (t) => {
+  // The per_page bump alone is not enough: a head with >100 check runs
+  // still truncates at 100, so the rollup must keep paging until the
+  // fetched count covers the API's total_count. Pin the loop: 145 runs, the
+  // ONLY red at position 131 (page 2 at per_page=100), everything else
+  // green on the SAME head SHA — the rollup must fetch BOTH pages and
+  // refuse ROLLUPRED. When the stub gets an UNPAGED call (the #566
+  // regression shape) it serves only the default-30 truncation, so this
+  // leg also reds on a guard that stopped requesting per_page.
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    legs: Array.from({ length: 145 }, (_, i) => {
+      const id = i + 1;
+      return id === 131 ? leg({ id, name: "job-131", conclusion: "failure" }) : leg({ id, name: `job-${id}` });
+    }),
+  });
+  assert.equal(res.status, 1, `a page-2 red must refuse even with 130 green page-1 runs (stderr: ${res.stderr})`);
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /job-131/, "the refusal must name the page-2 red");
+  assert.equal(apiCalls(dir), 2, "the rollup must read page 1 AND page 2 (one snapshot, both pages)");
+});
+
+test("guard source: the check-runs rollup requests per_page=100 and sizes itself against total_count (issue #566)", () => {
+  const src = readFileSync(GUARD, "utf8");
+  assert.match(src, /per_page=100/, "the rollup must request the API's maximum page size");
+  assert.doesNotMatch(src, /check-runs" 2>&1\)/, "the bare unpaged call (the #566 truncation) must be gone");
+  assert.match(src, /total_count/, "the loop must size itself against the API's total_count");
+  assert.match(src, /ONE snapshot/, "the paged fetch is still ONE snapshot, never a poll loop");
 });
 
 test("guard: nothing green on the head under a foreign default name refuses (the never-ran case)", (t) => {

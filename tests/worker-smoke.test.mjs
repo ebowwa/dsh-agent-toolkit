@@ -12,10 +12,19 @@
 // (870 crash-loop receipts), and the throttle must back off QUIETLY across
 // the per-minute cron sweeps (state on disk, not in-process): one line when
 // the throttle starts, escalating probe waits, one line when it clears.
+//
+// Issue #530 pins: trusted_task's issue-body parse is guarded INSIDE the
+// node script (the #528 poll_field / #529 pr_field shape carried to the
+// claim path). A garbage `gh issue view` stdout — gh's error text riding
+// stdout under a 403/429 — must degrade to an EMPTY task with ONE
+// diagnostic line on the worker log (never an uncaught JSON.parse, never a
+// silent close), and a malformed body on an already-claimed item must NOT
+// leave it stuck under `dsh/running`: the typed no-trusted-comment path
+// replies and removes the running label.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -235,6 +244,138 @@ esac`);
     // the valid line made it THROUGH the parser to the claim path
     // (claim-lost is one of the worker's stdout narrations)
     assert.match(res.stdout + res.stderr, /claim lost on owner\/repo #7/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+// --- issue #530 pins: trusted_task's issue-body parse degrades loudly, never crashes ---
+//
+// The claim path re-derives trust AFTER the item is claimed, so a garbage
+// `gh issue view` stdout (gh's error text riding stdout under a 403/429)
+// must degrade to an EMPTY task — the caller's typed "no trusted /dsh
+// comment" path — with ONE diagnostic line on stderr (the worker log),
+// never an uncaught JSON.parse (the #527 crash shape carried to the claim
+// path, the #529 sibling), and never a body that parses but is NOT the gh
+// issue envelope (GitHub's own 403/429 error bodies are JSON and carry no
+// authorAssociation — the silent-close arm). The pin runs the REAL function,
+// extracted verbatim from the script (a rename or move fails the extraction
+// loudly), under the same `set -euo pipefail` the worker runs with.
+const trustedTaskSource = () =>
+  execFileSync("bash", ["-c", `sed -n '/^trusted_task() {/,/^}/p' "${WORKER}"`], { encoding: "utf8" });
+
+const runTrustedTask = (issueViewStub, commentsStub = `exit 0`) => { // → { status, stderr, task }
+  const dir = mkdtempSync(path.join(tmpdir(), "trusted-task-pin-"));
+  try {
+    const shim = path.join(dir, "shim");
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(path.join(shim, "gh"), `#!/usr/bin/env bash
+case "$*" in
+  *"issues/530/comments"*) ${commentsStub} ;;                    # comment reads
+  *"issue view"*) ${issueViewStub} ;;
+  *) exit 1 ;;
+esac
+`);
+    spawnSync("chmod", ["+x", path.join(shim, "gh")]);
+    const out = path.join(dir, "task.out");
+    const script = `set -euo pipefail\n${trustedTaskSource()}\ntrusted_task owner/repo 530 false "${out}"`;
+    const res = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${shim}${path.delimiter}${process.env.PATH}` },
+    });
+    const task = existsSync(out) ? readFileSync(out, "utf8") : null;
+    return { status: res.status, stderr: res.stderr, task };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("trusted_task: a non-JSON issue body degrades to an EMPTY task, shell survives, degrade logs (issue #530)", () => {
+  const { status, stderr, task } = runTrustedTask(
+    `printf 'gh: API rate limit exceeded (HTTP 403)\\n'; printf 'this is not JSON {'; exit 0`,
+  );
+  assert.equal(status, 0, stderr); // set -euo pipefail survives the garbage body
+  assert.equal(task, ""); // the typed no-trusted-comment path, not a crash
+  assert.match(stderr, /is not JSON/); // the degrade is ON the record (worker log)
+  assert.match(stderr, /issue #530/);
+});
+
+test("trusted_task: a JSON body that is NOT the gh issue envelope (GitHub's own 403/429 bodies) degrades loudly too (issue #530)", () => {
+  const { status, stderr, task } = runTrustedTask(
+    `printf '%s' '{"message":"API rate limit exceeded for user ID 81942069.","status":"403"}'; exit 0`,
+  );
+  assert.equal(status, 0, stderr);
+  assert.equal(task, ""); // parsed-but-not-envelope: an empty task, never task text
+  assert.match(stderr, /NOT the gh issue envelope/); // this arm's own diagnostic
+  assert.doesNotMatch(stderr, /is not JSON/); // proves WHICH arm fired
+});
+
+test("trusted_task: a trusted /dsh issue body still yields the task text (issue #530 positive control)", () => {
+  const { status, stderr, task } = runTrustedTask(
+    `printf '%s' '{"body":"/dsh ship the fix","title":"found: x","authorAssociation":"OWNER"}'; exit 0`,
+  );
+  assert.equal(status, 0, stderr);
+  assert.equal(task, "ship the fix");
+  assert.doesNotMatch(stderr, /issue #530/); // no degrade diagnostic on the healthy path
+});
+
+test("trusted_task: a FAILED gh issue view degrades to an empty task, shell survives (issue #530)", () => {
+  const { status, task } = runTrustedTask(`exit 1`);
+  assert.equal(status, 0); // the `|| true` belt around the gh call
+  assert.equal(task, "");
+});
+
+test("trusted_task: a gh error envelope on the comments read can NEVER become the task (issue #530)", () => {
+  // Live shape (verified on this box): gh api prints its raw error envelope
+  // to STDOUT even with --jq and exits non-zero — the old `$(gh ... || true)`
+  // swallowed the rc INSIDE the substitution and made the envelope the task.
+  const { status, stderr, task } = runTrustedTask(
+    `exit 1`,
+    `printf '%s' '{"message":"API rate limit exceeded for user ID 81942069.","status":"403"}'; exit 1`,
+  );
+  assert.equal(status, 0, stderr);
+  assert.doesNotMatch(task ?? "", /rate limit/); // the error envelope is discarded, not tasked
+});
+
+// The issue's own demanded proof: a malformed body on an ALREADY-CLAIMED
+// item (queued removed, running added) must NOT leave the ticket stranded
+// under `dsh/running`. The full worker run takes the typed no-trusted
+// path: reply comment POSTed + the running label DELETEd — the gh log IS
+// the record the label was released.
+const MALFORMED_BODY_QUEUED_ITEM_SHIM = `case " $* " in
+  *"issues?state=open&labels=dsh/queued"*) printf '{"number": 7, "is_pr": false}\\n' ;;  # one queued item
+  *"issues?state=open"*) exit 0 ;;                                   # review/task polls: empty
+  *"label create"*) exit 0 ;;                                        # ensure_labels
+  *"issues/7/labels/dsh%2Fqueued"*) exit 0 ;;                        # claim: remove queued
+  *"issues/7/labels"*) exit 0 ;;                                     # claim: add running
+  *"issue view"*authorAssociation*)                                  # trusted_task's body read → MALFORMED
+    printf 'gh: API rate limit exceeded (HTTP 403)\\n'
+    printf 'this is not JSON {' ;;
+  *"issue view"*) printf '%s' '{"title":"t","body":"b"}' ;;          # fetch_context read
+  *"comments?per_page=100"*) exit 0 ;;                               # empty thread context
+  *"-f body="*) exit 0 ;;                                            # the no-trusted reply comment
+  *"issues/7/labels/dsh%2Frunning"*) exit 0 ;;                       # close: release the running label
+  *) exit 1 ;;
+esac`;
+
+test("malformed issue body on a CLAIMED item: worker exits 0, replies, and releases dsh/running — never wedged (issue #530)", () => {
+  const f = fixtureWithShim(MALFORMED_BODY_QUEUED_ITEM_SHIM);
+  try {
+    const ghLog = path.join(f.dir, "logs", "gh530.log");
+    const res = spawnSync("bash", [WORKER, "--once"], {
+      encoding: "utf8",
+      env: f.env({ GH_LOG: ghLog, DSH_WORKER_DASHBOARD: "0" }),
+    });
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+    assert.doesNotMatch(res.stderr, /SyntaxError/);
+    assert.match(res.stderr, /is not JSON/); // the degrade is ON the record
+    assert.match(res.stderr, /issue #530/);
+    assert.match(res.stdout + res.stderr, /no trusted \/dsh comment found on owner\/repo #7/);
+    const log = readFileSync(ghLog, "utf8");
+    // the typed close path: the reply was POSTed AND the running label was
+    // DELETEd — the item is NOT left stuck under dsh/running.
+    assert.match(log, /-f body=/);
+    assert.match(log, /DELETE[\s\S]*labels\/dsh%2Frunning/);
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
