@@ -40,6 +40,26 @@ export const ambientPathWithoutDriverShims = (p = process.env.PATH || "") =>
 
 const git = (args, opts = {}) => spawnSync("git", args, { encoding: "utf8", ...opts });
 
+// issue #623: a READ the asserts depend on must itself go red when it fails.
+// spawnSync NEVER throws (the #582 receipt): `git(["ls-remote", ...]).stdout`
+// comes back "" on a non-zero exit or a spawn-level error, so a negative
+// absence-assert (`!refs.includes("dsh/auto-")`) passed VACUOUSLY — the suite
+// stayed green while the probe read nothing, and a regression that both
+// pushed a branch it should not AND broke the probe would have passed. Reads
+// the asserts depend on assert status first and throw naming the exact call.
+// (Composes with PR #589's `gitSetup`, the fixture-construction half: that
+// helper guards fixture SETUP, this one guards runtime probes of the
+// shipper's EFFECT — neither subsumes the other.)
+const gitRead = (args, opts = {}) => {
+  const r = spawnSync("git", args, { encoding: "utf8", ...opts });
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `assert probe failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
+
 /** Build a fixture: bare remote + a work clone, plus a gh shim. Returns
  * paths the test drives through the shipper. */
 const fixture = () => {
@@ -134,7 +154,7 @@ test("shipper commits dirty work, pushes a dsh/auto branch, opens a PR through g
     assert.equal(res.status, 0, res.stderr);
 
     // pushed branch exists on the remote
-    const refs = git(["ls-remote", f.bare]).stdout;
+    const refs = gitRead(["ls-remote", f.bare]).stdout;
     assert.match(refs, /refs\/heads\/dsh\/auto-rtestruna1/);
 
     // PR was "opened" through the shim and its number recorded
@@ -194,7 +214,7 @@ test("scrubber failure aborts the ship fail-closed (issue #162): exit 3, no push
     assert.match(res.stderr, /simulated scrubber fault/);
 
     // abort happened BEFORE any GitHub write: no branch pushed, no PR opened
-    const refs = git(["ls-remote", f.bare]).stdout;
+    const refs = gitRead(["ls-remote", f.bare]).stdout;
     assert.ok(!refs.includes("dsh/auto-"), "a scrubber failure must abort before the push");
     assert.ok(!existsSync(f.ghLog), "no PR may be opened when the scrubber failed");
 
@@ -220,7 +240,7 @@ test("clean worktree → nothing to ship, no PR opened, no branch created", () =
     assert.equal(res.status, 0, res.stderr);
     const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
     assert.match(note, /nothing to ship/);
-    const refs = git(["ls-remote", f.bare]).stdout;
+    const refs = gitRead(["ls-remote", f.bare]).stdout;
     assert.ok(!refs.includes("dsh/auto-"));
     // gh is never called on a clean tree (no before-open-prs diffs, no
     // PRs to open) — the shim's log file must not even exist.
@@ -296,6 +316,20 @@ test("shipper env PATH drops the driver's transient dsh-shim dirs, keeps the amb
   );
   // empty entries (PATH trailing colon = cwd semantics) pass through untouched
   assert.equal(ambientPathWithoutDriverShims(`${sep}${sep}`), `${sep}${sep}`);
+});
+
+test("the assert-side git read probe is itself asserting: a failed read goes red naming the call (issue #623)", () => {
+  // ls-remote against a path that is not a repository exits non-zero and
+  // prints nothing — the exact shape that used to make the negative
+  // ls-remote asserts pass vacuously ("" contains no "dsh/auto-"). The
+  // probe must throw BEFORE its caller can assert against empty stdout,
+  // and the error must name the call so the red points at the read.
+  const notARepo = path.join(tmpdir(), `ship-changes-test-notarepo-${process.pid}`);
+  assert.throws(
+    () => gitRead(["ls-remote", notARepo]),
+    /assert probe failed: git ls-remote /,
+    "a failed probe must throw naming the call, never hand back silent empty stdout",
+  );
 });
 // --- milestone carry (issue #185) -------------------------------------------
 // A shipped PR carries the closing ticket's milestone: the shipper resolves
