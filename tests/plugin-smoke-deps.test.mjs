@@ -446,7 +446,10 @@ test("the #512 repro: an unspawnable npm reds as NpmTransportError — never 'un
   u.add("pkg", "^1.0.0", "walk");
   u.add("pkg", "^2.0.0", "walk");
   const keep = process.env.PATH;
-  process.env.PATH = "/nonexistent"; // npm cannot spawn — transport failure, not an empty match
+  // A hermetic, empty bin dir: runtime-interpolated, no system dir traversed,
+  // ambient PATH not re-included (tests-lint rule 1) - npm cannot spawn.
+  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), "no-npm-bin-"));
+  process.env.PATH = emptyBin; // npm cannot spawn — transport failure, not an empty match
   try {
     assert.throws(
       () => resolveUnionSpecs(u),
@@ -458,6 +461,7 @@ test("the #512 repro: an unspawnable npm reds as NpmTransportError — never 'un
     );
   } finally {
     process.env.PATH = keep;
+    fs.rmSync(emptyBin, { recursive: true, force: true });
   }
 });
 
