@@ -67,6 +67,31 @@ escalated re-probe, and ONE when a poll finally succeeds ("backoff
 cleared"). A non-throttle poll failure (e.g. an expired PAT) logs every
 sweep on purpose: that nag is the pager.
 
+### The claim-path trust re-derivation degrades loudly, never crashes (issue #530)
+
+The trust re-derivation happens **after** the item is already claimed:
+`queued` is removed at claim time and `dsh/running` is added before
+`trusted_task` runs — so a crash in the re-derivation strands the ticket
+with a stuck `dsh/running` label, never retried, unlike the review-path
+item whose `dsh/review` label stays on and replays. The issue-body read
+(`gh issue view --json body,title,authorAssociation`) is parsed by node,
+and under a 403/429 gh's error text can ride that stdout: the parse is
+guarded **inside** the node script (the #528 `poll_field` / #529 `pr_field`
+try/catch shape carried to the claim path) so a non-JSON body degrades to
+an **empty task** — never an uncaught `JSON.parse`, never a silent close —
+and a body that PARSES but is not the gh issue envelope (GitHub's own
+403/429 error bodies are JSON, `{"message": ...}`, and carry no
+`authorAssociation`) takes the same loud path, since without that envelope
+check the arm degraded silently to the same wrong empty-close. Every
+degrade writes ONE diagnostic line to the worker log, because the caller
+reads an empty task as "no trusted /dsh comment" and closes the claimed
+item — that close must be diagnosable. The comment reads at the top of
+`trusted_task` carry the same shape: gh prints its raw error envelope to
+stdout even with `--jq` on a failed call, so the belt lives on the
+ASSIGNMENT (`... || body=""` discards the error envelope) — a failed
+comments read is an empty read, never task text. Pinned by
+`tests/worker-smoke.test.mjs`.
+
 ## Installing the worker on a factory box
 
 **The one-dispatch path (recommended):** fire the `deploy-worker` workflow
