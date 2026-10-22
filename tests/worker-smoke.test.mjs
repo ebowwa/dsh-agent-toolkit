@@ -350,12 +350,30 @@ test("trusted_task: a trusted /dsh issue body still yields the task text (issue 
   assert.equal(status, 0, stderr);
   assert.equal(task, "ship the fix");
   assert.doesNotMatch(stderr, /issue #530/); // no degrade diagnostic on the healthy path
+  assert.doesNotMatch(stderr, /issue #534/); // and no read-outcome diagnostic either
 });
 
-test("trusted_task: a FAILED gh issue view degrades to an empty task, shell survives (issue #530)", () => {
-  const { status, task } = runTrustedTask(`exit 1`);
-  assert.equal(status, 0); // the `|| true` belt around the gh call
+// Issue #534: a FAILED read and an EMPTY body are different events, and the
+// old `2>/dev/null || true` made them the same one — a real 403/429 skipped
+// the node parse entirely with ZERO diagnostics, and the caller closed the
+// CLAIMED item as "no trusted /dsh comment". The outcome is now typed, so the
+// worker log always says WHICH happened.
+test("trusted_task: a FAILED gh issue view says UNREADABLE — not a silent empty (issue #534)", () => {
+  const { status, stderr, task } = runTrustedTask(`exit 1`);
+  assert.equal(status, 0, stderr); // the shell still survives the failed read
   assert.equal(task, "");
+  assert.match(stderr, /FAILED \(exit 1/); // typed: the read failed, with its status
+  assert.match(stderr, /UNREADABLE, not empty/); // ... and names which of the two it was
+  assert.match(stderr, /issue #534/);
+});
+
+test("trusted_task: a read that SUCCEEDS but prints nothing says EMPTY — never 'failed' (issue #534)", () => {
+  const { status, stderr, task } = runTrustedTask(`exit 0`);
+  assert.equal(status, 0, stderr);
+  assert.equal(task, "");
+  assert.match(stderr, /printed NOTHING/);
+  assert.match(stderr, /EMPTY, not a failed read/);
+  assert.doesNotMatch(stderr, /FAILED \(exit/); // proves WHICH arm fired
 });
 
 test("trusted_task: a gh error envelope on the comments read can NEVER become the task (issue #530)", () => {
