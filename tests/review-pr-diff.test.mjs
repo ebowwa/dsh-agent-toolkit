@@ -36,6 +36,19 @@
 //      explicitly resolved merge-base, deepening exists and is guarded by
 //      the failed lookup (only on failure, bounded budget), and the
 //      empty-diff wording is honest.
+//
+// Issue #628 closes: the FRESHNESS prose can never come from
+// merge-base(base, pr-merge) — GitHub builds the preview by merging the PR
+// head into the CURRENT base tip, so that lookup is the base tip by
+// construction and "NOT advanced" was asserted unconditionally (the #574
+// false prose, whose printed hash was the base TIP while the true fork sat
+// 3 base merges back). Pinned here: a REAL trial-merge-commit fixture
+// (first parent = base tip), the prose keys off merge-base(base,
+// refs/pull/N/head) — reporting HAS advanced with the TRUE fork hash where
+// the old code claimed NOT advanced; a fork-at-tip PR earns its NOT
+// advanced claim backed by a real computation; and an unresolvable head
+// fork degrades to "freshness UNVERIFIED" while the DIFF itself stays
+// available (the diff content was never the bug — only the prose lied).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -69,11 +82,15 @@ const ambientPathWithoutDriverShims = (p = process.env.PATH || "") =>
 
 // Fixture origin: base (master) = fork commit c1 (REVIEW.md + a.txt) plus
 // `baseAhead` base-side landings past the fork (default 1: the SIBLING
-// landing c2 with sibling.txt). The PR branches from c1 and adds
-// pr-file.txt (c3); refs/pull/77/merge points at c3 (the trial merge is
-// assumed clean, as GitHub reported for #495) — or at the base tip for
-// emptyPR (an empty PR: pr-merge == base tree).
-const fixture = ({ baseAhead = 1, emptyPR = false } = {}) => {
+// landing c2 with sibling.txt). The PR branches from c1 (or from the base
+// tip when `forkFromTip`) and adds pr-file.txt (c3); refs/pull/77/merge
+// points at c3 (the trial merge is assumed clean, as GitHub reported for
+// #495) — or at the base tip for emptyPR (an empty PR: pr-merge == base
+// tree) — or at a REAL trial-merge commit for `trialMerge` (issue #628:
+// GitHub's preview merges the PR head into the CURRENT base tip, so its
+// FIRST PARENT is the base tip — the construction that makes
+// merge-base(base, pr-merge) the base tip by construction).
+const fixture = ({ baseAhead = 1, emptyPR = false, trialMerge = false, forkFromTip = false } = {}) => {
   const dir = mkdtempSync(path.join(tmpdir(), "review-pr-diff-test-"));
   const bare = path.join(dir, "origin.git");
   const seed = path.join(dir, "seed");
@@ -97,14 +114,31 @@ const fixture = ({ baseAhead = 1, emptyPR = false } = {}) => {
   }
   git(["push", "-q", bare, "master"], { cwd: seed });
   const baseTip = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["checkout", "-q", "-b", "pr-branch", fork], { cwd: seed });
+  git(["checkout", "-q", "-b", "pr-branch", forkFromTip ? baseTip : fork], { cwd: seed });
   writeFileSync(path.join(seed, "pr-file.txt"), "the PR's own change\n");
   git(["add", "-A"], { cwd: seed });
   git(["commit", "-q", "-m", "c3 the PR change"], { cwd: seed });
   git(["push", "-q", bare, "pr-branch:refs/heads/pr-branch"], { cwd: seed });
   const prTip = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["--git-dir", bare, "update-ref", "refs/pull/77/merge", emptyPR ? baseTip : prTip]);
-  return { dir, bare };
+  // Issue #628: GitHub publishes refs/pull/N/head for every open PR — the
+  // freshness prose is derived from it, so the fixture mirrors that.
+  git(["--git-dir", bare, "update-ref", "refs/pull/77/head", prTip]);
+  if (emptyPR) {
+    git(["--git-dir", bare, "update-ref", "refs/pull/77/merge", baseTip]);
+  } else if (trialMerge) {
+    // The REAL GitHub preview shape (issue #628): a merge commit whose
+    // first parent is the CURRENT base tip — not the bare head commit the
+    // pre-#628 fixture substituted, whose merge-base geometry is the
+    // honest-fork one and could never reproduce the tautology.
+    git(["checkout", "-q", "master"], { cwd: seed });
+    git(["merge", "-q", "--no-ff", "--no-edit", "-m", "trial merge", "pr-branch"], { cwd: seed });
+    git(["push", "-q", bare, "HEAD:refs/pull/77/merge"], { cwd: seed });
+  } else {
+    git(["--git-dir", bare, "update-ref", "refs/pull/77/merge", prTip]);
+  }
+  // seed rides along for tests that author FURTHER history (the issue #631
+  // force-push between review rounds); its user.* config is already set.
+  return { dir, bare, seed, fork, baseTip, prTip };
 };
 
 // The wrapper toolkit: review-pr.sh resolves its stage scripts off
@@ -127,7 +161,12 @@ echo "## Verdict: APPROVE"
   return { toolkit: path.join(dir, "toolkit"), taskOut };
 };
 
-const runReviewPr = ({ dir, bare }) => {
+// prepareReviewPr mints the worktree clone + shims ONCE; spawnReviewPr runs
+// the real script against that prepared stage. Two handles, because issue
+// #631's hazard is a SECOND review round of the same PR on the SAME
+// checkout (the shared mirror store keeps refs across worktrees) — the
+// round-trip test re-spawns on the same stage after an author force-push.
+const prepareReviewPr = ({ dir, bare }) => {
   const worktree = path.join(dir, "worktree");
   // The production trigger, verbatim: a shallow checkout. (On the local
   // transport the review stage's --depth 1 fetches then graft base and
@@ -161,26 +200,34 @@ done
 exec "${REAL_GIT}" "\${args[@]}"
 `);
   for (const f of ["gh", "git"]) spawnSync("chmod", ["+x", path.join(shims, f)]);
+  const spawnEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DSH_"))),
+    GH_TOKEN: "fake-token",
+    DSH_SHIP_REPO: "owner/repo",
+    PR_NUM: "77",
+    DSH_AGENT_TOOLKIT_DIR: toolkit,
+    DSH_WORKTREE: worktree,
+    DSH_REVIEW_OUT: path.join(logs, "review-output.txt"),
+    DSH_RUN_ID: "review-pr-diff-test",
+    STUB_TASK_OUT: taskOut,
+    // merge-guard seam: verification polling never leaves the box here
+    PR_VERIFICATION_GH: "/nonexistent/gh-for-test",
+    PATH: `${shims}${path.delimiter}${ambientPathWithoutDriverShims()}`,
+  };
+  return { dir, worktree, taskOut, ghLog, spawnEnv };
+};
+
+const spawnReviewPr = ({ spawnEnv, taskOut, ghLog }) => {
   const res = spawnSync("bash", [REVIEW_PR], {
     encoding: "utf8",
     timeout: 90000,
-    env: {
-      ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DSH_"))),
-      GH_TOKEN: "fake-token",
-      DSH_SHIP_REPO: "owner/repo",
-      PR_NUM: "77",
-      DSH_AGENT_TOOLKIT_DIR: toolkit,
-      DSH_WORKTREE: worktree,
-      DSH_REVIEW_OUT: path.join(logs, "review-output.txt"),
-      DSH_RUN_ID: "review-pr-diff-test",
-      STUB_TASK_OUT: taskOut,
-      // merge-guard seam: verification polling never leaves the box here
-      PR_VERIFICATION_GH: "/nonexistent/gh-for-test",
-      PATH: `${shims}${path.delimiter}${ambientPathWithoutDriverShims()}`,
-    },
+    env: spawnEnv,
   });
   return { res, taskOut, ghLog };
 };
+
+const runReviewPr = ({ dir, bare }) =>
+  spawnReviewPr(prepareReviewPr({ dir, bare }));
 
 test("issue #519 e2e: the bounded deepen RECOVERS the fork point on the production shallow flow — the reviewer grades the PR's own diff", () => {
   const fx = fixture(); // base is 1 commit past the fork: disconnected at depth 1, resolvable at depth 2
@@ -277,4 +324,165 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
     "an empty diff at a resolved fork point is reported as an empty PR");
   assert.match(rp, /could not be diffed at the resolved fork point/,
     "the unavailable wording survives — but only for a diff that actually FAILED");
+  // Issue #628: the freshness prose keys off the PR-head merge-base, never
+  // the merge preview (whose merge-base is the base tip by construction),
+  // and an unresolvable head fork degrades to UNVERIFIED — no claim.
+  assert.match(rp, /HEAD_FORK_BASE="\$\(git merge-base origin\/base origin\/pr-head 2>\/dev\/null \|\| true\)"/,
+    "the PR's TRUE fork point is computed from refs/pull/N/head, not the preview (issue #628)");
+  assert.match(rp, /refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head/,
+    "the PR head ref is fetched (and rides the same deepen arm) alongside base and the preview");
+  assert.match(rp, /freshness UNVERIFIED/,
+    "an unresolvable PR-head fork degrades the prose to UNVERIFIED — the #574 acceptance shape, never a positive claim");
+  assert.match(rp, /if \[ -n "\$FORK_BASE" \] && \[ -z "\$HEAD_FORK_BASE" \]; then\n  for HEAD_DEEPEN_STEP in 1 2 4; do/,
+    "the head fork point gets the same guarded, bounded deepen recovery as the diff fork point");
+  // Issue #631: the tracking refspecs are FORCED and the tracking refs are
+  // deleted before the fetches — a force-pushed head between review rounds
+  // (the shared mirror store keeps the refs across worktrees) can never
+  // leave a tracking ref trailing the live remote refs, and a fetch that
+  // fails for any reason leaves NO ref, so every downstream lookup degrades
+  // to its typed terminal state instead of grading the stale graph.
+  assert.match(rp, /fetch_merge\(\) \{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/merge:refs\/remotes\/origin\/pr-merge"; \}/,
+    "the preview refspec is forced — a non-fast-forward update can never be refused-and-swallowed (issue #631; the un-forced shape turned a force-push into a typed exit-2 review death)");
+  assert.match(rp, /fetch_base\(\)\s*\{ gh_fetch "\+refs\/heads\/\$\{BASE_REF\}:refs\/remotes\/origin\/base"; \}/,
+    "the base refspec is forced — the stale-base twin of the #631 class");
+  assert.match(rp, /fetch_head\(\)\s*\{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head"; \}/,
+    "the PR-head refspec is forced — the freshness signal's ref can never trail the live head (issue #631)");
+  assert.match(rp, /"\+refs\/heads\/\$\{BASE_REF\}:refs\/remotes\/origin\/base" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/merge:refs\/remotes\/origin\/pr-merge" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head"/,
+    "the deepen arm's re-fetches carry the forced refspecs too (issue #631)");
+  const delIdx = rp.indexOf("git update-ref -d refs/remotes/origin/pr-head");
+  const fetchIdx = rp.indexOf("fetch_merge 2>/dev/null");
+  assert.ok(delIdx !== -1 && fetchIdx !== -1 && delIdx < fetchIdx,
+    "the tracking refs are deleted BEFORE the fetches — a failed fetch leaves no ref, so the prose degrades (UNVERIFIED / withheld / base-fetch-failed) instead of claiming off a stale graph (issue #631)");
+});
+
+// Issue #628 e2e: the REAL GitHub preview shape. The trial-merge commit's
+// first parent IS the current base tip, so merge-base(base, pr-merge) —
+// the old FORK_BASE — equals the base tip and the old prose asserted
+// "NOT advanced" unconditionally, even though the PR forked 1+ base commits
+// back (the #574 receipt, scaled to this fixture). The fixed prose must
+// derive freshness from merge-base(base, refs/pull/N/head) and report the
+// advancement.
+test("issue #628 e2e: a REAL trial-merge preview cannot assert 'NOT advanced' — freshness keys off the PR-head fork point", () => {
+  const fx = fixture({ trialMerge: true });
+  try {
+    const { res, taskOut } = runReviewPr(fx);
+    assert.equal(res.status, 0, `review stage must complete (got ${res.status}):\n${res.stderr}`);
+    const task = readFileSync(taskOut, "utf8");
+    assert.match(task, /HAS advanced since the fork/,
+      "the base HAS advanced past the PR's true fork — the tautology's unconditional 'NOT advanced' is gone");
+    assert.match(task, new RegExp(`PR-head fork point ${fx.fork}`),
+      "the freshness hash is the TRUE fork (merge-base of base and the PR HEAD), not the base tip the preview's geometry yields");
+    assert.doesNotMatch(task, /NOT advanced since the fork/,
+      "no positive unadvanced claim may survive a real trial-merge preview (the #574 false assertion)");
+    assert.match(task, /diff --git a\/pr-file\.txt/,
+      "the diff content is unchanged: the PR's own change over the CURRENT base (the #516/#519 semantics)");
+    assert.doesNotMatch(task, /sibling\.txt/,
+      "the sibling landing still never surfaces as an apparent PR reversal");
+    assert.match(task, /issue #628/,
+      "the basis line carries the receipt for why the preview's merge-base asserts nothing");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #628 e2e: the claim's positive arm. A PR forked AT the current base
+// tip earns "NOT advanced" — but now the printed hash is PROVEN to be
+// merge-base(base, refs/pull/N/head), not merely the preview's first parent.
+test("issue #628 e2e: a PR forked AT the base tip earns its 'NOT advanced' claim — backed by a real merge-base(base, head) computation", () => {
+  const fx = fixture({ trialMerge: true, forkFromTip: true });
+  try {
+    const { res, taskOut } = runReviewPr(fx);
+    assert.equal(res.status, 0, `review stage must complete (got ${res.status}):\n${res.stderr}`);
+    const task = readFileSync(taskOut, "utf8");
+    assert.match(task, /NOT advanced since the fork/,
+      "the base genuinely has not advanced past this PR's fork — the claim fires where it is TRUE");
+    assert.match(task, new RegExp(`PR-head fork point ${fx.baseTip}`),
+      "the claimed fork point is the base tip AND the proven merge-base of base and the PR head");
+    assert.match(task, /diff --git a\/pr-file\.txt/,
+      "the diff is still the PR's own change");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #628 e2e: the degrade arm. The preview's merge-base resolves
+// instantly (the tip is its first parent), so the DIFF stays available —
+// but the PR-head fork sits 12 commits deep, beyond the deepen budget, so
+// the prose must claim NOTHING about freshness (the #574 acceptance shape:
+// "fork point unverified" over a positive claim).
+test("issue #628 e2e: an unresolvable PR-head fork degrades to 'freshness UNVERIFIED' — the diff stays, the claim does not", () => {
+  const fx = fixture({ trialMerge: true, baseAhead: 12 });
+  try {
+    const { res, taskOut } = runReviewPr(fx);
+    assert.equal(res.status, 0, `review stage must complete (got ${res.status}):\n${res.stderr}`);
+    const task = readFileSync(taskOut, "utf8");
+    assert.match(task, /freshness UNVERIFIED/,
+      "the prose degrades to UNVERIFIED when the PR-head fork cannot resolve");
+    assert.match(task, /PR-head fork point UNRESOLVABLE/,
+      "the basis line names the shallow-graph cause for the head fork point");
+    assert.doesNotMatch(task, /NOT advanced since the fork/,
+      "no unadvanced claim on an unverified graph");
+    assert.doesNotMatch(task, /HAS advanced since the fork/,
+      "no advancement claim either — UNVERIFIED means no claim at all");
+    assert.match(task, /diff --git a\/pr-file\.txt/,
+      "the diff is NOT withheld: the preview fork point resolved (only the freshness claim degrades)");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #631 e2e: the exact repro shape from the ticket. Round 1 reviews
+// the PR; the author then FORCE-PUSHES (rebase + rewrite — the new head is
+// NOT a descendant of the old one) and round 2 reviews the same PR on the
+// SAME checkout. The un-forced refspec into refs/remotes/origin/pr-merge is
+// refused (non-fast-forward) and the swallowed failure leaves the ROUND-1
+// refs in place: pre-fix, fetch_merge's refusal is a typed exit 2 (the
+// review dies), and any swallowed variant grades merge-base against the
+// ROUND-1 graph — a freshness claim about the wrong head. The fix forces
+// the refspecs (and deletes the tracking refs first, so even a failed fetch
+// degrades instead of claiming), so round 2 must grade the LIVE head: the
+// rebased PR's fork point IS the base tip, the diff carries the rewritten
+// content, and the round-1 shape (old fork hash + "HAS advanced") is gone.
+test("issue #631 e2e: a force-push between review rounds cannot leave a stale ref — round 2 grades the LIVE head, never the round-1 graph", () => {
+  const fx = fixture(); // round 1: fork c1, base tip c2 → "HAS advanced" with the TRUE fork hash
+  try {
+    const prepared = prepareReviewPr(fx);
+    const round1 = spawnReviewPr(prepared);
+    assert.equal(round1.res.status, 0, `round 1 must complete (got ${round1.res.status}):\n${round1.res.stderr}`);
+    const task1 = readFileSync(round1.taskOut, "utf8");
+    assert.match(task1, new RegExp(`PR-head fork point ${fx.fork}`),
+      "round 1 baseline: the fork is c1 and the prose says so (the discriminating shape)");
+    assert.match(task1, /HAS advanced since the fork/, "round 1 baseline: base advanced past c1");
+
+    // The author force-pushes: the PR is rebased onto the CURRENT base tip
+    // and its change rewritten (v2). The new head is not a descendant of
+    // the old one — the exact non-fast-forward shape — and GitHub regenerates
+    // both pull refs, mirrored here.
+    git(["checkout", "-q", "master"], { cwd: fx.seed });
+    writeFileSync(path.join(fx.seed, "pr-file.txt"), "the PR's own change — force-pushed v2\n");
+    git(["add", "-A"], { cwd: fx.seed });
+    git(["commit", "-q", "-m", "c3' the PR change, rebased onto the tip and rewritten"], { cwd: fx.seed });
+    const prTip2 = git(["rev-parse", "HEAD"], { cwd: fx.seed }).stdout.trim();
+    git(["push", "-q", "--force", fx.bare, "HEAD:refs/heads/pr-branch"], { cwd: fx.seed });
+    git(["--git-dir", fx.bare, "update-ref", "refs/pull/77/head", prTip2]);
+    git(["--git-dir", fx.bare, "update-ref", "refs/pull/77/merge", prTip2]);
+
+    const round2 = spawnReviewPr(prepared); // SAME worktree, SAME shims — the stale-ref precondition
+    assert.equal(round2.res.status, 0,
+      `round 2 must complete — the un-forced refspec refusal (non-fast-forward) must not kill the review ` +
+      `(pre-fix this was a typed exit 2; got ${round2.res.status}):\n${round2.res.stderr}`);
+    const task2 = readFileSync(round2.taskOut, "utf8");
+    assert.match(task2, new RegExp(`PR-head fork point ${fx.baseTip}`),
+      "round 2 grades the LIVE head: the rebased PR's fork IS the base tip, not the round-1 fork");
+    assert.match(task2, /NOT advanced since the fork/,
+      "round 2's claim is earned against the live head (fork == tip after the rebase)");
+    assert.doesNotMatch(task2, new RegExp(`PR-head fork point ${fx.fork} `),
+      "the round-1 graph (fork c1 + HAS advanced) must never be graded after the force-push — that is the stale-ref false claim");
+    assert.match(task2, /force-pushed v2/,
+      "the diff tracks the live preview too: a trailing pr-merge would show only the round-1 content");
+    assert.match(`${round2.res.stdout}${round2.res.stderr}`, /verdict APPROVE/,
+      "the review pipeline completes across the force-push");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
 });
