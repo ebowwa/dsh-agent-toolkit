@@ -357,6 +357,73 @@ wt_prune() { # stale worktree metadata (items rm -rf their dirs)
   done
 }
 
+# newest_window_jq <route> <filter> — run <filter> over the route's NEWEST
+# per_page=100 comment window, in at most two gh api calls. The
+# list-comments routes (issues AND pulls) return ASCENDING (oldest first;
+# `direction` is ignored on this route — measured on issue #100, receipt
+# in #581), so the first per_page=100 page holds the thread's OLDEST 100
+# comments and the scans that used to read only it read the wrong end of
+# the thread past the 100-comment cliff: ack_comment never found the ack
+# (issue #581), trusted_task lost the just-posted trigger or ran an
+# ANCIENT /dsh comment as the task, and fetch_context served
+# 100-comment-old context and missed every newer dsh:msg (issue #588).
+# `gh api -i` prints the Link header above the jq result; when rel="last"
+# names a page past 1, that NEWEST page is fetched and filtered by the
+# second call. A failed LAST-page fetch FAILS the helper (nonzero, nothing
+# on stdout): the caller's no-match path is the honest degradation, never
+# a fallback onto page 1's ancient ids. The filter is a constant literal
+# passed whole — never interpolated from comment data (the marker reaches
+# jq as $ENV, issue #573).
+#
+# Envelope split — the gh >= 2.95.0 -i contract (cli/cli
+# pkg/cmd/api/api.go printHeaders): the status line ends LF, every header
+# line AND the blank separator end CRLF, so a real envelope carries
+# `\r\n\r\n` and never `\n\n` (issue #591). The envelope is captured to a
+# TEMP FILE, never through "$( )": command substitution strips trailing
+# newlines, and an EMPTY page-1 filter result (the common case — no
+# marker/trigger on the thread's oldest 100) eats the separator's final
+# newline, so an in-memory split silently fails exactly when page 1 has no
+# match. awk splits on the FIRST blank line (CRLF `\r` or LF `""`); a body
+# with no blank line at all is taken as the whole response (a single-page
+# thread under a headerless shim/degraded proxy).
+newest_window_jq() {
+  local route="$1" filter="$2" respf link last
+  respf="$(mktemp "${TMPDIR:-/tmp}/dsh-newest-window.XXXXXX")" || return 1
+  if ! gh api -i "${route}?per_page=100" --jq "$filter" >"$respf"; then
+    rm -f "$respf"
+    return 1   # gh's stderr already reached the worker log — surfaced, not swallowed
+  fi
+  # awk exits 1 when a blank line (CRLF or LF) exists — the header/body
+  # separator of the -i envelope.
+  if ! awk '$0=="" || $0=="\r" {exit 1}' "$respf"; then
+    link="$(awk 'f{exit} $0=="" || $0=="\r" {f=1; next} {print}' "$respf" \
+      | awk 'tolower($1) == "link:" {sub(/\r$/, ""); sub(/^link:[ \t]*/, ""); print; exit}')"
+    last="$(printf '%s' "$link" | sed -n 's/.*<[^>]*[?&]page=\([0-9][0-9]*\)>; rel="last".*/\1/p')"
+    if [ -z "$last" ]; then
+      last=1
+      if [ -n "$link" ]; then
+        echo "dsh-worker: newest_window_jq on $route — Link header present but no parsable rel=\"last\" page; scanning the first page (issue #588 degradation)" >&2
+      fi
+    fi
+    if [ "$last" -gt 1 ]; then
+      rm -f "$respf"
+      gh api "${route}?per_page=100&page=${last}" --jq "$filter" \
+        || return 1   # page-1 ids are the thread's OLDEST — never fall back onto them
+      return 0
+    fi
+    # The body after the blank line; empty = no match (gh --jq prints
+    # top-level scalars raw, an empty result prints nothing) — callers'
+    # -s / empty checks read an honest empty, never a stray newline.
+    awk 'f{print; next} $0=="" || $0=="\r" {f=1; next}' "$respf"
+  else
+    # No blank line anywhere: a headerless body (a shim in tests, a
+    # degraded proxy in the field) — the whole response is the page.
+    cat "$respf"
+  fi
+  rm -f "$respf"
+  return 0
+}
+
 # fetch_context <repo> <num> <outdir> — thread context file (title/body +
 # last 8 comments), same shape the CI flow builds. Outdir is REQUIRED (the
 # review round caught the redirect landing on $1/repo instead of the run
@@ -369,14 +436,16 @@ fetch_context() {
       --jq '"title: " + .title + "\nbody (truncated):\n" + ((.body // "")[0:1600])' || true
     echo
     echo "recent comments (last 8, truncated):"
-    gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
-      --jq '.[-8:][] | "- " + .user.login + ": " + ((.body // "") | gsub("[\\r\\n]+"; " ") | .[0:280])' || true
+    newest_window_jq "repos/${repo}/issues/${num}/comments" \
+      '.[-8:][] | "- " + .user.login + ": " + ((.body // "") | gsub("[\\r\\n]+"; " ") | .[0:280])' || true
   } > "$outdir/thread-context.txt" 2>/dev/null || true
   # AGENT MESSAGES: structured dsh:msg comment blocks become a machine
   # section — agent-to-agent communication over the thread (the schema:
   # <!-- dsh:msg from:<id> to:<id|*> type:<kind> --> ... <!-- /dsh:msg -->).
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" --jq '
-    .[] | .body | scan("<!-- dsh:msg[^>]*-->[\\s\\S]*?<!-- /dsh:msg -->") // empty' 2>/dev/null \
+  # Harvested from the NEWEST window (issue #588): page 1 is the thread's
+  # oldest 100, so blocks past the 100-comment cliff were invisible.
+  newest_window_jq "repos/${repo}/issues/${num}/comments" \
+    '.[] | .body | scan("<!-- dsh:msg[^>]*-->[\\s\\S]*?<!-- /dsh:msg -->") // empty' \
     | head -10 > "$outdir/agent-messages.txt" || true
   if [ -s "$outdir/agent-messages.txt" ]; then
     {
@@ -396,17 +465,29 @@ fetch_context() {
 # Trust is always re-derived from the API — never from the label.
 trusted_task() {
   local repo="$1" num="$2" is_pr="$3" out="$4" body issue_json
-  body="$(gh api "repos/${repo}/issues/${num}/comments?per_page=100" --jq '
+# Both scans read the NEWEST window (issue #588): page 1 is the thread's
+  # OLDEST 100 comments, so past the 100-comment cliff a first-page scan
+  # missed the just-posted trigger (lost dispatch) or matched an ANCIENT
+  # /dsh comment and ran it as the task (wrong-task dispatch). The belt
+  # rides the ASSIGNMENT, never inside the substitution (issue #530, the
+  # #528 poll_field shape at the claim path): under a 403/429 gh prints
+  # its raw error envelope to STDOUT even with --jq (the filter only runs
+  # on a successful response), so `$(cmd || true)` would make the API's
+  # error body the TASK text — the assignment belt discards both the exit
+  # code and the captured envelope: a failed newest-window read is an
+  # EMPTY read, never task text, and the issue-body read below is the
+  # loud fallback when the whole re-derivation comes up empty.
+  body="$(newest_window_jq "repos/${repo}/issues/${num}/comments" '
     [.[] | select(((.body // "") | startswith("/dsh")) or ((.body // "") | contains("@dsh-agent")))
           | select(.user.type != "Bot")
           | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-    ][-1].body // ""' 2>/dev/null || true)"
+    ][-1].body // ""')" || body=""
   if [ -z "$body" ] && [ "$is_pr" = "true" ]; then
-    body="$(gh api "repos/${repo}/pulls/${num}/comments?per_page=100" --jq '
+    body="$(newest_window_jq "repos/${repo}/pulls/${num}/comments" '
       [.[] | select(((.body // "") | startswith("/dsh")) or ((.body // "") | contains("@dsh-agent")))
             | select(.user.type != "Bot")
             | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-      ][-1].body // ""' 2>/dev/null || true)"
+][-1].body // ""')" || body=""
   fi
   if [ -z "$body" ]; then
     # body/title issuance: the ISSUE itself carries the trigger; the issue
@@ -414,18 +495,44 @@ trusted_task() {
     # "/dsh" body means "the title IS the task" (#474 shape).
     issue_json="$(gh issue view "$num" --repo "$repo" --json body,title,authorAssociation 2>/dev/null || true)"
     if [ -n "$issue_json" ]; then
+      # The parse is guarded INSIDE the node script (issue #530, the #528
+      # poll_field / #529 pr_field shape): a non-JSON body — gh's error text
+      # riding stdout under a 403/429 — is caught and degrades to an EMPTY
+      # task, never an uncaught JSON.parse (the #529 crash shape carried to
+      # the claim path). A body that PARSES but is not the gh issue envelope
+      # takes the same loud path: GitHub's own 403/429 error bodies are JSON
+      # ({"message": ...}) and carry no authorAssociation, so without the
+      # envelope check that arm degraded SILENTLY to the same wrong
+      # empty-close. The blanket 2>/dev/null is gone with it: EVERY degrade
+      # writes ONE diagnostic line to the worker log, because a silent
+      # degrade here is a WRONG outcome, not a safe one — the caller reads
+      # an empty task as "no trusted /dsh comment" and closes the claimed
+      # item, and that close must be diagnosable. The trailing `|| true` is
+      # the belt, not the guard — an invisible one, which is exactly how the
+      # #530 receipt misread this block — so the guard lives where the throw
+      # happens.
       body="$(printf '%s' "$issue_json" | node -e '
-        const j = JSON.parse(require("fs").readFileSync(0, "utf8"));
-        const trusted = ["OWNER", "MEMBER", "COLLABORATOR"].includes(j.authorAssociation);
-        const body = (j.body || "");
-        const title = (j.title || "").replace(/^\/dsh\s*/, "");
-        if (!trusted) process.stdout.write("");
-        else if (body.startsWith("/dsh")) {
-          const t = body.replace(/^\/dsh\s*/, "").trim();
-          process.stdout.write(t.length > 0 ? t : "/dsh " + title);
-        } else if ((j.title || "").startsWith("/dsh") && title.length > 0) {
-          process.stdout.write("/dsh " + title);
-        } else process.stdout.write("");' 2>/dev/null || true)"
+        let j = null, parsed = true;
+        try { j = JSON.parse(require("fs").readFileSync(0, "utf8")); }
+        catch { parsed = false; }
+        const envelope = j !== null && typeof j === "object" && typeof j.authorAssociation === "string";
+        if (!envelope) {
+          process.stderr.write(parsed
+            ? "trusted_task: issue body parsed but is NOT the gh issue envelope (no string authorAssociation — a JSON error body riding stdout under a 403/429?) — degrading to an empty task (issue #530)\n"
+            : "trusted_task: issue body is not JSON (gh error text on stdout under throttle?) — degrading to an empty task (issue #530)\n");
+          process.stdout.write("");
+        } else {
+          const trusted = ["OWNER", "MEMBER", "COLLABORATOR"].includes(j.authorAssociation);
+          const body = (j.body || "");
+          const title = (j.title || "").replace(/^\/dsh\s*/, "");
+          if (!trusted) process.stdout.write("");
+          else if (body.startsWith("/dsh")) {
+            const t = body.replace(/^\/dsh\s*/, "").trim();
+            process.stdout.write(t.length > 0 ? t : "/dsh " + title);
+          } else if ((j.title || "").startsWith("/dsh") && title.length > 0) {
+            process.stdout.write("/dsh " + title);
+          } else process.stdout.write("");
+        }' || true)"
     fi
   fi
   printf '%s' "$body" > "$out"
@@ -436,8 +543,33 @@ trusted_task() {
 # CI flow collapses to "edit the newest ack in place" here).
 ack_comment() {
   local repo="$1" num="$2"
-  gh api "repos/${repo}/issues/${num}/comments?per_page=100" \
-    --jq "[.[] | select((.body // \"\") | contains(\"${ACK_MARKER}\")) | .id][-1] // 0" 2>/dev/null || echo 0
+  # The marker reaches jq as an env variable, never interpolated into the
+  # filter string (issue #573): an operator marker carrying jq
+  # metacharacters (" \ ] |) shattered the interpolated expression. gh api
+  # has no --arg, but its embedded jq reads $ENV — ACK_MARKER is exported
+  # for the gh child, the filter stays a constant literal, and gh/jq
+  # failures surface as typed stderr (never the old 2>/dev/null swallow);
+  # `|| echo 0` keeps the caller's contract (0/empty = post a fresh ack)
+  # for genuine API errors only.
+  #
+  # The list-issue-comments route returns comments ASCENDING (oldest
+  # first; `direction` is ignored on this route — measured on issue #100)
+  # while the ack is posted at trigger time, among the NEWEST comments:
+  # the first per_page=100 page holds the thread's OLDEST 100, so past 100
+  # thread comments a first-page-only scan structurally missed every ack
+  # and every trigger posted a fresh one (issue #581). The NEWEST window
+  # (the rel="last" page, see newest_window_jq) is scanned instead — the
+  # ack is then found even past 100 comments, and exactly one ack exists
+  # per trigger. A thread needs >100 comments AFTER the newest ack (the
+  # exactly-at-100 boundary included: rel="last" then names the one-past-
+  # end page, which scans empty and self-heals on the next trigger) for
+  # the marker to fall outside the window, and the fresh-ack fallback is
+  # the honest answer there.
+  if ! ACK_MARKER="$ACK_MARKER" newest_window_jq \
+    "repos/${repo}/issues/${num}/comments" \
+    '[.[] | select((.body // "") | contains($ENV.ACK_MARKER)) | .id][-1] // 0'; then
+    echo 0
+  fi
 }
 
 # run_item_bg <slot-key> <func> [args...] — claim a concurrency slot and
