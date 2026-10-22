@@ -249,6 +249,39 @@ esac`);
   }
 });
 
+// --- issue #540 pin: the dashboard's deep path survives a FRESH data root ---
+//
+// $DATA/runs is created lazily, only when an item actually runs, so on a
+// fresh worker install the directory does not exist and `ls` exits 1.
+// `2>/dev/null` hid the message but not the status, `set -o pipefail`
+// propagated it, and `set -e` killed the sweep at the `recent=` assignment —
+// exit 1 every cron minute until the first run materialized the dir, with the
+// dashboard never posted. The existing fixtures all bail at dashboard_update's
+// `[ -n "$num" ] || return 0` before reaching the read, which is exactly why
+// the suite could not see it. This shim answers an existing dashboard issue
+// (num=12) so the sweep reaches the deep path on the SAME fresh data root.
+const DASHBOARD_SHIM = `case " $* " in
+  *"--label dsh/dashboard"*) printf '12\\n' ;;    # the existing dashboard issue
+  *"issues?state=open"*) exit 0 ;;                # empty queue / review / task polls
+  *"issue edit"*) printf 'edited\\n' ;;            # the dashboard edit
+  *) exit 0 ;;
+esac`;
+
+test("issue #540: a FRESH data root (no $DATA/runs yet) posts the dashboard — the sweep exits 0", () => {
+  const f = fixtureWithShim(DASHBOARD_SHIM);
+  try {
+    assert.equal(existsSync(path.join(f.dir, "data", "runs")), false,
+      "precondition: the runs dir does not exist yet (it is created lazily by the first run)");
+    const res = runOnce(f, f.ghLog);
+    assert.equal(res.status, 0, `a fresh data root must not kill the sweep:\n${res.stderr}`);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.match(log, /--label dsh\/dashboard/, "the sweep reached the dashboard lookup");
+    assert.match(log, /issue edit 12/, "the dashboard was POSTED — the read after the guard still ran");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 // --- issue #530 pins: trusted_task's issue-body parse degrades loudly, never crashes ---
 //
 // The claim path re-derives trust AFTER the item is claimed, so a garbage

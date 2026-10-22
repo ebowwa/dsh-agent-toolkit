@@ -610,7 +610,19 @@ dashboard_update() { # <repo>
   slots="$(ls -1 "$ITEM_SLOTS" 2>/dev/null | wc -l | tr -d ' ')"
   procs="$(pgrep -fc 'dsh --profile headless' 2>/dev/null || echo 0)"
   inflight="$(for lk in "$ITEM_SLOTS"/*.lock; do [ -e "$lk" ] || continue; printf '%s ' "$(basename "$lk" .lock)"; done)"
-  recent="$(ls -1t "$DATA/runs" 2>/dev/null | head -5 | tr '\n' ' ')"
+  # Issue #540: $DATA/runs is created LAZILY (only when an item runs), so on a
+  # fresh data root the directory is absent and `ls` exits 1 — 2>/dev/null
+  # hides the message but not the status, pipefail propagates it through the
+  # pipeline, and `set -e` kills the sweep mid-dashboard on every cron minute
+  # until the first run materializes the dir. Guard the read the same way
+  # prune_runs does, and keep the pipeline tolerant so "no runs yet" is a
+  # VALUE (an empty list), never a failure.
+  recent=""
+  if [ -d "$DATA/runs" ]; then
+    # `|| true` (never `|| recent=""`) so a SIGPIPE from `head` after a long
+    # listing cannot discard the rows that WERE captured.
+    recent="$(ls -1t "$DATA/runs" 2>/dev/null | head -5 | tr '\n' ' ')" || true
+  fi
   local tin=0 tout=0 nmeta=0 metaf
   for metaf in "$DATA"/runs/*/dsh-run-meta.env; do
     [ -f "$metaf" ] || continue
