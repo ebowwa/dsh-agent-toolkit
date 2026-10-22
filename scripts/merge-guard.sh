@@ -9,7 +9,11 @@
 # through it when the driver arms GH_MERGE_GUARD=on).
 #
 # Semantics (issue #434's explicit requirement): ONE snapshot of the PR's
-# check runs, never a poll-until-green loop. The named check counts ONLY
+# check runs, never a poll-until-green loop. The ONE snapshot is COMPLETE —
+# the rollup pages the head's check-runs to exhaustion (?per_page=100 pages
+# until the fetched run count covers the API's total_count, issue #566), so
+# a red conclusion can never hide beyond the endpoint's default per_page=30
+# truncation. The named check counts ONLY
 # when it is `completed` + `success` ON THE PR'S HEAD SHA — queued,
 # in_progress, cancelled, failure, neutral, skipped, timed_out, stale and
 # absent are all NOT green. A stale green (an older run for a previous head,
@@ -121,22 +125,58 @@ PR_URL="$(printf '%s' "$PR_JSON" | grep -o '"url":"[^"]*"' | head -n1 | cut -d'"
 REPO_PATH="$(printf '%s' "$PR_URL" | sed -n 's#https://github.com/\([^/]*\)/\([^/]*\)/pull/.*#\1/\2#p')"
 [ -n "$REPO_PATH" ] || unresolvable "cannot parse owner/repo from PR url '$PR_URL'"
 
-RUNS_JSON="$("$GH_BIN" api "repos/$REPO_PATH/commits/$PR_SHA/check-runs" 2>&1)" \
-  || unresolvable "check-runs API failed for $REPO_PATH@${PR_SHA:0:7}:$RUNS_JSON"
+# The head's check runs are fetched to EXHAUSTION inside ONE snapshot
+# (issue #566): the endpoint defaults to per_page=30, so a head carrying
+# more check runs than that parked a red conclusion beyond page 1 and the
+# rollup graded the head ANYGREEN. Loop ?per_page=100 (the API's page-size
+# cap) pages until the fetched run count covers total_count — deterministic
+# termination, never a poll-until-green loop: a page that adds nothing
+# refuses rather than looping forever.
+PAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/merge-guard-566.XXXXXX")" \
+  || unresolvable "cannot create the check-runs rollup scratch dir (issue #566)"
+trap 'rm -rf "$PAGE_DIR"' EXIT
+RUNS_TOTAL=""
+RUNS_CAUGHT=0
+RUNS_PREV=-1
+RUNS_PAGE=0
+while :; do
+  RUNS_PAGE=$((RUNS_PAGE + 1))
+  RUNS_BODY="$("$GH_BIN" api "repos/$REPO_PATH/commits/$PR_SHA/check-runs?per_page=100&page=$RUNS_PAGE" 2>&1)" \
+    || unresolvable "check-runs API failed for $REPO_PATH@${PR_SHA:0:7} (page $RUNS_PAGE):$RUNS_BODY"
+  printf '%s' "$RUNS_BODY" > "$PAGE_DIR/page-$RUNS_PAGE.json"
+  [ -n "$RUNS_TOTAL" ] \
+    || RUNS_TOTAL="$(printf '%s' "$RUNS_BODY" | grep -o '"total_count"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | head -n1 | grep -o '[0-9][0-9]*$' | tr -d '[:space:]')"
+  [ -n "$RUNS_TOTAL" ] \
+    || unresolvable "check-runs response page $RUNS_PAGE for PR #$PR_NUM head ${PR_SHA:0:7} carries no parseable total_count — refusing rather than trusting an unreadable rollup (issue #434)"
+  RUNS_CAUGHT=$((RUNS_CAUGHT + $(printf '%s' "$RUNS_BODY" | grep -o '"id"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | wc -l | tr -d '[:space:]')))
+  [ "$RUNS_CAUGHT" -ge "$RUNS_TOTAL" ] && break
+  [ "$RUNS_CAUGHT" -ne "$RUNS_PREV" ] \
+    || unresolvable "check-runs pagination for PR #$PR_NUM head ${PR_SHA:0:7} made no progress at page $RUNS_PAGE ($RUNS_CAUGHT of $RUNS_TOTAL fetched) — refusing rather than looping forever (issue #566)"
+  RUNS_PREV=$RUNS_CAUGHT
+done
 
 # ONE snapshot, filtered to (check name == head SHA) pairs; the highest id
 # wins if the check was re-run on this head (latest attempt is the truth).
 # FleetTower issue #1132: when NO run carries the default name, the verdict
 # falls back to the head-wide rollup grade (see the env contract above); an
-# EXPLICIT name never falls back.
-VERDICT="$(printf '%s' "$RUNS_JSON" | MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" node -e '
-let s = "";
-process.stdin.on("data", (d) => (s += d)).on("end", () => {
-  let j;
-  try { j = JSON.parse(s); } catch { console.log("UNPARSEABLE"); return; }
-  const runs = (j.check_runs || []).filter(
-    (r) => r.head_sha === process.env.MERGE_GUARD_SHA,
-  );
+# EXPLICIT name never falls back. The rollup grades the COMPLETE page set
+# (issue #566) — page-2 reds are as loud as page-1 reds.
+VERDICT="$(MERGE_GUARD_CHECK="$CHECK" MERGE_GUARD_SHA="$PR_SHA" MERGE_GUARD_EXPLICIT="$CHECK_EXPLICIT" MERGE_GUARD_PAGE_DIR="$PAGE_DIR" node -e '
+(() => {
+  const fs = require("fs");
+  const path = require("path");
+  const pageDir = process.env.MERGE_GUARD_PAGE_DIR;
+  let runs = [];
+  let total = 0;
+  for (const f of fs.readdirSync(pageDir).filter((f) => f.endsWith(".json")).sort()) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(path.join(pageDir, f), "utf8")); }
+    catch { console.log("UNPARSEABLE"); return; }
+    if (typeof j.total_count === "number") total = j.total_count;
+    runs = runs.concat(j.check_runs || []);
+  }
+  if (runs.length < total) { console.log("INCOMPLETE " + runs.length + "/" + total); return; }
+  runs = runs.filter((r) => r.head_sha === process.env.MERGE_GUARD_SHA);
   const named = runs.filter((r) => r.name === process.env.MERGE_GUARD_CHECK);
   if (named.length) {
     const latest = named.reduce((a, b) => (b.id > a.id ? b : a));
@@ -154,7 +194,7 @@ process.stdin.on("data", (d) => (s += d)).on("end", () => {
   }
   if (reds.length) { console.log("ROLLUPRED " + detail); return; }
   console.log("ABSENT " + detail);
-});')"
+})();')"
 
 # Independent verification (issue #326) — OPT-IN via MERGE_GUARD_VERIFY=on.
 # Consulted ONLY after the gates check is green: the gate-verify channel is
@@ -181,18 +221,22 @@ case "$VERDICT" in
     echo "merge-guard: GREEN — '$CHECK' completed/success on PR #$PR_NUM head ${PR_SHA:0:7}"
     verify_gate
     [ "$MODE" = "check" ] && exit 0
+    rm -rf "$PAGE_DIR"
     exec "$GH_BIN" pr merge "$@"
     ;;
   ANYGREEN\ *)
     echo "merge-guard: GREEN — no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM (this repo's gates jobs do not carry the default name — the FleetTower #1132 class), but the head IS graded green by: ${VERDICT#ANYGREEN } — completed/success ON this head SHA, no red on it (issue #434 semantics)"
     verify_gate
     [ "$MODE" = "check" ] && exit 0
+    rm -rf "$PAGE_DIR"
     exec "$GH_BIN" pr merge "$@"
     ;;
   ROLLUPRED\ *)
     refuse "no '$CHECK' check run graded head ${PR_SHA:0:7} of PR #$PR_NUM and the head carries red check run(s): ${VERDICT#ROLLUPRED } — a red head is not a green one (the #784 class); if the red job is advisory and a green sibling is the real gate, assert it explicitly with MERGE_GUARD_CHECK=<green job> — an explicit name never falls back (FleetTower issue #1132)";;
   UNPARSEABLE)
     unresolvable "check-runs response for PR #$PR_NUM head ${PR_SHA:0:7} did not parse — refusing rather than trusting an unreadable rollup (issue #434)";;
+  INCOMPLETE*)
+    unresolvable "the paged check-runs rollup for PR #$PR_NUM head ${PR_SHA:0:7} never reached total_count (${VERDICT#INCOMPLETE }) — refusing rather than grading an incomplete rollup (issue #566)";;
   NAMED\ *)
     refuse "'$CHECK' on PR #$PR_NUM head ${PR_SHA:0:7} is {status=$(printf '%s' "$VERDICT" | cut -d' ' -f2) conclusion=$(printf '%s' "$VERDICT" | cut -d' ' -f3)} — queued/in-progress/cancelled/failed/absent are NOT green (issue #434); the guard takes ONE snapshot and does NOT poll until green";;
   ABSENT*)
