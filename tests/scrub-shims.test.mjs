@@ -18,6 +18,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import {
+  GUARD_INPUT_AMBIENT,
+  SHIM_GUARD_ENV,
+  SHIM_SCRUB_ENV,
+  scrubShimScrubEnv,
+} from "./lib/guard-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GH_SHIM = path.join(ROOT, "scripts", "gh-scrub-shim");
@@ -75,8 +81,10 @@ function runShim(t, shim, scrubBody, argv, opts = {}) {
   // lane arms the merge-guard hook on `pr merge` argv through the
   // process.env spread and refuses fail-closed (issue #479 — the
   // env-construction flavor of the REVIEW.md lane-leak class). "Unset" must
-  // mean unset on every machine.
-  delete env.GH_MERGE_GUARD;
+  // mean unset on every machine, for the WHOLE shim-scrub belt rather than the
+  // one name this helper's leg happens to load today (issues #563/#490): the
+  // belt lives in tests/lib/guard-env.mjs and both helpers apply it.
+  scrubShimScrubEnv(env);
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     cwd: opts.cwd,
@@ -325,29 +333,25 @@ function runShimWithStdin(t, shim, scrubBody, argv, stdin) {
   // carrier): every current argv through this helper is a non-merge verb so
   // an ambient GH_MERGE_GUARD=on is inert — but one future `pr merge` test
   // routed through here would arm the merge-guard hook through the
-  // process.env spread and re-open the #479 red-on-armed-lane class. "Unset"
-  // must mean unset on every machine.
-  delete env.GH_MERGE_GUARD;
-  // The guard's verify leg is the second front (issue #551, the #490 carrier
-  // pair): the shim's guard invocation only PREFIXES assignments to the
-  // inherited env (assignments add, they never strip — the #490 receipt), so
-  // an ambient MERGE_GUARD_VERIFY=on / MERGE_GUARD_VERIFY_TOOL rides this
-  // spread into any future armed merge leg's guard call and arms the verify
-  // leg under the stubbed fixture. Inert today (the hook above never arms
-  // through this helper), but "unset must mean unset" for every name the
-  // shim/guard chain reads, not only the currently load-bearing one.
-  delete env.MERGE_GUARD_VERIFY;
-  delete env.MERGE_GUARD_VERIFY_TOOL;
-  // Same belt for the check-run name pair (the #551 fix shape asks this belt
-  // be considered): GH_MERGE_GUARD_CHECK is the #1132 explicit-name
-  // passthrough (the shim forwards it -> MERGE_GUARD_CHECK only under an
-  // armed hook, where an explicit name is an assertion that never falls
-  // back) and MERGE_GUARD_CHECK is the name merge-guard.sh itself reads — an
-  // ambient explicit name flips CHECK_EXPLICIT and turns a future armed
-  // merge leg's rollup fallback into a hard ABSENT refusal (the #553 receipt
-  // shape, on the sibling helper).
-  delete env.GH_MERGE_GUARD_CHECK;
-  delete env.MERGE_GUARD_CHECK;
+  // process.env spread and re-open the #479 red-on-armed-lane class. The
+  // guard's verify leg is the second front (issue #551): the shim's guard
+  // invocation only PREFIXES assignments to the inherited env (assignments
+  // add, they never strip — the #490 receipt), so an ambient
+  // MERGE_GUARD_VERIFY=on / MERGE_GUARD_VERIFY_TOOL rides this spread into any
+  // future armed merge leg's guard call and arms the verify leg under the
+  // stubbed fixture. The check-run pair is the third (the #1132/#553 shape):
+  // GH_MERGE_GUARD_CHECK is the explicit-name passthrough the shim forwards to
+  // MERGE_GUARD_CHECK, and an ambient explicit name flips CHECK_EXPLICIT into
+  // an assertion that never falls back. The guard-script name is the fourth
+  // (issue #563): GH_MERGE_GUARD_SCRIPT selects which merge-guard.sh runs, so
+  // an ambient value redirects the leg away from the fixture's guard.
+  //
+  // All four fronts are the ONE shared belt now (tests/lib/guard-env.mjs,
+  // issues #563/#490) — it used to be five hand-rolled deletes here and
+  // GH_MERGE_GUARD_SCRIPT appeared nowhere, which is exactly how a name goes
+  // missing. "Unset" must mean unset for every name the shim/guard chain
+  // reads, not only the currently load-bearing ones.
+  scrubShimScrubEnv(env);
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     input: stdin,
@@ -488,7 +492,7 @@ test("gh shim: ambient GH_MERGE_GUARD=on cannot arm the stdin-form helper either
   }
 });
 
-test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env (issue #551 pin)", (t) => {
+test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env (issues #551/#563 belt pin)", (t) => {
   // The #551 residual, graded on a clean machine: the helper scrubbed only
   // the hook arm (GH_MERGE_GUARD, issue #483), so MERGE_GUARD_VERIFY /
   // MERGE_GUARD_VERIFY_TOOL rode its spread undeleted — the #551 receipt's
@@ -510,12 +514,15 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
     tool: process.env.MERGE_GUARD_VERIFY_TOOL,
     check: process.env.MERGE_GUARD_CHECK,
     ghCheck: process.env.GH_MERGE_GUARD_CHECK,
+    // Issue #563: the guard-script name was the belt's missing member.
+    ghScript: process.env.GH_MERGE_GUARD_SCRIPT,
   };
   process.env.GH_MERGE_GUARD = "on";
   process.env.MERGE_GUARD_VERIFY = "on";
   process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
   process.env.MERGE_GUARD_CHECK = "not-this-repos-gates";
   process.env.GH_MERGE_GUARD_CHECK = "not-this-repos-gates";
+  process.env.GH_MERGE_GUARD_SCRIPT = "/nonexistent/merge-guard.sh";
   try {
     // A payload VALUE the shim definitely scrubs (equals-form --body=, the
     // shim's first scrub case; `pr merge -m` is boolean-only and rides raw
@@ -557,16 +564,10 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
     const dump = path.join(dir, "child-env.json");
     assert.ok(fs.existsSync(dump), `the scrubber must have dumped the child env (stderr: ${res.stderr})`);
     const childEnv = JSON.parse(fs.readFileSync(dump, "utf8"));
-    for (const name of [
-      "GH_MERGE_GUARD",
-      "MERGE_GUARD_VERIFY",
-      "MERGE_GUARD_VERIFY_TOOL",
-      "MERGE_GUARD_CHECK",
-      "GH_MERGE_GUARD_CHECK",
-    ]) {
+    for (const name of SHIM_SCRUB_ENV) {
       assert.ok(
         !(name in childEnv),
-        `ambient ${name} must not reach the shim's child env through the stdin-form helper (issue #551 belt)`,
+        `ambient ${name} must not reach the shim's child env through the stdin-form helper (issues #551/#563 belt)`,
       );
     }
   } finally {
@@ -576,11 +577,50 @@ test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env
       MERGE_GUARD_VERIFY_TOOL: saved.tool,
       MERGE_GUARD_CHECK: saved.check,
       GH_MERGE_GUARD_CHECK: saved.ghCheck,
+      GH_MERGE_GUARD_SCRIPT: saved.ghScript,
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   }
+});
+
+test("pin: the shim scrub belt names the FULL set the shims read, derived from source (issue #563)", () => {
+  // #563: the belt was five hand-rolled deletes, and GH_MERGE_GUARD_SCRIPT —
+  // which scripts/gh-scrub-shim reads to locate the guard
+  // (`MERGE_GUARD="${GH_MERGE_GUARD_SCRIPT:-${SCRUB_SCRIPT%/*}/merge-guard.sh}"`)
+  // — appeared NOWHERE. On a lane exporting it, an "unset-default" merge leg
+  // would be graded by that path instead of the fixture's guard: invisible on
+  // a clean box, wrong on an armed one. The belt now lives in
+  // tests/lib/guard-env.mjs and this pin derives the shim's own names from the
+  // SHIM SOURCE, so a GH_MERGE_GUARD* name that appears there must appear in
+  // the belt (and a name that disappears from the shim may be dropped from the
+  // belt — the two directions are the same assertion).
+  const shim = fs.readFileSync(GH_SHIM, "utf8");
+  const shimNames = [...new Set(shim.match(/\bGH_MERGE_GUARD[A-Z_]*/g) ?? [])].sort();
+  assert.ok(shimNames.length > 0, "the shim source reads no GH_MERGE_GUARD* names — did the guard hook move?");
+  assert.deepEqual(
+    [...SHIM_GUARD_ENV].sort(),
+    shimNames,
+    "the belt must name every GH_MERGE_GUARD* var scripts/gh-scrub-shim reads (issue #563)",
+  );
+  // ...plus the guard-input names the shim's guard call inherits (it only
+  // PREFIXES assignments, never strips — the #490 receipt).
+  for (const name of GUARD_INPUT_AMBIENT) {
+    assert.ok(SHIM_SCRUB_ENV.includes(name), `the belt must carry the guard-input name ${name}`);
+  }
+  assert.ok(
+    !SHIM_SCRUB_ENV.includes("MERGE_GUARD_GH"),
+    "MERGE_GUARD_GH is deliberately excluded: the shim prefixes it, so an ambient value never reaches the guard",
+  );
+  // ...and it must be APPLIED, not merely defined: no helper here may keep a
+  // hand-rolled delete of a belt name (the shape that lost the name).
+  const self = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+  assert.doesNotMatch(
+    self,
+    /^\s*delete env\.(?:GH_MERGE_GUARD[A-Z_]*|MERGE_GUARD_(?:CHECK|VERIFY|VERIFY_TOOL));?\s*$/m,
+    "a hand-rolled belt delete is how issue #563 drifted — scrub through tests/lib/guard-env.mjs",
+  );
 });
 
 test("gh shim: `--` after a value flag is not eaten as the value", (t) => {
