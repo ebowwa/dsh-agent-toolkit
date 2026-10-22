@@ -73,6 +73,11 @@ const channelStub = (t, comments, { apiFail = false } = {}) => {
     number: 326, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/326",
   }));
   writeFileSync(path.join(dir, "comments.json"), JSON.stringify(comments));
+  // The channel is both-channels since issue #560: pr-verification now reads
+  // pulls/N/reviews as well. These legs grade the COMMENT channel, so the
+  // reviews channel is served empty (apiFail still fails whichever read the
+  // tool makes first, which is what the unresolvable leg needs).
+  writeFileSync(path.join(dir, "reviews.json"), JSON.stringify([]));
   if (apiFail) writeFileSync(path.join(dir, "api-fail"), "1");
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${dir}/channel-gh.log"
@@ -80,7 +85,10 @@ if [ "$1" = "--version" ]; then echo "stub gh"; exit 0; fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then cat "${dir}/pr-view.json"; exit 0; fi
 if [ "$1" = "api" ]; then
   [ -f "${dir}/api-fail" ] && { echo "stub: api fails" >&2; exit 1; }
-  cat "${dir}/comments.json"
+  case "$*" in
+    */reviews) cat "${dir}/reviews.json" ;;
+    *) cat "${dir}/comments.json" ;;
+  esac
   exit 0
 fi
 echo "channel stub: unexpected call: $*" >&2
