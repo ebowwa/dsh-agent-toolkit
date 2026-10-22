@@ -60,25 +60,42 @@ fi
 WORKER_HOME="${DSH_WORKER_HOME:-$HOME/.dsh-worker}"
 
 # 1. toolkit checkout (clone when absent) and refresh the pin through
-#    the GUARDED re-pin arm (issue #276): the per-minute keepalive
-#    refuses to destroy in-flight agent work, and the install-time
-#    refresh runs the SAME gate — a redeploy on a box whose shared
-#    checkout is mid-edit must not clobber it either. A refusal (exit 3)
-#    or a degradation (exit 4) warns below and leaves the previously
-#    pinned release in place: the deploy still arms the guarded
-#    keepalive, which re-pin-refuses loudly every sweep until the tree
-#    is cleaned. safe.directory is set inside the guard's git wrapper.
+#    the GUARDED re-pin arm (issue #276, extended into the standing
+#    checkout's convergence arm by issue #614): the per-minute keepalive
+#    never destroys in-flight agent work, and the install-time refresh
+#    runs the SAME arm — a redeploy on a box whose shared checkout is
+#    mid-edit must not clobber it either. Both non-zero ends warn below
+#    and leave the previously pinned release in place: the deploy still
+#    arms the guarded keepalive either way (issue #639: the two ends
+#    tell the operator OPPOSITE things, so the warning names its class):
+#      REFUSED (exit 3) — the tree carries tracked modifications, the
+#      ONLY refuse-forever class: the keepalive re-pin-refuses loudly
+#      every sweep until the tree is committed or cleaned. A CLEAN tree
+#      on a working branch never refuses — the keepalive CONVERGES it
+#      to the pin instead (one loud note, the branch ref preserved).
+#      DEGRADED (exit 4) — a fetch/checkout/stamp failure: transient,
+#      nothing in the tree needs cleaning; the keepalive retries the
+#      next sweep.
+#    safe.directory is set inside the guard's git wrapper.
 #    No -q on the clone: nothing in this installer may fail quietly.
 PIN_OK=0
 if [ ! -d "$DSH_AGENT_TOOLKIT_DIR/.git" ]; then
   git clone https://github.com/ebowwa/dsh-agent-toolkit.git "$DSH_AGENT_TOOLKIT_DIR" \
     || { echo "install-worker: toolkit clone failed (egress?)" >&2; exit 3; }
 fi
-if bash "$SCRIPT_DIR/re-pin-toolkit.sh" "$DSH_AGENT_TOOLKIT_DIR"; then
+# The guard's exit code picks the warning class (issue #639): exit 3 is
+# the REFUSAL (tracked modifications — the one class whose cure is a
+# commit-or-clean), exit 4 the DEGRADE (a transient fetch/checkout/stamp
+# failure — a retry, never a tree cleaning).
+PIN_RC=0
+bash "$SCRIPT_DIR/re-pin-toolkit.sh" "$DSH_AGENT_TOOLKIT_DIR" || PIN_RC=$?
+if [ "$PIN_RC" -eq 0 ]; then
   PIN_OK=1
   echo "install-worker: toolkit pinned at $(git -c safe.directory="$DSH_AGENT_TOOLKIT_DIR" -C "$DSH_AGENT_TOOLKIT_DIR" describe --tags 2>/dev/null || echo v1)"
+elif [ "$PIN_RC" -eq 3 ]; then
+  echo "install-worker: WARNING — guarded re-pin REFUSED (exit 3): the tree carries tracked modifications (the never-destroy gate, issue #276); the toolkit runs its previously pinned checkout and the keepalive refuses re-pins until the tree is committed or cleaned — a clean tree on a working branch never refuses, the keepalive converges it to the pin instead (issue #614)" >&2
 else
-  echo "install-worker: WARNING — guarded re-pin did not land (refused or degraded — see the note above); the toolkit runs its previous checkout and the keepalive will refuse re-pins until the tree is cleaned (issue #276)" >&2
+  echo "install-worker: WARNING — guarded re-pin DEGRADED (exit $PIN_RC): a fetch/checkout/stamp failure — transient, nothing in the tree needs cleaning, the keepalive retries next sweep (issue #276); the toolkit runs its previously pinned checkout" >&2
 fi
 
 # 2. env file — umask 177 so the file is born 0600; values never echoed
