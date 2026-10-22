@@ -29,6 +29,14 @@
 //      boolean pin keeps passing).
 //   5. The driver actually arms it next to the shim env contract and
 //      carries the arm through GITHUB_ENV (the #251 later-step belt).
+//   6. The rollup reads ALL pages of the head's check runs (issue #566):
+//      the endpoint defaults to per_page=30, so a red parked beyond page 1
+//      used to be invisible and a red head PASSED ANYGREEN. The guard now
+//      requests ?per_page=100 and pages until the fetched count covers
+//      total_count — still ONE snapshot, never a poll loop. The stub gh
+//      serves real page shapes (paged calls get per_page slices, unpaged
+//      calls get the default-30 truncation), so a regression to the bare
+//      call reopens the exact blind spot the pins grade.
 //
 // Hermetic: a stub gh serves fixtures from a temp dir, counts its api
 // calls, and records any `pr merge` argv; no network, no real repo.
@@ -58,6 +66,7 @@ const fixture = (t) => {
   writeFileSync(path.join(dir, "pr-view.json"),
     JSON.stringify({ number: 434, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/434" }));
   writeFileSync(path.join(dir, "check-runs.json"), JSON.stringify({ total_count: 0, check_runs: [] }));
+  writeFileSync(path.join(dir, "legs-all.json"), JSON.stringify({ total_count: 0, check_runs: [] }));
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$MG_STUB_DIR/gh.log"
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
@@ -67,7 +76,32 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   printf 'x\\n' >> "$MG_STUB_DIR/api-count"
-  cat "$MG_STUB_DIR/check-runs.json"
+  # Issue #566: the guard now pages check-runs (?per_page=100&page=N). Serve
+  # REAL GitHub page shapes from legs-all.json. A PAGED call sees the full
+  # page slice the endpoint would return; an UNPAGED call — the regression
+  # shape — sees only the endpoint's default per_page=30 truncation, so a
+  # guard that stops paging reopens the page-1 blind spot these pins grade.
+  if printf '%s' "$*" | grep -q 'per_page=100'; then
+    page="$(printf '%s' "$*" | sed -n 's/.*[?&]page=\\([0-9][0-9]*\\).*/\\1/p')"
+    [ -n "$page" ] || page=1
+    MG_STUB_DIR="$MG_STUB_DIR" node -e '
+      const { readFileSync } = require("fs");
+      const path = require("path");
+      const dir = process.env.MG_STUB_DIR;
+      const page = Number(process.argv[1]);
+      const all = JSON.parse(readFileSync(path.join(dir, "legs-all.json"), "utf8")).check_runs;
+      const slice = all.slice((page - 1) * 100, page * 100);
+      process.stdout.write(JSON.stringify({ total_count: all.length, check_runs: slice }));
+    ' "$page"
+  else
+    MG_STUB_DIR="$MG_STUB_DIR" node -e '
+      const { readFileSync } = require("fs");
+      const path = require("path");
+      const dir = process.env.MG_STUB_DIR;
+      const all = JSON.parse(readFileSync(path.join(dir, "legs-all.json"), "utf8")).check_runs;
+      process.stdout.write(JSON.stringify({ total_count: all.length, check_runs: all.slice(0, 30) }));
+    '
+  fi
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
@@ -89,9 +123,15 @@ const leg = (over = {}) => ({
   conclusion: over.conclusion ?? "success",
 });
 
-const setLegs = (dir, legs) =>
+const setLegs = (dir, legs) => {
+  // legs-all.json is the FULL page-ordered run set the page-aware stub
+  // slices (issue #566); check-runs.json stays written for any arg-blind
+  // consumer that still reads it.
+  writeFileSync(path.join(dir, "legs-all.json"),
+    JSON.stringify({ total_count: legs.length, check_runs: legs }));
   writeFileSync(path.join(dir, "check-runs.json"),
     JSON.stringify({ total_count: legs.length, check_runs: legs }));
+};
 
 const ghLog = (dir) => readFileSync(path.join(dir, "gh.log"), "utf8").split("\n").filter(Boolean);
 const apiCalls = (dir) => ghLog(dir).filter((l) => l.startsWith("api ")).length;
@@ -162,6 +202,16 @@ const runShim = (t, argv, { legs = [], guardEnv = {} } = {}) => {
   // runShim-carrier audit lives in issue #490; this delete covers only the
   // var these pins introduce.)
   delete env.GH_MERGE_GUARD_CHECK;
+  // Fifth carrier of the same class (issue #553): the shim's guard invocation
+  // (scripts/gh-scrub-shim) exports MERGE_GUARD_CHECK only when the driver
+  // actually stamped GH_MERGE_GUARD_CHECK, and its guard call only PREFIXES
+  // MERGE_GUARD_GH to the inherited env — assignments add, they never strip —
+  // so an ambient MERGE_GUARD_CHECK=<other> on a lane rides this spread
+  // through the shim into the guard, flips CHECK_EXPLICIT
+  // (CHECK="${MERGE_GUARD_CHECK:-gates}"), and every armed+green shim leg
+  // refuses on a name no leg carries. Delete BEFORE the guardEnv spread so a
+  // deliberate stamp in a specific test still wins.
+  delete env.MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [SHIM, ...argv], {
     encoding: "utf8",
     cwd: dir,
@@ -240,6 +290,55 @@ test("guard: a RED sibling refuses even when another check is green (no 'gates' 
   assert.match(res.stderr, /MERGE_GUARD_CHECK=/, "the refusal must name the explicit-name escape");
 });
 
+test("guard: a red beyond the default page-1 truncation refuses — the rollup reads ALL pages (issue #566)", (t) => {
+  // GitHub's check-runs endpoint defaults to per_page=30; the guard used to
+  // grade the rollup from page 1 only, so a head with >30 check runs could
+  // park a red beyond page 1 and PASS ANYGREEN (issue #566). Pin the fix on
+  // the issue's literal shape: 45 runs (beyond the default 30), the ONLY
+  // red at position 35, every other run green on the SAME head SHA — the
+  // rollup must see it and refuse ROLLUPRED, in the same ONE snapshot (a
+  // single ?per_page=100 call covers 45 runs).
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    legs: Array.from({ length: 45 }, (_, i) => {
+      const id = i + 1;
+      return id === 35 ? leg({ id, name: "job-35", conclusion: "failure" }) : leg({ id, name: `job-${id}` });
+    }),
+  });
+  assert.equal(res.status, 1, `a page-2-of-30 red must refuse even with 34 green page-1 runs (stderr: ${res.stderr})`);
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /job-35/, "the refusal must name the beyond-page-1 red");
+  assert.equal(apiCalls(dir), 1, "45 runs arrive in ONE ?per_page=100 call — still one snapshot");
+});
+
+test("guard: a red on page 2 of per_page=100 refuses — the rollup pages to total_count (issue #566)", (t) => {
+  // The per_page bump alone is not enough: a head with >100 check runs
+  // still truncates at 100, so the rollup must keep paging until the
+  // fetched count covers the API's total_count. Pin the loop: 145 runs, the
+  // ONLY red at position 131 (page 2 at per_page=100), everything else
+  // green on the SAME head SHA — the rollup must fetch BOTH pages and
+  // refuse ROLLUPRED. When the stub gets an UNPAGED call (the #566
+  // regression shape) it serves only the default-30 truncation, so this
+  // leg also reds on a guard that stopped requesting per_page.
+  const { res, dir } = runGuard(t, "check", ["434"], {
+    legs: Array.from({ length: 145 }, (_, i) => {
+      const id = i + 1;
+      return id === 131 ? leg({ id, name: "job-131", conclusion: "failure" }) : leg({ id, name: `job-${id}` });
+    }),
+  });
+  assert.equal(res.status, 1, `a page-2 red must refuse even with 130 green page-1 runs (stderr: ${res.stderr})`);
+  assert.match(res.stderr, /red check run/);
+  assert.match(res.stderr, /job-131/, "the refusal must name the page-2 red");
+  assert.equal(apiCalls(dir), 2, "the rollup must read page 1 AND page 2 (one snapshot, both pages)");
+});
+
+test("guard source: the check-runs rollup requests per_page=100 and sizes itself against total_count (issue #566)", () => {
+  const src = readFileSync(GUARD, "utf8");
+  assert.match(src, /per_page=100/, "the rollup must request the API's maximum page size");
+  assert.doesNotMatch(src, /check-runs" 2>&1\)/, "the bare unpaged call (the #566 truncation) must be gone");
+  assert.match(src, /total_count/, "the loop must size itself against the API's total_count");
+  assert.match(src, /ONE snapshot/, "the paged fetch is still ONE snapshot, never a poll loop");
+});
+
 test("guard: nothing green on the head under a foreign default name refuses (the never-ran case)", (t) => {
   const { res } = runGuard(t, "check", ["434"], {
     legs: [leg({ name: "guard-tests", status: "queued", conclusion: null })],
@@ -291,6 +390,17 @@ test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (
   // red. Arm the lane INSIDE this process so the harness env's hermeticity is
   // graded on every machine, not just on mis-configured lanes (the #479 pin
   // shape, applied to the guard's own default).
+  //
+  // Save-and-RESTORE, never delete (issue #553): this pin sits early in the
+  // file, and a `finally { delete … }` here would permanently scrub an armed
+  // lane's export out of this test process — every leg declared AFTER the pin
+  // (sections 2–6, every shim leg included) would then be graded DE-ARMED
+  // even where the lane exports the arm, laundering exactly the failure shape
+  // this file pins against (the whole file ran 39-green on an armed lane
+  // while the isolated armed+green shim leg ran red). Restore the caller's
+  // value so an armed lane stays armed for them; on a clean box the restore
+  // IS a delete (it was unset).
+  const savedCheckEnv = process.env.MERGE_GUARD_CHECK;
   process.env.MERGE_GUARD_CHECK = "ci/ambient-not-gates";
   try {
     const { res, dir } = runGuard(t, "check", ["434"], { legs: [leg()] });
@@ -298,7 +408,8 @@ test("guard: an ambient MERGE_GUARD_CHECK=<other> cannot flip the harness legs (
     assert.match(res.stdout, /GREEN — 'gates' completed\/success/, "the guard still graded the gates leg");
     assert.equal(apiCalls(dir), 1);
   } finally {
-    delete process.env.MERGE_GUARD_CHECK;
+    if (savedCheckEnv === undefined) delete process.env.MERGE_GUARD_CHECK;
+    else process.env.MERGE_GUARD_CHECK = savedCheckEnv;
   }
 });
 
@@ -531,6 +642,35 @@ test("shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issue #
     assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
   } finally {
     delete process.env.GH_MERGE_GUARD;
+  }
+});
+
+test("shim: an ambient MERGE_GUARD_CHECK=<other> cannot flip the armed+green shim leg (issue #553 pin)", (t) => {
+  // The #553 defect is invisible on a clean dev box: the shim's guard
+  // invocation only PREFIXES MERGE_GUARD_GH to its inherited env, and it
+  // exports MERGE_GUARD_CHECK only when the driver stamped
+  // GH_MERGE_GUARD_CHECK — so an ambient MERGE_GUARD_CHECK on the lane rides
+  // runShim's process.env spread through the shim into the guard, flips
+  // CHECK_EXPLICIT, and the armed+green leg refuses on a name no leg carries
+  // (the #479/#483/#487/#490 shape, fifth carrier). Arm the lane INSIDE this
+  // process so the shim env's hermeticity is graded on every machine (the
+  // #479/#483 pin shape, applied to the shim's forward). Save-and-RESTORE in
+  // the finally: like every pin that arms the lane inside this process, this
+  // one must never launder an armed lane's export for the legs after it —
+  // the #483 pin's finally-delete did exactly that (issue #553).
+  const savedCheckEnv = process.env.MERGE_GUARD_CHECK;
+  process.env.MERGE_GUARD_CHECK = "guard-tests";
+  try {
+    const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+      legs: [leg()],
+      guardEnv: { GH_MERGE_GUARD: "on" },
+    });
+    assert.equal(res.status, 0, `the ambient name must not flip the armed+green shim leg (stderr: ${res.stderr})`);
+    assert.match(res.stdout, /GREEN — 'gates' completed\/success/, "the guard still graded the gates leg");
+    assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+  } finally {
+    if (savedCheckEnv === undefined) delete process.env.MERGE_GUARD_CHECK;
+    else process.env.MERGE_GUARD_CHECK = savedCheckEnv;
   }
 });
 

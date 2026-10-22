@@ -328,6 +328,26 @@ function runShimWithStdin(t, shim, scrubBody, argv, stdin) {
   // process.env spread and re-open the #479 red-on-armed-lane class. "Unset"
   // must mean unset on every machine.
   delete env.GH_MERGE_GUARD;
+  // The guard's verify leg is the second front (issue #551, the #490 carrier
+  // pair): the shim's guard invocation only PREFIXES assignments to the
+  // inherited env (assignments add, they never strip — the #490 receipt), so
+  // an ambient MERGE_GUARD_VERIFY=on / MERGE_GUARD_VERIFY_TOOL rides this
+  // spread into any future armed merge leg's guard call and arms the verify
+  // leg under the stubbed fixture. Inert today (the hook above never arms
+  // through this helper), but "unset must mean unset" for every name the
+  // shim/guard chain reads, not only the currently load-bearing one.
+  delete env.MERGE_GUARD_VERIFY;
+  delete env.MERGE_GUARD_VERIFY_TOOL;
+  // Same belt for the check-run name pair (the #551 fix shape asks this belt
+  // be considered): GH_MERGE_GUARD_CHECK is the #1132 explicit-name
+  // passthrough (the shim forwards it -> MERGE_GUARD_CHECK only under an
+  // armed hook, where an explicit name is an assertion that never falls
+  // back) and MERGE_GUARD_CHECK is the name merge-guard.sh itself reads — an
+  // ambient explicit name flips CHECK_EXPLICIT and turns a future armed
+  // merge leg's rollup fallback into a hard ABSENT refusal (the #553 receipt
+  // shape, on the sibling helper).
+  delete env.GH_MERGE_GUARD_CHECK;
+  delete env.MERGE_GUARD_CHECK;
   const res = spawnSync("bash", [shim, ...argv], {
     encoding: "utf8",
     input: stdin,
@@ -419,7 +439,12 @@ test("gh shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issu
   // the merge-guard hook armed through the process.env spread and refused
   // fail-closed on the boolean-flag pin above. Arm the lane INSIDE this
   // process so the harness env's hermeticity is graded on every machine,
-  // not just on armed lanes.
+  // not just on armed lanes. Save-and-RESTORE in the finally, never delete
+  // (issue #490's restore rule, applied to this file's arm pins by #551): a
+  // delete here would permanently scrub an armed lane's export out of this
+  // test process and launder every later leg de-armed — on a clean box the
+  // restore IS a delete.
+  const savedHookArm = process.env.GH_MERGE_GUARD;
   process.env.GH_MERGE_GUARD = "on";
   try {
     const { res, capture } = runShim(t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"), [
@@ -431,7 +456,8 @@ test("gh shim: an ambient GH_MERGE_GUARD=on cannot arm through the harness (issu
       "-m reaches gh verbatim under the harness env too",
     );
   } finally {
-    delete process.env.GH_MERGE_GUARD;
+    if (savedHookArm === undefined) delete process.env.GH_MERGE_GUARD;
+    else process.env.GH_MERGE_GUARD = savedHookArm;
   }
 });
 
@@ -441,7 +467,10 @@ test("gh shim: ambient GH_MERGE_GUARD=on cannot arm the stdin-form helper either
   // red-on-armed-lane class. This pin routes the merge verb through that
   // helper under an in-process armed lane, so the helper's env hermeticity
   // is graded today — without the delete in runShimWithStdin this leg takes
-  // the armed branch and refuses, on any machine.
+  // the armed branch and refuses, on any machine. Save-and-RESTORE in the
+  // finally, never delete (issue #490's restore rule, applied to this file's
+  // arm pins by #551) — on a clean box the restore IS a delete.
+  const savedHookArm = process.env.GH_MERGE_GUARD;
   process.env.GH_MERGE_GUARD = "on";
   try {
     const { res, capture } = runShimWithStdin(
@@ -454,7 +483,103 @@ test("gh shim: ambient GH_MERGE_GUARD=on cannot arm the stdin-form helper either
       "the merge argv reaches gh verbatim through the stdin-form helper",
     );
   } finally {
-    delete process.env.GH_MERGE_GUARD;
+    if (savedHookArm === undefined) delete process.env.GH_MERGE_GUARD;
+    else process.env.GH_MERGE_GUARD = savedHookArm;
+  }
+});
+
+test("gh shim: ambient guard envs cannot reach the stdin-form helper's child env (issue #551 pin)", (t) => {
+  // The #551 residual, graded on a clean machine: the helper scrubbed only
+  // the hook arm (GH_MERGE_GUARD, issue #483), so MERGE_GUARD_VERIFY /
+  // MERGE_GUARD_VERIFY_TOOL rode its spread undeleted — the #551 receipt's
+  // "two fronts at once" arm (the hook arms AND the guard's verify leg
+  // arms). Arm every guard name INSIDE this process (the verify tool at a
+  // path that cannot exist; both check-run names set — the #1132
+  // explicit-assertion shape) and route the merge verb through the helper.
+  // The scrubber runs INSIDE the child, so it dumps the child env the
+  // helper actually built: each delete is graded directly, on any machine,
+  // not just on a mis-configured lane (the #479/#483 pin shape). A merge
+  // leg through this helper is the #551 fix shape's named pin vehicle.
+  // Save-and-RESTORE in the finally, never delete (issue #490's restore
+  // rule) — a delete here would launder an armed lane's exports out of
+  // this process for every later leg; on a clean box the restore IS a
+  // delete.
+  const saved = {
+    hook: process.env.GH_MERGE_GUARD,
+    verify: process.env.MERGE_GUARD_VERIFY,
+    tool: process.env.MERGE_GUARD_VERIFY_TOOL,
+    check: process.env.MERGE_GUARD_CHECK,
+    ghCheck: process.env.GH_MERGE_GUARD_CHECK,
+  };
+  process.env.GH_MERGE_GUARD = "on";
+  process.env.MERGE_GUARD_VERIFY = "on";
+  process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
+  process.env.MERGE_GUARD_CHECK = "not-this-repos-gates";
+  process.env.GH_MERGE_GUARD_CHECK = "not-this-repos-gates";
+  try {
+    // A payload VALUE the shim definitely scrubs (equals-form --body=, the
+    // shim's first scrub case; `pr merge -m` is boolean-only and rides raw
+    // by design) so the scrubber runs inside the child — the dump below is
+    // written by the scrubber itself.
+    const { res, dir } = runShimWithStdin(
+      t,
+      GH_SHIM,
+      [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "fs.writeFileSync(",
+        "  path.join(process.env.TMPDIR, 'child-env.json'),",
+        "  JSON.stringify(process.env),",
+        ");",
+        "process.stdout.write('scrubbed');",
+      ].join("\n"),
+      ["pr", "merge", "12", "--body=merge message", "-m"],
+      "",
+    );
+    assert.equal(
+      res.status, 0,
+      `the ambient guard arm must not flip the helper's merge leg (stderr: ${res.stderr})`,
+    );
+    // The UNARMED merge leg is supposed to say so explicitly (the shim's
+    // #434 INACTIVE notice) — its presence is the unarmed signature; the
+    // armed/refused/verify-run shapes below are the failure modes this pin
+    // forbids.
+    assert.match(
+      res.stderr,
+      /merge guard INACTIVE \(GH_MERGE_GUARD unset\)/,
+      "the merge leg must take the shim's unarmed branch under the helper's env",
+    );
+    assert.doesNotMatch(
+      `${res.stdout}${res.stderr}`,
+      /fail-closed|merge guard armed|misarmed|merge REFUSED|verification tool is missing|independent verification/i,
+      "neither the guard hook nor its verify leg may run under the helper's env",
+    );
+    const dump = path.join(dir, "child-env.json");
+    assert.ok(fs.existsSync(dump), `the scrubber must have dumped the child env (stderr: ${res.stderr})`);
+    const childEnv = JSON.parse(fs.readFileSync(dump, "utf8"));
+    for (const name of [
+      "GH_MERGE_GUARD",
+      "MERGE_GUARD_VERIFY",
+      "MERGE_GUARD_VERIFY_TOOL",
+      "MERGE_GUARD_CHECK",
+      "GH_MERGE_GUARD_CHECK",
+    ]) {
+      assert.ok(
+        !(name in childEnv),
+        `ambient ${name} must not reach the shim's child env through the stdin-form helper (issue #551 belt)`,
+      );
+    }
+  } finally {
+    for (const [name, value] of Object.entries({
+      GH_MERGE_GUARD: saved.hook,
+      MERGE_GUARD_VERIFY: saved.verify,
+      MERGE_GUARD_VERIFY_TOOL: saved.tool,
+      MERGE_GUARD_CHECK: saved.check,
+      GH_MERGE_GUARD_CHECK: saved.ghCheck,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 

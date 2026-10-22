@@ -75,11 +75,27 @@ command -v gh >/dev/null 2>&1 || { echo "review-pr: gh unavailable" >&2; exit 1;
 
 # 1. PR facts + the rules contract from the BASE (the PR must not grade
 #    itself — a PR that deletes REVIEW.md must not pass because it did).
+#
+# Guarded parse (issue #529, the PR #528 poll_field shape): under a 403/429
+# the gh error body lands on stdout, so PR_JSON is non-empty GARBAGE the
+# `[ -n ]` guard cannot catch — the old unguarded `JSON.parse` then threw,
+# the assignment failed, and `set -e` killed review-pr.sh mid-item with a
+# node stack trace, never reaching the typed exit 2. pr_field degrades a
+# non-JSON body to an EMPTY field, so garbage lands on the typed
+# "PR #N has no base/head" exit below instead of an uncaught throw.
+pr_field() { # <json> <field> — the field value; "" when the json is not JSON (issue #529)
+  printf '%s' "$1" | node -e '
+    let s = "";
+    try { s = require("fs").readFileSync(0, "utf8"); } catch {}
+    let v;
+    try { v = JSON.parse(s)[process.argv[1]]; } catch { v = ""; }
+    process.stdout.write(v === null || v === undefined ? "" : String(v));' "$2" 2>/dev/null || true
+}
 PR_JSON="$(gh pr view "$PR_NUM" --repo "$DSH_SHIP_REPO" --json baseRefName,headRefName,title 2>/dev/null || true)"
 [ -n "$PR_JSON" ] || { echo "review-pr: cannot read PR #$PR_NUM in $DSH_SHIP_REPO" >&2; exit 2; }
-BASE_REF="$(printf '%s' "$PR_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).baseRefName ?? "")')"
-HEAD_REF="$(printf '%s' "$PR_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).headRefName ?? "")')"
-PR_TITLE="$(printf '%s' "$PR_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).title ?? "")')"
+BASE_REF="$(pr_field "$PR_JSON" baseRefName)"
+HEAD_REF="$(pr_field "$PR_JSON" headRefName)"
+PR_TITLE="$(pr_field "$PR_JSON" title)"
 [ -n "$BASE_REF" ] && [ -n "$HEAD_REF" ] || { echo "review-pr: PR #$PR_NUM has no base/head" >&2; exit 2; }
 
 RULES_TMP="$(mktemp)"

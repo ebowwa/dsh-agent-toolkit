@@ -33,7 +33,7 @@ broadcast.
 3. **IMPLEMENTING** — one line: the approach you're taking
 4. **TESTING** — one line: what you're verifying and how
 5. **BLOCKED** — when stuck longer than ~10 minutes: what is blocking you and what you already tried (a blocked agent that speaks can be helped; a silent one just burns the clock)
-6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works (test counts pasted from the run's own `# tests / # pass / # fail / # skipped` summary block, never hand-transcribed — the REVIEW.md honesty rule, issue #433); when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene). The exit summary MAY additionally carry one
+6. **SHIPPING** — the PR link plus a 3-line summary: what changed, where it landed, the evidence it works (test counts pasted from the run's own summary block — its `tests` / `pass` / `fail` / `skipped` lines, TAP `#`-prefixed or spec `ℹ`-prefixed depending on reporter/node version — never hand-transcribed — the REVIEW.md honesty rule, issue #433, issue #556); when the discovery protocol below fired, the summary carries the `filed-followups:` line; when the session leaves remote branches behind (open PRs waiting on review), it also carries the `branches-left:` line (issue #127 — zero-orphan branch hygiene). The exit summary MAY additionally carry one
   or more `SKILL CANDIDATE` blocks so the tower's skill-promotion pass can
   collect a newly discovered procedure into the fleet skill catalog: each
   block rides INSIDE the final result comment (thread comments are the
