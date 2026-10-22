@@ -11,7 +11,11 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   (`scripts/merge-guard.sh`, armed by the driver via the gh-scrub-shim) —
   a PR whose gates run is queued, in-progress, cancelled, failed, or absent
   on its head SHA must not merge, and the guard takes ONE snapshot (never a
-  poll-until-green loop). The receipt: PR #422 merged while its gates run
+  poll-until-green loop): the check-runs rollup is paged to exhaustion
+  inside that snapshot (?per_page=100 pages until the fetched count covers
+  total_count, issue #566), so a red conclusion beyond the endpoint's
+  default per_page=30 truncation can never pass a green head. The receipt:
+  PR #422 merged while its gates run
   sat queued and never ran — zero completed CI runs graded the head it
   landed. Since FleetTower issue #1132, an ABSENT run under the DEFAULT
   name (`gates`) means the guard grades the head by the rollup instead of
