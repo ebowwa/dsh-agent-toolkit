@@ -60,6 +60,11 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - name: Self-hosted-only tripwire (no hosted minutes, ever)
+        if: runner.environment == 'github-hosted'
+        run: |
+          echo "::error::self-hosted-only doctrine (#2017 + the 2026-10-10 owner directive): runner-labels input placed this job on a GitHub-hosted runner ($RUNNER_NAME / $RUNNER_OS). The fleet runs no hosted minutes — re-dispatch with a self-hosted lane label."
+          exit 1
       - name: Resolve PR number
         id: pr
         env:
