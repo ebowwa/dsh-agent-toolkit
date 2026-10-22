@@ -211,7 +211,12 @@ setting cannot reach — plus the same-claim collision landmine (#327):
    merging (superseded, wrong approach, duplicate), delete its branch in
    the same breath (`gh pr close NUMBER --delete-branch`; fallback
    `git push origin --delete BRANCH`). Merged branches are auto-deleted by
-   the repo setting — never restore one.
+   the repo setting — never restore one. EXCEPTION — a PR retired by a
+   stale/hygiene pass while its work is APPROVED and unmerged (gates
+   green on the head or an APPROVE verdict — check
+   `scripts/approved-lane.mjs`): do NOT delete the head; it is the
+   reviewed work's only path back to main — push to it and reopen
+   instead (issue #643).
 3. **BRANCHES-LEFT EXIT LINE** — reference every remote branch your session
    leaves behind (open PRs waiting on review) on ONE `branches-left:` line,
    exact shape:

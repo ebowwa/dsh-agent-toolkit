@@ -168,6 +168,11 @@ test("issue #127: the prompt assembly appends the branch-hygiene contract to the
   assert.match(task, /gh pr close NUMBER --delete-branch/);
   assert.match(task, /git push origin --delete BRANCH/);
   assert.match(task, /Merged branches are auto-deleted by the repo setting — never restore one/);
+  // Rule 2's #643 exception — the approved-unmerged carve-out: an agent
+  // following the bare rule after a stale retire destroys the recovery
+  // path (the #495/#544 receipts).
+  assert.match(task, /EXCEPTION — a PR retired by a stale\/hygiene pass while its work is APPROVED and unmerged/);
+  assert.match(task, /do NOT delete the head; it is the reviewed work's only path back to main/);
 
   // Rule 3 — the branches-left exit line, with its exact shape:
   assert.match(task, /BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind \(open PRs waiting on review\) on ONE branches-left: line/);
@@ -272,6 +277,13 @@ test("issue #127: driver and contract doc carry the two leak-path rules and the 
     /delete your unpushed local branch, re-mint\s+with a fresh suffix, push that/,
     /NEVER `?git pull`? onto the collided\s+name/,
     /NEVER\s+`?git push --force-with-lease`? over it/,
+    // Rule 2's #643 exception — the approved-unmerged carve-out on both
+    // surfaces: a wrongly-retired APPROVED PR's head is the reviewed
+    // work's only path back to main; deleting it on the delete-on-close
+    // reflex is exactly the #495/#544 work loss.
+    /EXCEPTION — a PR retired by a\s+`?stale\/hygiene`? pass while its work is APPROVED and unmerged/,
+    /do NOT delete the head; it is the\s+reviewed work's only path back to main/,
+    /`?scripts\/approved-lane\.mjs`?/,
   ]) {
     assert.match(src, re, "driver block drift");
     assert.match(doc, re, "contract doc drift");
