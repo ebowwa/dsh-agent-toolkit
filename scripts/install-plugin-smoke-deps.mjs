@@ -37,6 +37,13 @@
 //      when the tree already satisfies the closure — a seed-only reconcile
 //      would prune the walked closure and force a pointless rebuild every
 //      rerun.
+//      3b. RETRY transient failures ONCE, inside the script (issue #660):
+//      the gates.yml step is a single `run:` with no shell retry, so a
+//      registry blip that killed spec resolution or the materialization
+//      killed the gate. The retry re-runs ONLY the allow-listed transport/
+//      availability classes (TRANSIENT_NPM_CODES) and never a resolution
+//      verdict (ETARGET / ERESOLVE / E404 / EINTEGRITY stay red on the
+//      first attempt) — see the block above withTransientRetry().
 //   4. VERIFY before the suite, fail loudly: every required package
 //      present, every peer requirement of the installed @deepseek-ai/* /
 //      @local/* family met, every @local link intact (npm prunes foreign
@@ -405,6 +412,117 @@ function sleepMs(ms) {
   }
 }
 
+// ---- ONE bounded transient retry (issue #660) ----------------------------
+//
+// gates.yml runs this installer as a SINGLE `run:` with no shell retry, so a
+// transient registry blip that killed the materialization killed the gate —
+// every gates run during the blip was red on a tree that a second attempt
+// installs. The retry lives HERE, not as a shell loop in the YAML: the step's
+// contract pins (tests/gates-plugin-deps.test.mjs) forbid npm/loops returning
+// to the step, and the classification needs npm's own error code, which only
+// this process sees.
+//
+// Retried classes — TRANSPORT and AVAILABILITY, never a resolution VERDICT:
+//   * DNS/socket transport: ENOTFOUND, EAI_AGAIN, ECONNRESET, ECONNREFUSED,
+//     ETIMEDOUT, EPIPE, ECONNABORTED, ESOCKETTIMEDOUT, ERR_SOCKET_TIMEOUT
+//   * registry availability / throttling while resolving: E500, E502, E503,
+//     E504, E429, ERATELIMIT
+//   * local tree contention on the install target: ELOCKED, EBUSY
+// NOT retried, deliberately (a second look cannot improve a verdict, and a
+// retry would only bury the real error behind a delay):
+//   * ETARGET (no registry version matches the declared range), ERESOLVE
+//     (peer conflict), E404 (no such package) — the real resolution errors;
+//   * EINTEGRITY, EJSONPARSE (a corrupt answer needs an operator, not a rerun);
+//   * EACCES/EPERM (permissions), EBADENGINE (unsupported runtime);
+//   * anything UNRECOGNIZED — fail-closed, the same stance #512's classifier
+//     takes, because flattening an unknown code into "transient" would turn a
+//     genuine red into a slower genuine red.
+// The bound is two attempts total (one retry), the walk keeps its own single
+// re-query per stall (#653) — the two bounds never multiply.
+export const RETRY_BACKOFF_MS = 2000; // mirrors DEGRADED_BACKOFF_MS
+export const TRANSIENT_NPM_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "ECONNABORTED",
+  "ESOCKETTIMEDOUT",
+  "ERR_SOCKET_TIMEOUT",
+  "E500",
+  "E502",
+  "E503",
+  "E504",
+  "E429",
+  "ERATELIMIT",
+  "ELOCKED",
+  "EBUSY",
+]);
+
+const textOf = (v) => (typeof v === "string" ? v : Buffer.isBuffer(v) ? v.toString("utf8") : "");
+
+// The npm error code carried on a failed invocation's stderr, or null. Both
+// spellings npm uses are matched ("npm error code X" on npm >= 9, the legacy
+// "npm ERR! code X").
+export function npmFailureCode(err) {
+  const stderr = textOf(err?.stderr);
+  return stderr.match(/(?:^|\n)\s*npm (?:error|ERR!) code (\S+)/)?.[1] ?? null;
+}
+
+// Split an install failure into "a second attempt can honestly help" and
+// "the registry/argv answered — believe it". Exported for the contract pins.
+export function classifyInstallFailure(err) {
+  if (typeof err?.status !== "number")
+    return { transient: false, code: null, detail: "npm did not run (spawn or signal failure)" };
+  const code = npmFailureCode(err);
+  const transient = typeof code === "string" && TRANSIENT_NPM_CODES.has(code);
+  return {
+    transient,
+    code,
+    detail: transient
+      ? `transient npm failure ${code} (retried once, issue #660)`
+      : `npm install exited ${err.status}${code ? ` (${code})` : ""} — not a transient class; not retried`,
+  };
+}
+
+// Run `op` at most `attempts` times (default 2 = ONE retry), re-running it
+// only when `isTransient` says the failure class is one a second attempt can
+// clear. Everything else rethrows on the FIRST attempt. `sleep`/`onRetry` are
+// injectable so the pins never actually wait.
+export function withTransientRetry(op, opts = {}) {
+  const attempts = Math.max(1, opts.attempts ?? 2);
+  const isTransient = opts.isTransient ?? ((e) => classifyInstallFailure(e).transient);
+  const sleep = opts.sleep ?? sleepMs;
+  const backoffMs = opts.backoffMs ?? RETRY_BACKOFF_MS;
+  const onRetry = opts.onRetry ?? (() => {});
+  const what = opts.what ?? "operation";
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return op(attempt);
+    } catch (e) {
+      if (!isTransient(e) || attempt >= attempts) throw e;
+      const info = {
+        attempt,
+        attempts,
+        backoffMs,
+        code: npmFailureCode(e),
+        detail: classifyInstallFailure(e).detail,
+        message: e?.message,
+      };
+      // Loud, always: a retried failure is a recorded event, never a quiet
+      // recovery (the #653 honesty rule).
+      console.error(
+        `WARNING (issue #660): ${what} failed on attempt ${attempt}/${attempts} — ` +
+          `${info.code ? `${info.code}: ` : ""}${info.message ?? e} — one bounded retry ` +
+          `after ${backoffMs}ms`,
+      );
+      onRetry(info);
+      sleep(backoffMs);
+    }
+  }
+}
+
 // Walk the peer closure to a fixpoint. The name union is monotone (names
 // are only added, never removed) so re-derivation cannot flip-flop; the
 // WALK_CAP only guards a genuinely unmaterializable graph and fails LOUDLY.
@@ -639,7 +757,14 @@ export async function main(argv = process.argv.slice(2)) {
   // which plugin won the readdir race).
   let installSpecs;
   try {
-    installSpecs = resolveUnionSpecs(union);
+    // Issue #660: a registry TRANSPORT failure during spec resolution is
+    // retried once (NpmTransportError = the transient class). An
+    // unsatisfiable-spec Error is a RESOLUTION VERDICT — authoritatively
+    // red, thrown through on the first attempt with no retry.
+    installSpecs = withTransientRetry(() => resolveUnionSpecs(union), {
+      isTransient: (e) => e instanceof NpmTransportError,
+      what: "spec resolution",
+    });
   } catch (e) {
     die(e.message);
   }
@@ -647,21 +772,45 @@ export async function main(argv = process.argv.slice(2)) {
     `install (${installSpecs.length} specs): ${installSpecs.join(" ")}`,
   );
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  execFileSync(
-    "npm",
-    [
-      "install",
-      "--prefix",
-      ".",
-      "--legacy-peer-deps",
-      "--no-save",
-      "--no-package-lock",
-      "--no-audit",
-      "--no-fund",
-      ...installSpecs,
-    ],
-    { stdio: "inherit" },
-  );
+  // Issue #660: the materialization is the step's other transient surface —
+  // ONE bounded retry, on the allow-listed classes only (see
+  // TRANSIENT_NPM_CODES). stdout stays inherited so the CI log streams npm's
+  // progress; stderr is CAPTURED (npm's error code is the classifier's only
+  // input) and replayed verbatim, so the operator sees exactly what npm said
+  // whichever attempt it said it on.
+  try {
+    withTransientRetry(() => {
+      try {
+        execFileSync(
+          "npm",
+          [
+            "install",
+            "--prefix",
+            ".",
+            "--legacy-peer-deps",
+            "--no-save",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+            ...installSpecs,
+          ],
+          { encoding: "utf8", stdio: ["ignore", "inherit", "pipe"] },
+        );
+      } catch (e) {
+        const stderr = textOf(e?.stderr);
+        if (stderr) process.stderr.write(stderr);
+        throw e;
+      }
+      return true;
+    }, { what: "npm install" });
+  } catch (e) {
+    // Out of retries (or a non-transient class): fail loudly through the
+    // script's own typed exit, never a raw stack.
+    die(
+      `npm install FAILED${npmFailureCode(e) ? ` (${npmFailureCode(e)})` : ""} ` +
+        `(issue #660): ${classifyInstallFailure(e).detail}`,
+    );
+  }
 
   // npm's reconcile can prune the @local symlinks — re-link, then verify.
   linkLocals(root);
