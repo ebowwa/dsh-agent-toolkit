@@ -274,7 +274,7 @@ if [ -f "$SCRIPT_DIR/harness-drift.sh" ]; then
     # the verdict token set is owned by harness-drift.sh; anything else
     # reads as degraded, never crashes the boot
     case "$HARNESS_DRIFT_VERDICT" in
-      fresh|drift|healed|refused-dirty|refused-branch|refused-not-fast-forward|refused-lock|diverged|ahead|degraded|skipped-no-remote|skipped-detached) ;;
+      fresh|drift|healed|refused-dirty|refused-branch|refused-not-fast-forward|refused-lock|refused-untracked-collision|diverged|ahead|degraded|skipped-no-remote|skipped-detached) ;;
       *) HARNESS_DRIFT_VERDICT="degraded" ;;
     esac
   fi

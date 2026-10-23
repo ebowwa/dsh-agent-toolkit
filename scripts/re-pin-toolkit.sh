@@ -27,9 +27,13 @@
 #     - HEAD is on a branch other than main (an agent's working branch;
 #       steady state is detached at the pin, and a fresh clone sits on
 #       main — both may be moved).
-#   Untracked files never block the re-pin: `checkout --force` does not
-#   touch them, and counting them would strand a box on an old release
-#   forever (scratch files accumulate on working cells).
+#   NON-COLLIDING untracked files never block the re-pin: `checkout --force`
+#   does not touch them, and counting them would strand a box on an old
+#   release forever (scratch files accumulate on working cells). A COLLIDING
+#   untracked file — one whose PATH is tracked in the target tree — IS
+#   destroyed by `checkout --force` (git writes the tracked blob over it,
+#   exit 0, no diagnostic; issue #666), so that shape is its own typed
+#   refusal (gate 3, exit 3) instead of a silent overwrite.
 #
 # Exit contract (the cron line separates with `;` — the sweep runs on
 # EVERY exit code; these codes exist for the installer and humans):
@@ -85,6 +89,29 @@ fi
 if ! G fetch --tags --force -q >/dev/null 2>&1; then
   echo "re-pin-toolkit: fetch failed — keeping the previous pin; the keepalive retries next sweep" >&2
   exit 4
+fi
+
+# REFUSAL GATE 3 (issue #666) — path-colliding untracked files. The header's
+# "untracked files never block the re-pin" reading is TRUE ONLY for
+# non-colliding ones: `git checkout --force <tag>` DOES overwrite an untracked
+# file when its PATH is tracked in the target tree (git writes the tracked
+# blob over it, exit 0, no diagnostic) — measured on this fleet's git. The
+# intersection below is computed BEFORE the move, so the #276 class refuses
+# here instead of destroying an operator's or an agent's live untracked work
+# through a path collision (a same-name scratch file, a rename-adjacent
+# runbook artifact).
+COLLIDING=""
+if [ -n "$(G ls-tree -r --name-only v1 2>/dev/null)" ]; then
+  COLLIDING="$(
+    { G ls-tree -r --name-only v1 2>/dev/null; G ls-files --others --exclude-standard 2>/dev/null; } \
+      | LC_ALL=C sort | uniq -d
+  )"
+fi
+if [ -n "$COLLIDING" ]; then
+  echo "re-pin-toolkit: REFUSING re-pin of $DIR — untracked file(s) collide with a path tracked at v1; checkout --force WOULD OVERWRITE them (issue #666 class); HEAD kept. Colliding (first lines):" >&2
+  printf '%s\n' "$COLLIDING" | head -5 | sed 's/^/    /' >&2
+  echo "re-pin-toolkit: move or delete the colliding file(s) to resume v1 re-pins." >&2
+  exit 3
 fi
 
 if ! G checkout -q --force v1 >/dev/null 2>&1; then
