@@ -11,9 +11,13 @@
 # Nothing here mounts anything into a lane home; nothing there clones.
 #
 # Usage: sync-lane-plugins.sh [--verify]
-#   --verify  check state only (exit 1 if stale/missing), change nothing
-# Exit: 0 ok · 1 stale/failed (keepalives run this with `|| true` — loud,
-#       never blocking).
+#   --verify  check state only, change nothing. Exit 1 ONLY when a canonical
+#             copy is MISSING; a cache merely behind its pinned ref prints a
+#             verdict-FREE note (issue #579: the header used to promise a
+#             failing exit for a STALE cache, which the stale arm never did —
+#             the code, and the keepalive contract, say stale is a note).
+# Exit: 0 ok — fresh, or stale-but-present with a NOTE (keepalives run this
+#       with `|| true`: loud, never blocking the sweep) · 1 missing/failed.
 set -uo pipefail
 TK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$TK_ROOT/config/lane-plugins.json"
