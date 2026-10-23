@@ -335,6 +335,16 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
     "an unresolvable PR-head fork degrades the prose to UNVERIFIED — the #574 acceptance shape, never a positive claim");
   assert.match(rp, /if \[ -n "\$FORK_BASE" \] && \[ -z "\$HEAD_FORK_BASE" \]; then\n  for HEAD_DEEPEN_STEP in 1 2 4; do/,
     "the head fork point gets the same guarded, bounded deepen recovery as the diff fork point");
+  // Issue #545: the base-tip read is --verify-guarded — the #526 garbage
+  // capture class. A bare `git rev-parse origin/base` echoes the ref NAME on
+  // a missing ref (exit 128, status swallowed), and every `[ -n "$BASE_TIP" ]`
+  // guard below then reads a non-empty lie as a resolved base tip.
+  assert.match(code, /BASE_TIP="\$\(git rev-parse --verify origin\/base 2>\/dev\/null\)"/,
+    "the base tip is read with --verify (issue #545)");
+  assert.ok(!/BASE_TIP="?\$\(git rev-parse origin\/base/.test(code),
+    "no bare `git rev-parse origin/base` capture may come back — it captures the ref name on a miss");
+  assert.match(rp, /origin\/base does not resolve \(git rev-parse --verify failed/,
+    "a miss is named on the worker log instead of dying silently");
   // Issue #631: the tracking refspecs are FORCED and the tracking refs are
   // deleted before the fetches — a force-pushed head between review rounds
   // (the shared mirror store keeps the refs across worktrees) can never

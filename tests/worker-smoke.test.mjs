@@ -249,6 +249,39 @@ esac`);
   }
 });
 
+// --- issue #540 pin: the dashboard's deep path survives a FRESH data root ---
+//
+// $DATA/runs is created lazily, only when an item actually runs, so on a
+// fresh worker install the directory does not exist and `ls` exits 1.
+// `2>/dev/null` hid the message but not the status, `set -o pipefail`
+// propagated it, and `set -e` killed the sweep at the `recent=` assignment —
+// exit 1 every cron minute until the first run materialized the dir, with the
+// dashboard never posted. The existing fixtures all bail at dashboard_update's
+// `[ -n "$num" ] || return 0` before reaching the read, which is exactly why
+// the suite could not see it. This shim answers an existing dashboard issue
+// (num=12) so the sweep reaches the deep path on the SAME fresh data root.
+const DASHBOARD_SHIM = `case " $* " in
+  *"--label dsh/dashboard"*) printf '12\\n' ;;    # the existing dashboard issue
+  *"issues?state=open"*) exit 0 ;;                # empty queue / review / task polls
+  *"issue edit"*) printf 'edited\\n' ;;            # the dashboard edit
+  *) exit 0 ;;
+esac`;
+
+test("issue #540: a FRESH data root (no $DATA/runs yet) posts the dashboard — the sweep exits 0", () => {
+  const f = fixtureWithShim(DASHBOARD_SHIM);
+  try {
+    assert.equal(existsSync(path.join(f.dir, "data", "runs")), false,
+      "precondition: the runs dir does not exist yet (it is created lazily by the first run)");
+    const res = runOnce(f, f.ghLog);
+    assert.equal(res.status, 0, `a fresh data root must not kill the sweep:\n${res.stderr}`);
+    const log = readFileSync(f.ghLog, "utf8");
+    assert.match(log, /--label dsh\/dashboard/, "the sweep reached the dashboard lookup");
+    assert.match(log, /issue edit 12/, "the dashboard was POSTED — the read after the guard still ran");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 // --- issue #530 pins: trusted_task's issue-body parse degrades loudly, never crashes ---
 //
 // The claim path re-derives trust AFTER the item is claimed, so a garbage
@@ -317,12 +350,30 @@ test("trusted_task: a trusted /dsh issue body still yields the task text (issue 
   assert.equal(status, 0, stderr);
   assert.equal(task, "ship the fix");
   assert.doesNotMatch(stderr, /issue #530/); // no degrade diagnostic on the healthy path
+  assert.doesNotMatch(stderr, /issue #534/); // and no read-outcome diagnostic either
 });
 
-test("trusted_task: a FAILED gh issue view degrades to an empty task, shell survives (issue #530)", () => {
-  const { status, task } = runTrustedTask(`exit 1`);
-  assert.equal(status, 0); // the `|| true` belt around the gh call
+// Issue #534: a FAILED read and an EMPTY body are different events, and the
+// old `2>/dev/null || true` made them the same one — a real 403/429 skipped
+// the node parse entirely with ZERO diagnostics, and the caller closed the
+// CLAIMED item as "no trusted /dsh comment". The outcome is now typed, so the
+// worker log always says WHICH happened.
+test("trusted_task: a FAILED gh issue view says UNREADABLE — not a silent empty (issue #534)", () => {
+  const { status, stderr, task } = runTrustedTask(`exit 1`);
+  assert.equal(status, 0, stderr); // the shell still survives the failed read
   assert.equal(task, "");
+  assert.match(stderr, /FAILED \(exit 1/); // typed: the read failed, with its status
+  assert.match(stderr, /UNREADABLE, not empty/); // ... and names which of the two it was
+  assert.match(stderr, /issue #534/);
+});
+
+test("trusted_task: a read that SUCCEEDS but prints nothing says EMPTY — never 'failed' (issue #534)", () => {
+  const { status, stderr, task } = runTrustedTask(`exit 0`);
+  assert.equal(status, 0, stderr);
+  assert.equal(task, "");
+  assert.match(stderr, /printed NOTHING/);
+  assert.match(stderr, /EMPTY, not a failed read/);
+  assert.doesNotMatch(stderr, /FAILED \(exit/); // proves WHICH arm fired
 });
 
 test("trusted_task: a gh error envelope on the comments read can NEVER become the task (issue #530)", () => {

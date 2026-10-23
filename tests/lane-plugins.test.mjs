@@ -427,7 +427,7 @@ test("sync --verify: NOTE fires only off a real comparison — an unresolvable S
   const makeCache = (repo) => {
     const cache = cacheFor(repo);
     mkdirSync(join(cache, "p"), { recursive: true });
-    git(cache, "init", "-q");
+    git(cache, "init", "-q", "-b", "main"); // pin the branch: init.defaultBranch differs per lane and :444 checks out `main` (issue #567)
     git(cache, "config", "user.email", "t@t");
     git(cache, "config", "user.name", "t");
     writeFileSync(join(cache, "p", "f.txt"), "v1\n");
