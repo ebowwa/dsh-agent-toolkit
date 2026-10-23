@@ -817,9 +817,24 @@ task_item() {
          gh api "repos/${repo}/issues/${num}/comments" -f body="**dsh worker** — the checkout for this dispatched task failed (clone/egress); the task was dropped. Re-dispatch to retry." >/dev/null 2>&1 || true
          gh issue close "$num" --repo "$repo" >/dev/null 2>&1 || true
          rm -rf "$rundir"; return 1; }
-  if [ -n "$t_base" ] && git -C "$work" -c credential.helper= fetch -q --depth 1 origin "refs/heads/${t_base}:refs/remotes/origin/taskbase" 2>/dev/null; then
-    git -C "$work" checkout -q refs/remotes/origin/taskbase \
-      || echo "worker: base-ref '$t_base' checkout fell back to the default branch" >&2
+  # Issue #636: the tracking ref is FORCED (+) and deleted before the fetch —
+  # the same two-arm shape review-pr.sh uses for its refs (issue #631). This
+  # worktree is a `git worktree add` child of the ONE bare mirror per repo, so
+  # refs/remotes/origin/taskbase lives in the SHARED namespace and OUTLIVES the
+  # task worktree. An un-forced refspec update against a force-pushed (or
+  # replaced) base ref is non-fast-forward: git refuses it, 2>/dev/null hid the
+  # refusal, and the tracking ref kept the ROUND-N base for a later task to
+  # check out while believing it current. Deleting first means a failed fetch
+  # leaves NO ref at all, and the `+` means a successful fetch can never leave
+  # a trailing ref behind.
+  if [ -n "$t_base" ]; then
+    git -C "$work" update-ref -d refs/remotes/origin/taskbase 2>/dev/null || true
+    if git -C "$work" -c credential.helper= fetch -q --depth 1 origin "+refs/heads/${t_base}:refs/remotes/origin/taskbase" 2>/dev/null; then
+      git -C "$work" checkout -q refs/remotes/origin/taskbase \
+        || echo "worker: base-ref '$t_base' checkout fell back to the default branch" >&2
+    else
+      echo "worker: base-ref '$t_base' fetch failed — the task runs on the clone's default branch, not the requested base" >&2
+    fi
   fi
 
   # dep cache: pre-warm node_modules keyed on the lockfile hash (issue #189)
