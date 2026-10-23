@@ -20,6 +20,16 @@
 #   DSH_SHIP_BASE           the PR base branch for the freshness preflight
 #                           (factory#840); unset = the remote's HEAD branch
 #                           (default branch) via `git remote show origin`
+#   DSH_SHIP_STACK_PARENT   optional: the branch this lane was stacked on
+#                           (issue #565). The hollow-ship invariant refuses
+#                           to push/open a PR for a branch whose tip carries
+#                           NO commit beyond this ref. Unset = the stacking
+#                           parent is the PR base (DSH_SHIP_BASE / the
+#                           remote HEAD branch), which is exact for a branch
+#                           cut from the default branch and for a stacked PR
+#                           whose base IS its parent. A stack the engine
+#                           cannot derive (a dsh/* branch cut from another
+#                           dsh/* branch) must be DECLARED here.
 #   DSH_RUN_ID              run identifier for branch naming (default $GITHUB_RUN_ID)
 #   DSH_RUN_ATTEMPT         attempt counter (default ${GITHUB_RUN_ATTEMPT:-1})
 #   DSH_WORKTREE            the checkout the agent worked in (default $GITHUB_WORKSPACE)
@@ -59,6 +69,13 @@
 #   $DSH_SHIP_CACHE/dsh-before-sha            HEAD before the run
 #   $DSH_SHIP_CACHE/dsh-before-dsh-branches   remote dsh/* branches before
 #   $DSH_SHIP_CACHE/dsh-before-open-prs       open PR numbers before
+#
+# Exit codes (a nonzero ship is a REAL failure, never a quiet note):
+#   2  unusable caller context (required env unset, worktree unreachable)
+#   3  fail-closed scrub abort (issue #162) — nothing was pushed
+#   4  hollow-ship refusal (issue #565) — a branch with no commit beyond its
+#      stacking parent was NOT pushed and got NO PR (successful ships for
+#      other branches still happen; the note names what was refused)
 
 set -uo pipefail
 
@@ -113,6 +130,11 @@ NOTE=""
 # initialized here because `set -u` reads it on every exit path (the tail
 # turns it into exit 3), including the paths that never reach the ship block.
 SHIP_SCRUB_FAILED=""
+# Hollow-ship refusal flag (issue #565): set when hollow_ship_guard refused a
+# branch; the tail turns it into exit 4 so a green gate over an empty branch
+# is a RED ship, never a DONE note. Initialized here for the same `set -u`
+# reason as SHIP_SCRUB_FAILED above.
+HOLLOW_SHIP=""
 
 # ship_milestone <pr-num> <gh-pr-create args...>: milestone carry (issue
 # #185) — a shipped PR inherits the CLOSING TICKET's milestone (milestones
@@ -234,6 +256,75 @@ freshness_preflight() {
   fi
 }
 
+# hollow_ship_guard <head-branch> <tip-sha>: the hollow-ship invariant
+# (issue #565). A branch whose tip carries NO commit beyond its stacking
+# parent is not a change — it is the parent's tree wearing another branch
+# name. Shipping it opens a PR that reads DONE while its diff is empty, and
+# the gate can be green over it (a green gate proves the branch builds, not
+# that the branch contains anything), so a lane that forgot to commit its
+# work ships an empty DONE. The invariant is the git half of that: refuse.
+#
+# The stacking parent, in precedence order:
+#   1. $DSH_SHIP_STACK_PARENT when the caller declares it — the branch this
+#      lane was stacked on (the ONLY way to name a stack the engine cannot
+#      derive: a dsh/* branch cut from another dsh/* branch);
+#   2. the PR base — $DSH_SHIP_BASE, else the remote HEAD branch. A stacked
+#      PR's base IS its parent branch, and for an unstacked branch "no
+#      commit beyond the base" is the same defect (a branch whose work was
+#      already merged, or never existed).
+# Echoes a ONE-LINE refusal naming the branch, its tip, the parent ref and
+# the parent's head when the tip is hollow (return 1); echoes nothing and
+# returns 0 otherwise. Degrade-safe in the freshness_preflight mould: an
+# unresolvable parent or an unmeasurable count is named UNVERIFIED on
+# stderr and never blocks a ship — the guard must not invent a red.
+hollow_ship_guard() {
+  local head_b="$1" tip="$2" parent="" psha="" cand="" base="" count=""
+  if [ -z "$tip" ]; then
+    echo "hollow-ship: $head_b has no resolvable tip — hollow check UNVERIFIED" >&2
+    return 0
+  fi
+  if [ -n "${DSH_SHIP_STACK_PARENT:-}" ]; then
+    for cand in "$DSH_SHIP_STACK_PARENT" "origin/$DSH_SHIP_STACK_PARENT"; do
+      if psha="$(git rev-parse --verify "${cand}^{commit}" 2>/dev/null)"; then
+        parent="$cand"
+        break
+      fi
+    done
+    if [ -z "$parent" ]; then
+      echo "hollow-ship: declared stacking parent '$DSH_SHIP_STACK_PARENT' (DSH_SHIP_STACK_PARENT) does not resolve — hollow check UNVERIFIED for $head_b" >&2
+      return 0
+    fi
+  else
+    base="${DSH_SHIP_BASE:-}"
+    if [ -z "$base" ]; then
+      base="$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || true)"
+    fi
+    if [ -n "$base" ]; then
+      for cand in "origin/$base" "$base"; do
+        if psha="$(git rev-parse --verify "${cand}^{commit}" 2>/dev/null)"; then
+          parent="$cand"
+          break
+        fi
+      done
+    fi
+    if [ -z "$parent" ]; then
+      echo "hollow-ship: stacking parent unresolvable (base '${base:-?}') — hollow check UNVERIFIED for $head_b" >&2
+      return 0
+    fi
+  fi
+  count="$(git rev-list --count "$parent..$tip" 2>/dev/null || echo '?')"
+  if [ -z "$count" ] || [ "$count" = "?" ]; then
+    echo "hollow-ship: could not count commits between $parent and $tip — hollow check UNVERIFIED" >&2
+    return 0
+  fi
+  if [ "$count" -eq 0 ] 2>/dev/null; then
+    printf 'hollow ship REFUSED (issue #565): %s tip %s carries no commit beyond its stacking parent %s (head %s) — nothing to ship, so no push and no PR\n' \
+      "$head_b" "$tip" "$parent" "$psha"
+    return 1
+  fi
+  return 0
+}
+
 # open_pr <head-branch> <title> <gh pr create args...>: create the PR and
 # dispatch its review with the same degrade-or-loud treatment as the
 # relay/reply guards — gh missing is a ::warning:: plus a precise ship note
@@ -302,6 +393,16 @@ fi
 
 for B in $(git for-each-ref refs/heads/dsh --format='%(refname:short)'); do
   if ! grep -qx "$B" "$DSH_SHIP_CACHE/dsh-after-dsh-branches" 2>/dev/null; then
+    # Hollow-ship invariant (issue #565): a branch tip equal to its stacking
+    # parent's head is refused BEFORE the push — no remote branch, no PR, no
+    # DONE note for work that does not exist.
+    HOLLOW="$(hollow_ship_guard "$B" "$(git rev-parse --verify "$B" 2>/dev/null)")"
+    if [ -n "$HOLLOW" ]; then
+      echo "::warning::$HOLLOW" >&2
+      NOTE="${NOTE:+$NOTE; }$HOLLOW"
+      HOLLOW_SHIP=1
+      continue
+    fi
     if git push -u origin "$B" 2>&1; then
       NOTE="${NOTE:+$NOTE; }$(open_pr "$B" "dsh: ${DSH_TASK_TITLE:-$B}" \
         --body "Automated PR from agent run ${DSH_RUN_ID} (branch pushed by shipper).${DSH_STAMP:+
@@ -356,7 +457,16 @@ if [ -n "$DIRTY" ] || [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
       git add -A -- . ':!.dsh-agent-toolkit'
       git commit -m "dsh: automated ship of agent run ${DSH_RUN_ID}" ${DSH_STAMP:+-m "$DSH_STAMP"} --allow-empty 2>/dev/null || true
     fi
-    if git push -u origin "$BRANCH" 2>&1; then
+    # Hollow-ship invariant (issue #565), checked AFTER the commit and BEFORE
+    # the push: the commit above is `|| true`, so a failed commit leaves the
+    # tip where it was — possibly exactly its stacking parent's head — and a
+    # branch with nothing beyond its parent has nothing to ship.
+    HOLLOW="$(hollow_ship_guard "$BRANCH" "$(git rev-parse --verify "$BRANCH" 2>/dev/null)")"
+    if [ -n "$HOLLOW" ]; then
+      echo "::warning::$HOLLOW" >&2
+      NOTE="${NOTE:+$NOTE; }$HOLLOW"
+      HOLLOW_SHIP=1
+    elif git push -u origin "$BRANCH" 2>&1; then
       {
         echo "Automated PR from **dsh agent** run ${DSH_RUN_ID}."
         echo
@@ -400,3 +510,10 @@ fi
 # the worker already treats a nonzero shipper as loud, and a green job that
 # silently failed to ship is the defect class this closes.
 [ -z "$SHIP_SCRUB_FAILED" ] || exit 3
+
+# Hollow-ship refusal (issue #565): the refused branch was NOT pushed and got
+# NO PR, so the run must not read as a completed ship — nonzero is the only
+# signal a caller (worker / Actions job) treats as "shipped nothing". Exit 4
+# is distinct from 2 (bad context) and 3 (scrub abort) so the note's cause is
+# answerable from the exit code alone.
+[ -z "$HOLLOW_SHIP" ] || exit 4
