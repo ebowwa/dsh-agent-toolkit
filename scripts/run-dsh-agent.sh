@@ -209,7 +209,14 @@ if [ -z "${DOPPLER_SERVICE_TOKEN:-}" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# REPO_ROOT is the CHECKOUT root, one level up from scripts/ (issue #619):
+# the old `$SCRIPT_DIR/../../..` resolved to the checkout's PARENT, so the
+# settings-bootstrap fallback below read `$parent/config/settings.zai.yaml`
+# — a path that cannot exist — and under `set -euo pipefail` a boot that
+# reached it died on a bare `cp: No such file or directory` instead of
+# naming a provisioning gap. Every other config read in this script is
+# `$SCRIPT_DIR/../config/...` (:723); this makes the last one agree.
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Model-input hygiene (fail-closed): credentials are scrubbed from everything
 # headed to the provider — the task text and the thread context. Paths/IPs/

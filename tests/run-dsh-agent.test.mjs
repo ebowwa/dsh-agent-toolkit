@@ -114,6 +114,33 @@ const reapedPid = () =>
 // budget, evaluated at load time, one child per gated test — so the pin
 // counts the probe sites in this file's own source rather than trusting a
 // convention nobody enforces.
+
+// Issue #619 pin: REPO_ROOT is the CHECKOUT root, and every config path built
+// from it agrees with the ones built from SCRIPT_DIR. The defect was a path
+// that resolved two levels ABOVE the checkout, so the settings-bootstrap
+// fallback read a file that cannot exist and died on a bare `cp` under
+// `set -euo pipefail`. Graded from source, because the fallback only fires on
+// a box with no settings template — exactly where a silent/confusing boot
+// death is least diagnosable.
+test("REPO_ROOT resolves the CHECKOUT root, so the settings fallback can find config/ (issue #619)", () => {
+  const driver = readFileSync(SCRIPT, "utf8");   // the DRIVER's own source
+  assert.match(driver, /^SCRIPT_DIR="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd\)"$/m);
+  assert.match(
+    driver,
+    /^REPO_ROOT="\$\(cd "\$SCRIPT_DIR\/\.\." && pwd\)"$/m,
+    "REPO_ROOT must be one level above scripts/ — the checkout root",
+  );
+  assert.doesNotMatch(
+    driver,
+    /REPO_ROOT="\$\(cd "\$SCRIPT_DIR\/\.\.\/\.\.\/\.\."/,
+    "two-plus levels above scripts/ escapes the checkout (the #619 defect)",
+  );
+  // The two faces of the same file must agree: the primary template path and
+  // the fallback copy both name config/settings.zai.yaml under the checkout.
+  assert.match(driver, /SETTINGS_TEMPLATE="\$\{DSH_SETTINGS_TEMPLATE:-\$SCRIPT_DIR\/\.\.\/config\/settings\.zai\.yaml\}"/);
+  assert.match(driver, /cp "\$REPO_ROOT\/config\/settings\.zai\.yaml" "\$DSH_HOME\/settings\.yaml"/);
+});
+
 test("presence probing is ONE budgeted spawn — no inline skip-gate probes (issue #601)", () => {
   const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const probes = src.match(/spawnSync\("dsh", \["--version"\]/g) || [];
