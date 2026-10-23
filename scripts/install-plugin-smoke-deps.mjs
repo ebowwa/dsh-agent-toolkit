@@ -21,6 +21,13 @@
 //      under a walk-only name and merge sorted — issue #510: the walk
 //      must not drop a second range's transitive peers), so re-derivation
 //      cannot flip-flop.
+//      2b. DEGRADE honestly, never lie (issue #653): a registry transport
+//      failure during the walk is counted, not swallowed — a stall round
+//      with failures re-queries once after a short backoff (a transient
+//      blip self-heals), and a walk still degraded at its verdict round
+//      is named on stderr. The install path refuses to claim "closure
+//      satisfied" off a degraded walk; a warm install-once tree keeps
+//      its exit 0, with the degraded verdict attached.
 //   3. INSTALL the resolved union once (--no-save --no-package-lock keep
 //      the checkout clean). npm's argv keeps only the LAST spec per name —
 //      `npm i pkg@^4 pkg@^3` installs the last, it does NOT resolve a union
@@ -165,27 +172,45 @@ export function registryPeers(name, spec) {
     raw = execFileSync(
       "npm",
       ["view", `${name}@${spec}`, "peerDependencies", "--json"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      // stderr is captured: npm's own error code on it is the only
+      // discriminator between a genuine registry no-match and a
+      // transport failure (same seam #512 gave the version lists).
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
-  } catch {
-    // Deliberate swallow, NOT the issue #512 trap: the walk also runs on
-    // warm cells whose tree already satisfies the closure — a transport
-    // throw here would false-red every install-once run during a
-    // registry blip. Degraded peer discovery only matters when an
-    // install is genuinely needed, and that path names the transport
-    // loudly: resolveUnionSpecs throws NpmTransportError for multi-spec
-    // names, npm install fails on its own network error for the rest.
-    return {};
+  } catch (e) {
+    // A transport failure is no longer a silent {} (issue #653): it is
+    // THROWN so the walk can see the round was starved — a swallowed
+    // failure let a stall round whose failing calls held the
+    // undiscovered peers read as convergence, and the install then
+    // proceeded under-converged with verify none the wiser. The
+    // warm-cell no-false-red property this swallow protected does not
+    // die with it: it moves INTO the walk, which tolerates the failure
+    // (counts it, re-queries the round once after a backoff, degrades
+    // loudly) instead of dying. npm's own E404 stays a quiet {}: a
+    // genuine registry no-match contributes no peers and needs no
+    // attribution.
+    const detail = classifyNpmViewFailure(e);
+    if (detail)
+      throw new NpmTransportError(
+        `registry transport failure fetching peers of ${name}@${spec} — ` +
+          `${detail} (issue #653)`,
+      );
+    return {}; // npm's own E404: genuinely no version under this spec
   }
   raw = raw.trim();
   if (!raw || raw === "undefined" || raw === "{}") return {};
   // `npm view` on a range matching several versions returns an array of
-  // per-version objects — take the newest (last).
+  // per-version objects — take the newest (last). A truncated or
+  // garbled answer is TRANSPORT, not evidence of a peerless package
+  // (issue #653, mirroring #512's version-list treatment).
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed.at(-1) ?? {}) : parsed;
-  } catch {
-    return {};
+  } catch (e) {
+    throw new NpmTransportError(
+      `registry returned an unparseable peer map for ${name}@${spec} — ` +
+        `${e.message} (issue #653)`,
+    );
   }
 }
 
@@ -367,24 +392,98 @@ function peerEntries(peers) {
   );
 }
 
+// Bounded sync backoff before a degraded stall's one re-query (issue
+// #653). Atomics.wait is the honest sync sleep on the main thread; the
+// contract pins inject their own no-op `sleep` instead of waiting.
+export const DEGRADED_BACKOFF_MS = 2000;
+function sleepMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // a platform without SharedArrayBuffer/Atomics.wait skips the wait —
+    // the re-query itself, not the sleep, is the substance
+  }
+}
+
 // Walk the peer closure to a fixpoint. The name union is monotone (names
 // are only added, never removed) so re-derivation cannot flip-flop; the
 // WALK_CAP only guards a genuinely unmaterializable graph and fails LOUDLY.
 // `peersFn` is injectable for the contract pins (default: the registry).
-export function walkToFixpoint(union, plugins, peersFn = registryPeers) {
+//
+// A degraded round is NOT convergence (issue #653): registryPeers throws
+// NpmTransportError when npm could not speak, and a stall round whose
+// failing calls held the undiscovered peers must not read as "no peers
+// exist" — that starved stall is what let a blip install an
+// under-converged closure that verify then passed quietly. So the walk
+// counts transport failures per round and:
+//   * on a stall round WITH failures, re-queries the SAME union once
+//     after a short backoff — a transient blip self-heals (restoring the
+//     run-once contract), and a growing round re-arms the budget so each
+//     stall gets exactly one retry and the walk stays bounded;
+//   * when that retry also stalls with failures, fires
+//     `onDegraded({ stage: "verdict", failures, detail })` and returns —
+//     the caller owns the attribution (the install path refuses to claim
+//     "closure satisfied" off a degraded walk; a warm install-once tree
+//     keeps exit 0 with the warning);
+//   * a verdict round with ZERO failures is real convergence — a blip
+//     inside an earlier growing round self-healed, because every round
+//     re-queries every entry.
+// `opts.onDegraded` / `opts.sleep` are injectable for the pins.
+export function walkToFixpoint(
+  union,
+  plugins,
+  peersFn = registryPeers,
+  opts = {},
+) {
+  const onDegraded = opts.onDegraded ?? (() => {});
+  const sleep = opts.sleep ?? sleepMs;
   let rounds = 0;
+  let stallRetried = false; // one bounded re-query per stall (issue #653)
   for (;;) {
     const before = union.size;
+    let failures = 0;
+    const failDetail = [];
     const sources = [localPeers(plugins)];
     for (const [name, entries] of [...union.map.entries()].sort())
-      for (const { spec } of entries) sources.push(peersFn(name, spec));
+      for (const { spec } of entries) {
+        try {
+          sources.push(peersFn(name, spec));
+        } catch (e) {
+          if (!(e instanceof NpmTransportError)) throw e;
+          failures++;
+          failDetail.push(`${name}@${spec}: ${e.message}`);
+          sources.push({}); // the entry contributes nothing THIS round
+        }
+      }
     for (const peers of sources)
       for (const [n, spec] of peerEntries(peers)) union.add(n, spec, "walk");
     // @local/* peers resolve via symlinks, never npm — keep them out of
     // the npm union, the walk already read them from the checkout.
     for (const n of [...union.map.keys()])
       if (n.startsWith("@local/")) union.map.delete(n);
-    if (union.size === before) return rounds;
+    if (union.size === before) {
+      if (failures > 0 && !stallRetried) {
+        // A starved stall is not a fixpoint (issue #653): the failing
+        // calls may hold exactly the peers the successful ones never
+        // surfaced. One bounded re-query after a short backoff.
+        stallRetried = true;
+        onDegraded({
+          stage: "stall-retry",
+          failures,
+          detail: failDetail.join("; "),
+        });
+        sleep(DEGRADED_BACKOFF_MS);
+        continue;
+      }
+      if (failures > 0)
+        onDegraded({
+          stage: "verdict",
+          failures,
+          detail: failDetail.join("; "),
+        });
+      return rounds;
+    }
+    stallRetried = false; // growth re-arms the retry budget (per stall)
     if (++rounds > WALK_CAP)
       throw new Error(
         `peer-union walk did not converge after ${WALK_CAP} rounds; ` +
@@ -486,7 +585,20 @@ export async function main(argv = process.argv.slice(2)) {
 
   const union = seed(plugins);
   console.log(`seed (${union.size} specs): ${union.specs().join(" ")}`);
-  const rounds = walkToFixpoint(union, plugins);
+  // The walk's degraded verdicts are attributed HERE (issue #653): every
+  // event is a loud stderr warning, and a walk that ENDED degraded is
+  // remembered so no success line below can claim more than the walk
+  // actually saw.
+  let walkDegraded = null;
+  const rounds = walkToFixpoint(union, plugins, registryPeers, {
+    onDegraded: ({ stage, failures, detail }) => {
+      console.error(
+        `WARNING (issue #653): peer walk ${stage === "verdict" ? "ENDED" : "stalled"} ` +
+          `degraded — ${failures} registry transport failure(s): ${detail}`,
+      );
+      if (stage === "verdict") walkDegraded = { failures, detail };
+    },
+  });
   console.log(
     rounds === 0
       ? `peer walk: seed already converged (${union.size} specs)`
@@ -498,6 +610,11 @@ export async function main(argv = process.argv.slice(2)) {
     if (problems.length)
       die(`--dry-run: tree NOT satisfied:\n  ${problems.join("\n  ")}`);
     console.log(`--dry-run: verified — ${union.size} required packages present`);
+    if (walkDegraded)
+      console.error(
+        degradedNote(walkDegraded) +
+          ` --dry-run pre-flights what was walked, nothing more`,
+      );
     return;
   }
 
@@ -506,6 +623,12 @@ export async function main(argv = process.argv.slice(2)) {
       `already converged: ${union.size} specs present, peers satisfied, ` +
         `@local links intact — npm skipped (install-once)`,
     );
+    if (walkDegraded)
+      // A warm cell keeps its exit 0 during a registry blip — the
+      // #642-protected install-once property — but the verdict is
+      // honest: the tree satisfies what was WALKED, and what the walk
+      // never saw is named.
+      console.error(degradedNote(walkDegraded));
     return;
   }
 
@@ -548,10 +671,37 @@ export async function main(argv = process.argv.slice(2)) {
       `dependency closure did not converge after install ` +
         `(${union.size} specs):\n  ${after.join("\n  ")}`,
     );
+  if (walkDegraded)
+    // The ticket's exact false-green (issue #653): an install that ran
+    // against an under-converged union and — the blip having ended —
+    // satisfied its own smaller union, then read "closure satisfied"
+    // with every walked peer missing. npm will not re-add them
+    // (--legacy-peer-deps), so the claim is a lie the plugin smokes pay
+    // for one ERR_MODULE_NOT_FOUND later. Refuse typed instead: the red
+    // names the transport and the remedy, an operator never bisects
+    // trust against it, and a rerun on a stable registry converges for
+    // real.
+    die(
+      `peer walk ended DEGRADED — refusing to claim "closure satisfied" ` +
+        `off an under-converged union (${degradedNote(walkDegraded).trim()})`,
+    );
   console.log(
     `verify: closure satisfied — ${union.size} required packages present, ` +
       `all peer requirements of the installed @deepseek-ai/* / @local/* ` +
       `family met, @local links intact`,
+  );
+}
+
+// The one-line attribution riding every degraded success claim (issue
+// #653). Names the transport failures and the remedy; `detail` already
+// carries npm's own error codes (ECONNREFUSED, E5xx, …).
+function degradedNote({ failures, detail }) {
+  return (
+    `\nWARNING (issue #653): this verdict is backed by a DEGRADED walk ` +
+    `(${failures} registry transport failure(s) persisted through the ` +
+    `backoff retry: ${detail}) — peers the walk never saw are unknown; ` +
+    `a downstream module-not-found red likely names the transport, not ` +
+    `the plugins. Rerun once the registry is reachable.\n`
   );
 }
 
