@@ -216,7 +216,8 @@ test("issue #276: a reinstall on a DIRTY shared checkout refuses the refresh and
     const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
     assert.equal(res.status, 0, "the install still lands (env + guarded cron line armed)");
     assert.match(res.stderr, /REFUSING re-pin/, "the guard's refusal is surfaced by the installer");
-    assert.match(res.stderr, /guarded re-pin did not land/, "the installer names the degraded pin");
+    assert.match(res.stderr, /guarded re-pin REFUSED \(exit 3\)/, "the installer names the refused pin by class (issue #639)");
+    assert.match(res.stderr, /committed or cleaned/, "the refusal cure is commit-or-clean — the only class that has one");
     assert.ok(!/toolkit pinned at/.test(res.stdout), "no false pin claim on a refused refresh");
     assert.equal(
       readFileSync(path.join(f.botDir, "settings.zai.yaml"), "utf8"),
@@ -228,6 +229,70 @@ test("issue #276: a reinstall on a DIRTY shared checkout refuses the refresh and
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
+});
+
+test("issue #639: a DEGRADED refresh (fetch failure) warns retry, never a tree cleaning", () => {
+  const f = fixture({ realGit: true });
+  try {
+    // a real repo with a CLEAN tree and NO remote configured: the
+    // guard's fetch fails fast (no network) — the exit-4 degrade class.
+    // The old WARNING told this operator the keepalive "will refuse
+    // re-pins until the tree is cleaned" — scrubbing a clean tree that
+    // needed nothing (the exact #639 hazard).
+    rmSync(path.join(f.botDir, ".git"), { recursive: true, force: true });
+    const hermeticEnv = {
+      ...process.env, // the lane's git may be the scrub shim — keep GIT_SCRUB_REAL etc.
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    };
+    const git = (args) =>
+      spawnSync("git", ["-C", f.botDir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
+        encoding: "utf8",
+        env: hermeticEnv,
+      });
+    git(["init", "--quiet", "--initial-branch=main"]);
+    writeFileSync(path.join(f.botDir, "settings.zai.yaml"), "# template v1\n");
+    git(["add", "settings.zai.yaml"]);
+    git(["commit", "--quiet", "-m", "seed"]);
+
+    const res = spawnSync("bash", [INSTALLER], { encoding: "utf8", env: f.env() });
+    assert.equal(res.status, 0, "the install still lands (env + guarded cron line armed)");
+    assert.match(res.stderr, /guarded re-pin DEGRADED \(exit 4\)/, "the installer names the degrade class (issue #639)");
+    assert.match(res.stderr, /retries next sweep/, "the degrade cure is a retry");
+    assert.ok(
+      !/until the tree is (committed or )?cleaned/.test(res.stderr),
+      "the degrade warning never instructs tree cleaning — the tree was clean all along",
+    );
+    assert.ok(!/toolkit pinned at/.test(res.stdout), "no false pin claim on a degraded refresh");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #639: the refresh comment teaches the post-convergence classes, not refuse-only", () => {
+  // Static source pin: the two stale refuse-only texts the issue cites
+  // are the installer's own teaching surface — the comment (refresh
+  // block) and the WARNING stems. Post-#615 the contract is: exit 3 =
+  // tracked modifications ONLY (a clean tree on a working branch
+  // converges, #614); exit 4 = transient, retry-not-clean.
+  const src = readFileSync(INSTALLER, "utf8");
+  // the old unconditional refuse-until-clean claims are gone
+  assert.ok(!src.includes("re-pin-refuses loudly every sweep until the tree"),
+    "the comment no longer claims the keepalive refuses every class until cleaned");
+  assert.ok(!src.includes("will refuse re-pins until the tree is cleaned"),
+    "the WARNING no longer prescribes tree cleaning to every failure class");
+  // the refusal is scoped to its one cause...
+  assert.match(src, /REFUSED \(exit 3\)[^\n]*tracked modifications/,
+    "refusal means tracked modifications only");
+  // ...the converge class is acknowledged beside it...
+  assert.match(src, /CONVERGES it\s*\n#[^\n]*to the pin/,
+    "a clean tree on a working branch converges to the pin (issue #614)");
+  // ...and the degrade class tells the operator to wait, not scrub
+  assert.match(src, /DEGRADED \(exit 4\)[^\n]*(transient|retry)/,
+    "the degrade class is transient");
+  // the runtime WARNING stems name their class
+  assert.match(src, /guarded re-pin REFUSED \(exit 3\)/);
+  assert.match(src, /guarded re-pin DEGRADED \(exit \$\{?PIN_RC\}?\)/);
 });
 
 test("missing credentials fail typed (exit 2), nothing written", () => {

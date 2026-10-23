@@ -482,7 +482,7 @@ TASK="${TASK}
 
 AGENT CONTRACT — branch hygiene (issue #127): zero orphan branches — a branch whose work outlives the session without a PR is a lost thread. The repos run auto-delete-on-merge, so a merged branch cleans itself up; the leak paths are below.
 1. SAME-SESSION PR PER BRANCH — every branch your work lands on gets its PR opened in the SAME session that pushed it. If your lane ships for you (the deterministic shipper opens the PRs), confirm the PR exists before you exit; if you push yourself, you create the PR. A pushed branch with no PR is an orphan.
-2. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging (superseded, wrong approach, duplicate), delete its branch in the same breath: gh pr close NUMBER --delete-branch (fallback: git push origin --delete BRANCH). Merged branches are auto-deleted by the repo setting — never restore one.
+2. DELETE ON CLOSE WITHOUT MERGE — when a PR of yours closes WITHOUT merging (superseded, wrong approach, duplicate), delete its branch in the same breath: gh pr close NUMBER --delete-branch (fallback: git push origin --delete BRANCH). Merged branches are auto-deleted by the repo setting — never restore one. EXCEPTION — a PR retired by a stale/hygiene pass while its work is APPROVED and unmerged (gates green on the head or an APPROVE verdict — check scripts/approved-lane.mjs): do NOT delete the head; it is the reviewed work's only path back to main — push to it and reopen instead (issue #643).
 3. BRANCHES-LEFT EXIT LINE — reference every remote branch your session leaves behind (open PRs waiting on review) on ONE branches-left: line — exact shape:
      branches-left: dsh/issue-127-c5844082078, dsh/issue-128-nextticket
    comma-space separated branch names, nothing else on the line. Left nothing: omit the line entirely — never write branches-left: none.
@@ -759,6 +759,24 @@ if [ -z "${DSH_FACE_ID:-}" ]; then
     DSH_FACE_ID="${DSH_USER:-${USER:-user}}-p$$"
   fi
   export DSH_FACE_ID
+fi
+# The SAME identity in the sanitizer-proof namespace (issue #617; the
+# node-side shape is ebowwa/FleetTower#1629): the session-env sanitizer
+# (@deepseek-ai/dsh-subprocess scrubbedParentEnv) strips EVERY parent
+# DSH_* var from the agent's own tool shells — measured as #950
+# (2026-10-04 and again 2026-10-06) and re-measured live through air16's
+# production chain 2026-10-09 — so a DSH_-only ambient face never reaches
+# the bin/face-lock steps the session itself runs, and those walk
+# `faceHolderPid` up to the shared daemon anchor. DISPATCH_* demonstrably
+# survives that scrub (the DISPATCH_FLEET_API precedent, FleetTower#1299),
+# so the ambient face rides BOTH namespaces: DSH_FACE_ID for readers
+# inside the spawned env copy, DISPATCH_FACE_ID for the shell the session
+# actually runs in. An existing DISPATCH_FACE_ID — the node's #1629
+# injection, verified arriving on air16 2026-10-09 — always wins: never
+# clobbered, never re-minted.
+if [ -z "${DISPATCH_FACE_ID:-}" ] && [ -n "${DSH_FACE_ID:-}" ]; then
+  DISPATCH_FACE_ID="$DSH_FACE_ID"
+  export DISPATCH_FACE_ID
 fi
 DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 

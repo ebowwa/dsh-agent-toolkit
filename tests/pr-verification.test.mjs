@@ -14,9 +14,13 @@
 //   4. --json is the tooling surface (merge-guard/review-pr consult it).
 //   5. A marker-parse failure or a non-marker comment never masquerades
 //      as a verdict.
+//   6. BOTH channels are graded (issue #560): a marker in a formal REVIEW
+//      body (`pulls/N/reviews`) is as visible as one in a comment, the later
+//      channel wins, an exact tie keeps the comment, and an unreadable
+//      reviews channel is fail-closed (exit 2) — never "none".
 //
 // Hermetic: a stub gh (PR_VERIFICATION_GH seam — the merge-guard pattern)
-// serves the PR view and the comments; no network, no real repo.
+// serves the PR view, the comments and the reviews; no network, no real repo.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -34,14 +38,25 @@ const comment = (id, login, body, over = {}) => ({
   id, user: { login }, body, html_url: `https://github.com/owner/repo/pull/7#issuecomment-${id}`, ...over,
 });
 
-/** Fixture dir: a stub gh serving pr-view.json + comments.json. */
-const fixture = (t, comments, { prFail = false, apiFail = false } = {}) => {
+/** A formal review OBJECT row (the pulls/N/reviews shape, issue #560). */
+const review = (id, login, body, over = {}) => ({
+  id,
+  user: { login },
+  body,
+  state: "COMMENTED",
+  html_url: `https://github.com/owner/repo/pull/7#pullrequestreview-${id}`,
+  ...over,
+});
+
+/** Fixture dir: a stub gh serving pr-view.json + comments.json + reviews.json. */
+const fixture = (t, comments, { prFail = false, apiFail = false, reviews = [], reviewsFail = false } = {}) => {
   const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(path.join(dir, "pr-view.json"), JSON.stringify({
     number: 7, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/7",
   }));
   writeFileSync(path.join(dir, "comments.json"), JSON.stringify(comments));
+  writeFileSync(path.join(dir, "reviews.json"), JSON.stringify(reviews));
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$PV_STUB_DIR/gh.log"
 if [ "$1" = "--version" ]; then echo "stub gh"; exit 0; fi
@@ -52,7 +67,12 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   [ -f "$PV_STUB_DIR/api-fail" ] && { echo "stub: api fails" >&2; exit 1; }
-  cat "$PV_STUB_DIR/comments.json"
+  case "$*" in
+    */reviews)
+      [ -f "$PV_STUB_DIR/reviews-fail" ] && { echo "stub: reviews api fails" >&2; exit 1; }
+      cat "$PV_STUB_DIR/reviews.json" ;;
+    *) cat "$PV_STUB_DIR/comments.json" ;;
+  esac
   exit 0
 fi
 echo "stub: unexpected call: $*" >&2
@@ -61,6 +81,7 @@ exit 64
   chmodSync(path.join(dir, "gh"), 0o755);
   if (prFail) writeFileSync(path.join(dir, "pr-fail"), "1");
   if (apiFail) writeFileSync(path.join(dir, "api-fail"), "1");
+  if (reviewsFail) writeFileSync(path.join(dir, "reviews-fail"), "1");
   return dir;
 };
 
@@ -174,4 +195,65 @@ test("log shows the paginated comments call (an early-page marker must never be 
   run(dir);
   const log = readFileSync(path.join(dir, "gh.log"), "utf8");
   assert.match(log, /api --paginate repos\/owner\/repo\/issues\/7\/comments/);
+});
+
+test("log shows the paginated REVIEWS call too (the both-channels read, issue #560)", (t) => {
+  const dir = fixture(t, [comment(1, "sibling", "gate-verify: pass\n")]);
+  run(dir);
+  const log = readFileSync(path.join(dir, "gh.log"), "utf8");
+  assert.match(log, /api --paginate repos\/owner\/repo\/pulls\/7\/reviews/);
+});
+
+// --- issue #560: a verdict posted as a REVIEW OBJECT is visible -------------
+
+test("a marker in a formal REVIEW body is visible — pass, exit 0 (issue #560)", (t) => {
+  const dir = fixture(t, [], { reviews: [review(11, "sibling", "independent run: 443/443\ngate-verify: pass\n")] });
+  const r = run(dir);
+  assert.equal(r.status, 0, `the review-body marker must count as pass (stderr: ${r.stderr})`);
+  assert.match(r.stdout, /^pass https:\/\/github\.com\/owner\/repo\/pull\/7#pullrequestreview-11 sibling\n$/);
+  const j = JSON.parse(run(dir, ["--json"]).stdout);
+  assert.equal(j.channel, "review", "the provenance names the channel the marker came from");
+  assert.deepEqual(j.comment, {
+    id: 11,
+    author: "sibling",
+    url: "https://github.com/owner/repo/pull/7#pullrequestreview-11",
+  });
+});
+
+test("the LATER channel wins: a review marker after the comment marker (issue #560)", (t) => {
+  const dir = fixture(t, [comment(1, "a", "gate-verify: pass\n", { created_at: "2026-10-04T12:00:00Z" })], {
+    reviews: [review(2, "b", "gate-verify: fail\n", { submitted_at: "2026-10-04T12:05:00Z" })],
+  });
+  const r = run(dir);
+  assert.equal(r.status, 1, "the later FAIL review is the thread's final word");
+  assert.match(r.stdout, /^fail https:\/\/github\.com\/owner\/repo\/pull\/7#pullrequestreview-2 b\n$/);
+  assert.equal(JSON.parse(run(dir, ["--json"]).stdout).channel, "review");
+});
+
+test("the LATER comment beats an older review marker (issue #560)", (t) => {
+  const dir = fixture(t, [comment(1, "a", "gate-verify: pass\n", { created_at: "2026-10-04T12:10:00Z" })], {
+    reviews: [review(2, "b", "gate-verify: fail\n", { submitted_at: "2026-10-04T12:00:00Z" })],
+  });
+  const r = run(dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^pass https:\/\/github\.com\/owner\/repo\/pull\/7#issuecomment-1 a\n$/);
+  assert.equal(JSON.parse(run(dir, ["--json"]).stdout).channel, "comment");
+});
+
+test("an exact tie keeps the comment channel — the fleet's native surface (issue #560)", (t) => {
+  const at = "2026-10-04T12:00:00Z";
+  const dir = fixture(t, [comment(1, "a", "gate-verify: pass\n", { created_at: at })], {
+    reviews: [review(2, "b", "gate-verify: fail\n", { submitted_at: at })],
+  });
+  const r = run(dir);
+  assert.equal(r.status, 0, "a tie must not flip the verdict on a lane where no review marker exists today");
+  assert.equal(JSON.parse(run(dir, ["--json"]).stdout).channel, "comment");
+});
+
+test("an unreadable REVIEWS channel exits 2 fail-closed — never readable as none (issue #560)", (t) => {
+  const dir = fixture(t, [comment(1, "a", "gate-verify: pass\n")], { reviewsFail: true });
+  const r = run(dir);
+  assert.equal(r.status, 2, `a broken reviews read must not degrade to the comment verdict (stderr: ${r.stderr})`);
+  assert.match(r.stderr, /reviews API failed/);
+  assert.match(r.stderr, /REFUSED \(unresolvable\)/);
 });
