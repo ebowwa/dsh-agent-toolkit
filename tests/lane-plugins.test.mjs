@@ -11,6 +11,7 @@ import { createServer } from "node:net";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSULT = join(ROOT, "scripts", "lane-plugins-consult.py");
 const MANIFEST = join(ROOT, "config", "lane-plugins.json");
+const SYNC = join(ROOT, "scripts", "sync-lane-plugins.sh");
 
 function consult(args) {
   const out = execFileSync("python3", [CONSULT, ...args], { encoding: "utf8" });
@@ -487,4 +488,33 @@ test("sync --verify: missing canonical copy is still a loud FAIL (exit 1) — un
   const r = runSyncVerify(script, home);
   assert.equal(r.status, 1, `missing dest FAILs loud, got: ${r.status}`);
   assert.ok(r.stderr.includes("VERIFY FAIL"), "FAIL names the missing dest");
+});
+
+// Issue #579: the usage header is the contract a human audits; the code is the
+// contract that runs. They disagreed — the header promised "exit 1 if
+// stale/missing" while the stale arm only printed a verdict-free NOTE (the
+// keepalive contract: `--verify || true` must never block a sweep on drift,
+// only on a MISSING canonical copy). Pin the header to the code, in both
+// directions, so the drift cannot come back silently.
+test("issue #579: the usage header states the REAL exit contract — stale NOTEs, missing fails", () => {
+  const src = readFileSync(SYNC, "utf8");
+  assert.doesNotMatch(src, /--verify\s+check state only \(exit 1 if stale/,
+    "the retired '--verify ... exit 1 if stale' promise is gone — the stale arm never sets FAIL");
+  assert.match(src, /Exit 1 ONLY when a canonical/,
+    "the header names the single failing case (a missing canonical copy)");
+  assert.match(src, /verdict-FREE note/,
+    "the header says the stale arm is verdict-free, which is what the code does");
+  assert.match(src, /NEVER FAIL|never FAIL|verdict-free/i,
+    "the in-code NOTE comment and the header agree");
+  // and the code: the stale arm prints a NOTE, only the missing arm sets FAIL
+  const vStart = src.indexOf('if [ "$VERIFY" = "1" ]');
+  assert.ok(vStart > 0, "the --verify arm exists");
+  const verifyBlock = src.slice(vStart, src.indexOf("    continue", vStart));
+  assert.match(verifyBlock, /VERIFY FAIL/, "a missing copy still FAILs loudly");
+  assert.match(verifyBlock, /VERIFY NOTE/, "a stale cache still NOTEs");
+  assert.ok(
+    verifyBlock.indexOf("VERIFY FAIL") < verifyBlock.indexOf("VERIFY NOTE"),
+    "the FAIL arm is the missing-copy arm; the NOTE arm is the stale one",
+  );
+  assert.ok(!/VERIFY NOTE[^\n]*FAIL=1/.test(src), "no arm sets FAIL on a stale cache (that would break the keepalive)");
 });
