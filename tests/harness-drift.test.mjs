@@ -573,3 +573,50 @@ test("source pin: the driver guards the arm by -f (the arm ships 644, bash-invok
   const st = statSync(SCRIPT);
   assert.ok(!(st.mode & 0o111), "the arm ships non-executable like its sibling re-pin-toolkit.sh (bash-invoked)");
 });
+
+// ------------------------- #666: path collisions -----------------------------
+
+test("heal: a path-COLLIDING untracked file REFUSES under its own verdict and survives (issue #666)", () => {
+  // Guard 1 (`diff-index --quiet`) sees tracked modifications only, so it is
+  // blind to an UNTRACKED file whose PATH the target tree tracks — and the
+  // keepalive arm's `checkout -q --force v1` overwrites exactly that file
+  // (git writes the tracked blob over it, exit 0, no diagnostic). The
+  // fixture's advance() adds drift.md at the target tree while the box, at
+  // the previous pin, never tracked it.
+  const f = fixture();
+  try {
+    f.detachAtPin();
+    f.advance();
+    const file = path.join(f.box, "drift.md");
+    writeFileSync(file, "# MINE — live untracked work DSH-666\n");
+    assert.equal(git(f.box, ["status", "--porcelain"]).stdout.trim(), "?? drift.md", "the colliding file is UNTRACKED");
+    const r = runScript(f.box, "heal");
+    assert.equal(r.status, 3, `refused (exit 3), never a silent overwrite: ${r.stdout}${r.stderr}`);
+    assert.match(r.stdout, /verdict=refused-untracked-collision/, "its OWN verdict token, not the dirty-tree one");
+    assert.match(r.stderr, /issue #666/, "the note names the class");
+    assert.match(r.stderr, /drift\.md/, "the receipt names the at-risk file");
+    assert.equal(readFileSync(file, "utf8"), "# MINE — live untracked work DSH-666\n", "the live work SURVIVES");
+    assert.equal(f.head(), f.revA, "HEAD kept at the previous pin");
+
+    // clearing the collision heals (the cure is deleting/moving the file)
+    rmSync(file);
+    const again = runScript(f.box, "heal");
+    assert.equal(again.status, 0, `heal after clearing: ${again.stderr}`);
+    assert.match(again.stdout, /verdict=healed/);
+    assert.equal(f.head(), f.seedRev("v1"), "HEAD moved to the advanced tag");
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("source pin: the collision refusal is a first-class verdict in arm + wrapper (issue #666)", () => {
+  const arm = readFileSync(SCRIPT, "utf8");
+  assert.match(arm, /say refused-untracked-collision/, "the arm emits the named verdict");
+  assert.match(arm, /ls-files --others --exclude-standard/, "the collision set is the UNTRACKED set");
+  assert.match(arm, /uniq -d/, "the collision set is the intersection with the target tree");
+  const collIdx = arm.indexOf("GUARD 2b");
+  const moveIdx = arm.indexOf("# MOVE — fast-forward only.");
+  assert.ok(collIdx > 0 && moveIdx > collIdx, "the guard runs BEFORE the move, so no arm can destroy first");
+  const driver = readFileSync(DRIVER, "utf8");
+  assert.match(driver, /refused-untracked-collision/, "the wrapper's verdict whitelist knows the token (unknown tokens read as degraded)");
+});

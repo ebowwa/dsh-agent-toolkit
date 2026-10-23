@@ -200,7 +200,7 @@ test("a clean tree ON main re-pins (the fresh-clone state is movable)", () => {
   }
 });
 
-test("untracked files never block the re-pin and survive it", () => {
+test("non-colliding untracked files never block the re-pin and survive it (issue #666 narrowed this claim)", () => {
   const f = fixture();
   try {
     f.detachAtPin();
@@ -242,6 +242,50 @@ test("usage failures are typed (exit 2): no dir, and not a git checkout", () => 
     const notGit = spawnSync("bash", [SCRIPT, f.dir], { encoding: "utf8", env: HERMETIC_ENV });
     assert.equal(notGit.status, 2, notGit.stderr);
     assert.match(notGit.stderr, /not a git checkout/);
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issue #666: a path-COLLIDING untracked file REFUSES the re-pin and survives", () => {
+  // `checkout --force v1` overwrites an untracked file whose PATH is tracked
+  // at v1 (git writes the tracked blob over it, exit 0, no diagnostic). The
+  // fixture's advance() adds drift.md at the target tree, while the box (at
+  // the previous pin) never tracked it — the exact collision shape.
+  const f = fixture();
+  try {
+    f.advance();
+    const file = path.join(f.box, "drift.md");
+    writeFileSync(file, "# MINE — live untracked work DSH-666\n");
+    assert.equal(git(f.box, ["status", "--porcelain"]).stdout.trim(), "?? drift.md", "the colliding file is UNTRACKED");
+    const res = runScript(f.box);
+    assert.equal(res.status, 3, "refused (exit 3), never a silent overwrite");
+    assert.match(res.stderr, /REFUSING re-pin/, "the refusal is loud");
+    assert.match(res.stderr, /issue #666/, "the note names the class");
+    assert.match(res.stderr, /drift\.md/, "the receipt names the at-risk file");
+    assert.equal(readFileSync(file, "utf8"), "# MINE — live untracked work DSH-666\n", "the live work SURVIVES");
+    assert.equal(f.head(), f.revA, "HEAD kept at the previous pin");
+
+    // clearing the collision resumes the re-pin (the cure is deleting or
+    // moving the file, never cron-side destruction)
+    rmSync(file);
+    const again = runScript(f.box);
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "re-pins once the collision is gone");
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issue #666: a NON-colliding untracked file still re-pins (scratch files never strand a box)", () => {
+  const f = fixture();
+  try {
+    f.advance();
+    writeFileSync(path.join(f.box, "scratch.txt"), "agent scratch\n");
+    const res = runScript(f.box);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "HEAD moved to the advanced tag");
+    assert.equal(readFileSync(path.join(f.box, "scratch.txt"), "utf8"), "agent scratch\n", "the scratch file survives untouched");
   } finally {
     f.cleanUp();
   }

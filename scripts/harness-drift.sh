@@ -35,6 +35,9 @@
 #   REFUSE (exit 3, loud note, HEAD + tree kept):
 #     - tracked-file modifications (the payload a checkout --force would
 #       destroy — exactly re-pin-toolkit.sh's refusal gate 1);
+#     - an UNTRACKED file whose path the target tree tracks — the colliding
+#       case `checkout --force` DOES destroy (issue #666; re-pin-toolkit.sh
+#       gate 3 is the sibling);
 #     - HEAD on a branch OTHER than the expected ref (an agent's or an
 #       operator's working branch);
 #     - the head is not a strict ANCESTOR of the remote tip: local commits
@@ -74,8 +77,8 @@
 #             not-fast-forward / lock busy) · 4 degraded (fetch failed)
 #   The LAST stdout line of every outcome is `verdict=<token>`:
 #   fresh | drift | healed | refused-dirty | refused-branch |
-#   refused-not-fast-forward | refused-lock | diverged | ahead |
-#   degraded | skipped-no-remote | skipped-detached | off
+#   refused-not-fast-forward | refused-lock | refused-untracked-collision |
+#   diverged | ahead | degraded | skipped-no-remote | skipped-detached | off
 #
 # Usage: harness-drift.sh <stamp|check|heal> [checkout-dir]
 #        (dir defaults to this script's parent checkout)
@@ -298,6 +301,22 @@ heal)
     exit 3
   fi
 
+  # Issue #666: a refusal that happens AFTER the fetch must not strand the
+  # checkout's PIN IDENTITY. `fetch --tags --force` moves a force-moved local
+  # tag onto the remote tip, so a detached HEAD that WAS described by that tag
+  # no longer is — and the NEXT run's resolve_expected_ref finds no tag, falls
+  # back to the default branch, and the regime gate then skips the checkout as
+  # a bare detached head (skipped-detached) instead of grading it again.
+  # Restoring the pre-fetch tag at HEAD keeps the refusal contract ("nothing
+  # is touched") true for the ref this run moved: the box keeps refusing while
+  # the condition stands and heals the moment it is cleared.
+  PIN_TAG_BEFORE="$(G describe --tags --exact-match 2>/dev/null | head -n1 || true)"
+  restore_pin_identity() {
+    [ -n "$PIN_TAG_BEFORE" ] || return 0
+    [ -n "$BRANCH" ] && return 0
+    G tag -f "$PIN_TAG_BEFORE" "$HEAD_SHA" >/dev/null 2>&1 || true
+  }
+
   # COMPARE — fetch the expected ref (objects needed for the ancestry
   # proof), degraded-not-fatal. Branch heads fetch by name; detached heads
   # resolve tags first (the keepalive regime — this is the same fetch the
@@ -349,11 +368,34 @@ heal)
   if [ "$ancestor" != "1" ]; then
     if G merge-base --is-ancestor "$TIP" "$HEAD_SHA" >/dev/null 2>&1; then
       echo "harness-drift: REFUSING heal of $DIR — HEAD ${HEAD_SHA:0:7} is AHEAD of origin/$REF ${TIP:0:7} (local commits); never auto-moved" >&2
+      restore_pin_identity
       say ahead
     else
       echo "harness-drift: REFUSING heal of $DIR — HEAD ${HEAD_SHA:0:7} has DIVERGED from origin/$REF ${TIP:0:7}; never auto-moved" >&2
+      restore_pin_identity
       say diverged
     fi
+    exit 3
+  fi
+
+  # GUARD 2b — path-colliding untracked files (issue #666). Guard 1 sees TRACKED
+  # modifications only, so `diff-index --quiet` is blind to an UNTRACKED file
+  # whose PATH the target tree tracks — and the keepalive MOVE arm's
+  # `checkout -q --force "$REF"` OVERWRITES exactly that file (git writes the
+  # tracked blob over it, exit 0, no diagnostic). The branch arm
+  # (`merge --ff-only`) happens to refuse on its own; this guard makes BOTH
+  # arms refuse under one name before anything moves, so a stale-release heal
+  # can never eat an operator's or an agent's live untracked work through a
+  # path collision.
+  COLLIDING="$(
+    { G ls-tree -r --name-only "$TIP" 2>/dev/null; G ls-files --others --exclude-standard 2>/dev/null; } \
+      | LC_ALL=C sort | uniq -d
+  )"
+  if [ -n "$COLLIDING" ]; then
+    echo "harness-drift: REFUSING heal of $DIR — untracked file(s) collide with a path tracked at ${TIP:0:7}; checkout --force WOULD OVERWRITE them (issue #666 class); HEAD kept. Colliding (first lines):" >&2
+    printf '%s\n' "$COLLIDING" | head -5 | sed 's/^/    /' >&2
+    restore_pin_identity
+    say refused-untracked-collision
     exit 3
   fi
 
