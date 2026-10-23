@@ -38,7 +38,22 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 const PLUGIN = path.join(ROOT, "plugins", "tool-search-compose");
-const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+// Issue #598: the presence probe is a LIVE spawn and it carries a budget.
+// spawnSync waits INDEFINITELY by default, so a wedged `dsh --version` (a
+// broken shell shim, a hung first-run path) wedged this whole file: no
+// assertion reds, no file-level result prints, and the outer suite budget is
+// the only backstop (the #423 wedge class). 30s is ~60x a quiet --version.
+const DSH_PROBE = spawnSync("dsh", ["--version"], { timeout: 30_000 });
+const DSH_PRESENT = DSH_PROBE.status === 0;
+// status === null + a signal is the BUDGET KILL, not proof of absence: still
+// take the absent path (never hang), but the skip reason NAMES the wedge so
+// the box is diagnosable instead of silently "absent" (issue #598).
+const DSH_PROBE_WEDGED = DSH_PROBE.status === null && DSH_PROBE.signal != null;
+const DSH_SKIP = DSH_PRESENT
+  ? false
+  : DSH_PROBE_WEDGED
+    ? `dsh --version WEDGED — killed by the 30s probe budget (signal ${DSH_PROBE.signal}); treated as absent (issue #598)`
+    : "dsh is absent";
 
 // Hermetic lane-plugin consult (issue #129): empty-entry manifest — the
 // default manifest's dsh-reflex row is require_probe on 49173, so on hosts
@@ -307,7 +322,7 @@ test("same-tree guard: a DSH_HOME at the plugin itself copies nothing and delete
 
 // --- live half: real dsh only (the lanes; skipped on dsh-less machines) ----
 
-test("the stamped overlay composes into the real profile: the insert row resolves, not warn-and-skips (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
+test("the stamped overlay composes into the real profile: the insert row resolves, not warn-and-skips (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SEARCH_COMPOSE: "1" });
   const overlay = path.join(home, "search-compose.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped");
@@ -323,7 +338,7 @@ test("the stamped overlay composes into the real profile: the insert row resolve
   assert.match(dump.stdout, /- id: tool-search-compose\n\s+name: ['"]@dsh-agent-toolkit\/tool-search-compose['"]/, "the insert row must appear in the composed config");
 });
 
-test("the packaged plugin's tree BOOTS against the stamped overlay (skip when dsh is absent)", { skip: !DSH_PRESENT }, () => {
+test("the packaged plugin's tree BOOTS against the stamped overlay (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { proc, home } = runLauncher({ DSH_SEARCH_COMPOSE: "1" });
   assert.equal(proc.status, 0, `launcher must succeed, stderr: ${proc.stderr}`);
   const overlay = path.join(home, "search-compose.patch.yml");

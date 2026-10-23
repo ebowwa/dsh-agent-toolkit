@@ -18,6 +18,14 @@
 //   - scripts/review-pr.sh: prior markers surface to the adversarial
 //     reviewer as CLAIMS TO CHECK, never as truth.
 //
+// Both channels (issue #560): a verdict can arrive as a PR COMMENT or as a
+// formal REVIEW OBJECT (`pulls/N/reviews`) — a marker in a review body used to
+// be invisible because only the comments endpoint was read. The fold is
+// FleetTower's lander rule: read both channels to exhaustion, each channel's
+// last marker is that channel's final word, the later channel wins (an exact
+// tie keeps the comment, the shared-account fleet's native surface), and an
+// unreadable channel stays fail-closed (exit 2) — never readable as "none".
+//
 // Provenance, not bodies: a PR comment is unscrubbed agent text, so this
 // tool emits only the verdict word + comment id / author / URL — the body
 // itself never passes through stdout (fail-closed against the scrub rule;
@@ -29,12 +37,14 @@
 //                   none
 //   stdout (--json): {"verdict":"pass|fail|none","pr":N,"head":"<sha>",
 //                     "url":"<pr-url>","markers":<count>,
+//                     "channel":"comment|review"|null,
 //                     "comment":{"id":N,"author":"login","url":"..."}|null}
 //   exit:  0 pass — a passing verification exists to weigh;
 //          1 no passing verification (a fail marker, or none) — the
 //            stdout token names which; the caller decides what that means;
-//          2 unresolvable (no gh, PR unresolvable, comments API failed) —
-//            typed reason on stderr; fail-closed, never readable as pass.
+//          2 unresolvable (no gh, PR unresolvable, comments OR reviews API
+//            failed) — typed reason on stderr; fail-closed, never readable
+//            as pass.
 //
 // Env contract:
 //   PR_VERIFICATION_GH  gh binary to use (default `command -v gh`) — the
@@ -83,9 +93,12 @@ const repoPath = /https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\//.exec(pr.url);
 if (!repoPath) unresolvable(`cannot parse owner/repo from PR url '${pr.url}'`);
 const [owner, repo] = repoPath.slice(1);
 
-// 2. Comments in ascending order (oldest first) — the LAST marker in the
-//    thread is the verification's final word. Paginated: a marker on an
-//    early page must never be shadowed out of the read by a long thread.
+// 2. Read BOTH verdict channels, each paginated to exhaustion (issue #560):
+//    the issue-comment channel is the shared-account fleet's native surface
+//    (issue #326); the reviews channel (`pulls/N/reviews`) carries the same
+//    marker when the verifier posts it as a formal review OBJECT. Paginated
+//    in both cases: a marker on an early page must never be shadowed out of
+//    the read by a long thread.
 const comments = gh(["api", "--paginate", `repos/${owner}/${repo}/issues/${pr.number}/comments`]);
 let list = null;
 try { list = JSON.parse(comments.stdout); } catch { /* guarded below */ }
@@ -94,30 +107,63 @@ if (comments.status !== 0 || !Array.isArray(list)) {
 }
 list.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
 
-// 3. Parse each comment body through gate-verify.mjs (line-strict); the
-//    last comment carrying a marker wins. Bodies stay on disk in a temp
+const reviewsResp = gh(["api", "--paginate", `repos/${owner}/${repo}/pulls/${pr.number}/reviews`]);
+let reviews = null;
+try { reviews = JSON.parse(reviewsResp.stdout); } catch { /* guarded below */ }
+if (reviewsResp.status !== 0 || !Array.isArray(reviews)) {
+  // Fail-closed on an unreadable channel (the #326 rule): an API failure is
+  // never readable as "no verification happened" — and now that the reviews
+  // channel is graded too, a broken reviews read must not silently degrade
+  // to the comments channel's verdict.
+  unresolvable(`reviews API failed for ${owner}/${repo}#${pr.number}: ${(reviewsResp.stderr || "").trim().slice(0, 200)}`);
+}
+reviews.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+
+// 3. Parse each channel's bodies through gate-verify.mjs (line-strict); the
+//    LAST body carrying a marker in a channel is that channel's final word,
+//    then the later channel wins (issue #560). Bodies stay on disk in a temp
 //    file and are never echoed.
 const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
 try {
   const tool = path.join(path.dirname(path.resolve(process.argv[1] ?? ".")), "gate-verify.mjs");
-  let last = null;
-  for (const c of list) {
-    if (typeof c?.body !== "string" || c.body === "") continue;
-    const f = path.join(dir, "comment.txt");
-    writeFileSync(f, c.body);
-    const r = spawnSync(process.execPath, [tool, f], { encoding: "utf8" });
-    if (r.status !== 0) continue; // unreadable input is not a marker
-    const marker = r.stdout.trim();
-    if (marker === "PASS" || marker === "FAIL") {
-      last = {
-        verdict: marker.toLowerCase(),
-        comment: {
-          id: c.id ?? null,
-          author: c?.user?.login ?? "unknown",
-          url: c?.html_url ?? null,
-        },
-      };
+  const lastMarker = (rows, atKey) => {
+    let found = null;
+    for (const row of rows) {
+      if (typeof row?.body !== "string" || row.body === "") continue;
+      const f = path.join(dir, "body.txt");
+      writeFileSync(f, row.body);
+      const r = spawnSync(process.execPath, [tool, f], { encoding: "utf8" });
+      if (r.status !== 0) continue; // unreadable input is not a marker
+      const marker = r.stdout.trim();
+      if (marker === "PASS" || marker === "FAIL") {
+        found = {
+          verdict: marker.toLowerCase(),
+          // Reviews carry submitted_at, comments created_at — the channel
+          // clocks the fold compares (empty when the API omitted it).
+          at: typeof row[atKey] === "string" ? row[atKey] : "",
+          provenance: {
+            id: row.id ?? null,
+            author: row?.user?.login ?? "unknown",
+            url: row?.html_url ?? null,
+          },
+        };
+      }
     }
+    return found;
+  };
+
+  const fromComments = lastMarker(list, "created_at");
+  const fromReviews = lastMarker(reviews, "submitted_at");
+
+  // Later channel wins; an exact tie — or either side without a usable
+  // timestamp — keeps the comment channel, which makes the pre-#560
+  // single-channel behaviour byte-identical when no review carries a marker
+  // (the same tie rule scripts/approved-lane.mjs uses, issue #643).
+  let last = fromComments;
+  let channel = fromComments ? "comment" : null;
+  if (fromReviews && (!fromComments || (fromComments.at && fromReviews.at && fromReviews.at > fromComments.at))) {
+    last = fromReviews;
+    channel = "review";
   }
 
   // 4. Report. exit 1 = "no passing verification to weigh" (fail or none);
@@ -128,7 +174,11 @@ try {
     head: pr.headRefOid,
     url: pr.url,
     markers: last ? 1 : 0, // count of RELEVANT (last-wins) markers; 0 = channel silent
-    comment: last ? last.comment : null,
+    // Which channel the winning marker came from (issue #560): "comment" |
+    // "review", null when neither channel carries one.
+    channel,
+    // Provenance, not bodies — whichever channel carried it.
+    comment: last ? last.provenance : null,
   };
   if (JSON_MODE) {
     process.stdout.write(`${JSON.stringify(payload)}\n`);

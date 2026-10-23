@@ -22,12 +22,27 @@
 #   a remote `dsh/issue-*` branch with NO OPEN PR behind it.
 #
 # A branch that is the head of ANY open PR is protected — it is live work
-# (or under review), never an orphan. The sweep lists remote refs through
-# `git ls-remote` (no clone needed) and the open-PR census through `gh pr
-# list` (one call, `--head` matching per branch is unnecessary — the census
-# is the set of open head refs; a branch not in it is an orphan by
-# definition, and a branch name that IS an open head is skipped with a
-# "protected" note, never deleted).
+# (or under review), never an orphan. And since issue #643 a second
+# protected class exists: a branch whose NEWEST closed-unmerged PR carries
+# APPROVED, UNLANDED work (a passing merge-guard gates check on its head
+# SHA and/or a final APPROVE verdict — scripts/approved-lane.mjs) is
+# protected too. The #643 receipts: PRs #495/#544 were review-approved
+# with gates green, stale-closed unmerged by the branch-hygiene pass, and
+# their heads then reaped — the reviewed work kept no path back to main
+# (the files survived only as refs/pull/495/head). The branch behind an
+# approved-unmerged PR is the work's only independent copy: reaping it is
+# destroying reviewed work, not tidying. Such branches are skipped with a
+# LOUD line naming the PR; the recovery lane (reopen/land) stays open. The
+# consult itself is fail-closed: an unresolvable approval check REFUSES
+# the sweep (never delete blind on the approval channel either).
+#
+# The sweep lists remote refs through `git ls-remote` (no clone needed)
+# and the open-PR census through `gh pr list` (one call, `--head`
+# matching per branch is unnecessary — the census is the set of open head
+# refs; a branch not in it is an orphan by definition, and a branch name
+# that IS an open head is skipped with a "protected" note, never
+# deleted). The closed-PR census (the #643 consult) is one more `gh pr
+# list` call, made only when a candidate orphan exists.
 #
 # Modes:
 #
@@ -50,18 +65,25 @@
 #
 # Env seams:
 #   GH_BIN      the gh binary to use (default: gh from PATH) — the hermetic
-#               test seam (tests/branch-hygiene-sweep.test.mjs).
+#               test seam (tests/branch-hygiene-sweep.test.mjs). Handed to
+#               the approved-lane consult as APPROVED_LANE_GH.
 #   SWEEP_REMOTE the remote to census (default origin).
+#   APPROVED_LANE_TOOL  the approved-lane guard to consult for the #643
+#               protected class (default: the sibling
+#               scripts/approved-lane.mjs) — the hermetic test seam, the
+#               MERGE_GUARD_VERIFY_TOOL pattern.
 #
 # Exit codes: 0 = fine (list: orphans printed; sweep: all deletions
-# landed or dry-run completed) · 1 = census unreadable / deletion refused ·
-# 2 = usage error.
+# landed or dry-run completed) · 1 = census unreadable / deletion refused /
+# approval consult unresolvable · 2 = usage error.
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SWEEP_REMOTE_DEFAULT=origin
 GH="${GH_BIN:-gh}"
 REMOTE="${SWEEP_REMOTE:-$SWEEP_REMOTE_DEFAULT}"
+APPROVED_LANE="${APPROVED_LANE_TOOL:-$SCRIPT_DIR/approved-lane.mjs}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -74,7 +96,8 @@ modes:
 env:
   GH_BIN         gh binary (default: gh from PATH — the hermetic test seam)
   SWEEP_REMOTE   remote to census (default: origin)
-exit: 0 fine · 1 census unreadable or deletion refused · 2 usage
+  APPROVED_LANE_TOOL  approved-lane guard (default: sibling approved-lane.mjs)
+exit: 0 fine · 1 census unreadable, deletion refused, or consult unresolvable · 2 usage
 EOF
   exit 2
 }
@@ -140,6 +163,60 @@ remote_issue_heads() {
     | grep '^dsh/issue-'
 }
 
+# closed_unmerged_head_prs REMOTE -> "<head>\t<pr-number>" rows: for every
+# head branch, the NEWEST closed-WITHOUT-merge PR behind it (issue #643's
+# consult scope). One `gh pr list --state closed` census — the same
+# N-calls lesson as the open census (a per-branch `--head` query would be
+# N calls for an N-branch pile). Newest = highest PR number (numbers are
+# monotonic); a head whose newest closed PR MERGED emits nothing (its
+# branch is the auto-delete setting's residue — an ordinary orphan). The
+# JSON is unwieldy in shell, so the reduction runs in node (the
+# merge-guard rollup pattern); unparseable JSON refuses, never shortens.
+closed_unmerged_head_prs() {
+  local out
+  if ! out="$("$GH" pr list --state closed --limit 1000 --json headRefName,number,mergedAt 2>&1)"; then
+    echo "orphan-branch-sweep: closed-PR census unreadable ($out) — refusing to delete blind on the approval channel (issue #643)" >&2
+    return 1
+  fi
+  if [ "$(printf '%s' "$out" | grep -o '"headRefName":' | wc -l | tr -d ' ' || true)" -ge 1000 ]; then
+    echo "orphan-branch-sweep: closed-PR census filled its 1000-row page — truncated census refused, nothing deleted (issue #643)" >&2
+    return 1
+  fi
+  local census_file
+  census_file="$(mktemp "${TMPDIR:-/tmp}/orphan-sweep-643.XXXXXX")" || {
+    echo "orphan-branch-sweep: cannot create the closed-census scratch file — refusing to delete blind (issue #643)" >&2
+    return 1
+  }
+  printf '%s' "$out" > "$census_file"
+  local rc=0
+  node -e '
+    (() => {
+      const fs = require("fs");
+      let rows;
+      try { rows = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+      catch { process.exit(3); }
+      if (!Array.isArray(rows)) process.exit(3);
+      const newest = new Map(); // head -> {number, mergedAt}
+      for (const r of rows) {
+        // One malformed row = a broken gather, not a shorter one: a
+        // skipped row here could be THE unmerged-PR row behind a branch,
+        // and skipping it would misclassify protected work as deletable
+        // — the exact #643 loss. Refuse.
+        if (typeof r?.headRefName !== "string" || typeof r?.number !== "number") process.exit(3);
+        const prev = newest.get(r.headRefName);
+        if (!prev || r.number > prev.number) newest.set(r.headRefName, r);
+      }
+      for (const [head, r] of [...newest].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+        if (r.mergedAt == null) console.log(`${head}\t${r.number}`);
+      }
+    })();' "$census_file" || rc=$?
+  rm -f "$census_file"
+  case $rc in
+    0) return 0 ;;
+    *) echo "orphan-branch-sweep: closed-PR census did not parse — refusing to delete blind on the approval channel (issue #643)" >&2; return 1 ;;
+  esac
+}
+
 echo "--- orphan census: remote=$REMOTE ---" >&2
 
 # The set of open-PR head refs — a branch IN this set is protected, live.
@@ -148,19 +225,62 @@ echo "--- orphan census: remote=$REMOTE ---" >&2
 OPEN_HEADS="$(open_head_names "$REMOTE")" || exit 1
 echo "open PR heads: $(printf '%s\n' "$OPEN_HEADS" | grep -c . || true)" >&2
 
-ORPHANS=""
+# Candidate orphans: dsh/issue-* heads with no open PR behind them. Each
+# is then either confirmed (reap) or protected (the #643 approved lane).
+CANDIDATES=""
 PROTECTED=""
 for b in $(remote_issue_heads "$REMOTE"); do
-  if printf '%s\n' "$OPEN_HEADS" | grep -qx "$b"; then
-    PROTECTED="$PROTECTED$b
+  if ! printf '%s\n' "$OPEN_HEADS" | grep -qx "$b"; then
+    CANDIDATES="$CANDIDATES$b
 "
   else
-    ORPHANS="$ORPHANS$b
+    PROTECTED="$PROTECTED$b
 "
   fi
 done
+[ -z "${PROTECTED:-}" ] || echo "protected (open PR behind them): $(printf '%s' "$PROTECTED" | grep -c .) branch(es)" >&2
 
-[ -z "$PROTECTED" ] || echo "protected (open PR behind them): $(printf '%s' "$PROTECTED" | grep -c .) branch(es)" >&2
+# The #643 consult — only when a candidate exists (a clean repo pays no
+# extra call): which candidates sit behind a newest-closed-UNMERGED PR?
+# Those are the ones whose branch may be reviewed-but-unlanded work; the
+# approved-lane guard decides, fail-closed.
+CLOSED_UNMERGED=""
+CANDIDATE_LIST="$(printf '%s' "$CANDIDATES" | sed '/^$/d')"
+if [ -n "$CANDIDATE_LIST" ]; then
+  CLOSED_UNMERGED="$(closed_unmerged_head_prs "$REMOTE")" || exit 1
+fi
+
+ORPHANS=""
+for b in $CANDIDATE_LIST; do
+  pr_num="$(printf '%s\n' "$CLOSED_UNMERGED" | awk -F'\t' -v head="$b" '$1 == head {print $2}' | head -n1)"
+  if [ -z "$pr_num" ]; then
+    # No closed-unmerged PR behind it (never-PR'd, or the newest closed
+    # PR merged and the auto-delete missed the branch): ordinary orphan.
+    ORPHANS="$ORPHANS$b
+"
+    continue
+  fi
+  set +e
+  lane_out="$(APPROVED_LANE_GH="$GH" node "$APPROVED_LANE" "$pr_num" 2>&1)"
+  lane_rc=$?
+  set -e
+  case "$lane_rc" in
+    0)
+      # Approved, unlanded work: the head is its only independent copy.
+      # LOUD skip — the recovery lane (reopen/land) stays open.
+      echo "PROTECTED $b — approved-unmerged PR #$pr_num behind it ($lane_out); NOT reaped (issue #643 — an approved PR is not an idle lane; reopen/land it, this branch is the work's only path back to main)" >&2
+      ;;
+    1)
+      # Not approved (idle or merged): retire/reap proceeds.
+      ORPHANS="$ORPHANS$b
+"
+      ;;
+    *)
+      echo "orphan-branch-sweep: approval consult UNRESOLVABLE for $b (PR #$pr_num): $lane_out — refusing to delete blind on the approval channel, nothing further deleted (issue #643)" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [ "$MODE" = list ]; then
   printf '%s' "$ORPHANS" | sed '/^$/d'
