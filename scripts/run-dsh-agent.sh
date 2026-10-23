@@ -38,7 +38,16 @@
 #                         driver's OWN pid: concurrent sibling drivers of
 #                         one parent mint distinct faces, issue #278);
 #                         fresh per launch, stable for its lifetime,
-#                         children inherit
+#                         children inherit. The sanitizer-proof twin is
+#                         DISPATCH_FACE_ID (FleetTower#1629's injected
+#                         namespace, issue #617): an injected value is
+#                         NEVER clobbered and never suppressed — the
+#                         ambient face is seeded into it only when it is
+#                         empty — so an injection-only environment carries
+#                         BOTH identities and a divergent pair stays two
+#                         separate faces, one per namespace (issues
+#                         #617 + #614; both arms pinned by
+#                         tests/face-id-env.test.mjs)
 #   DSH_WEB_SEARCH_CELLS  comma-separated runner names where the local
 #                         web-search-browser provider is mounted (per-cell
 #                         adoption; unset/empty = off everywhere). Requires the

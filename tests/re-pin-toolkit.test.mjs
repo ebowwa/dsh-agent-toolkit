@@ -1,5 +1,5 @@
 // re-pin-toolkit.test.mjs — hermetic tests for scripts/re-pin-toolkit.sh
-// (issue #276).
+// (issues #276 + #614).
 //
 // The keepalive's re-pin arm used to run inline in the cron line:
 // `git fetch --tags --force && git checkout -q --force v1` — every minute,
@@ -8,10 +8,27 @@
 // the in-flight work (the #276 receipt: two resets in ~10 minutes on
 // seed-L3). These tests pin the guarded behavior with REAL git against a
 // local bare origin (no network): the destructive half only runs on a
-// clean, non-working-branch tree; every live-work state refuses LOUDLY
-// (exit 3, note to stderr) with the tree and HEAD intact; fetch/checkout
-// failures degrade (exit 4) without touching anything; success is QUIET
-// (steady state adds nothing to worker.log).
+// clean tree; tracked modifications refuse LOUDLY (exit 3, note to
+// stderr) with the tree and HEAD intact — the absolute gate; fetch and
+// checkout failures degrade (exit 4) with the previous pin kept, and a
+// failed stamp degrades too (exit 4, a landing that happened reads
+// UNVERIFIED rather than undone); success is QUIET on the steady state.
+//
+// Issue #614 extends the contract into the standing checkout's
+// CONVERGENCE arm: the #276 working-branch refusal parked a drifted box
+// FOREVER (the air16 receipt: `dsh/issue-530-c6027819073` [ahead 1,
+// behind 6 of origin/main] across a behavior change it never received).
+// A CLEAN tree on a working branch is residue, not live work — the pins
+// below hold the no-destroy property (the branch ref survives with its
+// tip; the unpushed commit stays recoverable) and the loudness property
+// (the converge note names the branch, the drift counts, and the
+// recovery command), plus the stamp: ONE stamp per checkout (issues #614
+// + #616) — every landing refreshes `scripts/HARNESS_DEPLOYED_SHA` by
+// invoking its landed owner `scripts/harness-drift.sh stamp`, so a box's
+// deploy state is answerable on the box. The original #614
+// `.toolkit-pin-stamp` is DROPPED (not aliased): two files answering
+// "what is deployed here" drift apart, so the pins below assert the
+// single owner's record AND the absence of the second file.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -74,7 +91,7 @@ const commitFile = (cwd, name, body) => {
  * origin's main to B and FORCE-moves v1 to B — exactly what drift-check
  * does to every lane box on a release.
  */
-const fixture = () => {
+const fixture = ({ stampOwner = true } = {}) => {
   const dir = mkdtempSync(path.join(tmpdir(), "re-pin-toolkit-test-"));
   const origin = path.join(dir, "origin.git");
   const seed = path.join(dir, "seed");
@@ -82,6 +99,19 @@ const fixture = () => {
   mkdirSync(seed, { recursive: true });
   gitSetup(seed, ["init", "--quiet", "--initial-branch=main"]);
   commitFile(seed, "settings.zai.yaml", "# template v1\n");
+  // issue #616: the landed tree carries the harness deploy-stamp OWNER.
+  // The re-pin arm no longer writes a second per-checkout stamp; it
+  // invokes this script, so the fixture ships the REAL one (a stub would
+  // pin nothing). `stampOwner: false` models a pre-#616 pin.
+  if (stampOwner) {
+    mkdirSync(path.join(seed, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(seed, "scripts", "harness-drift.sh"),
+      readFileSync(path.join(ROOT, "scripts", "harness-drift.sh"), "utf8"),
+    );
+    gitSetup(seed, ["add", "scripts/harness-drift.sh"]);
+    gitSetup(seed, ["commit", "--quiet", "-m", "add scripts/harness-drift.sh"]);
+  }
   gitSetup(seed, ["clone", "--quiet", "--bare", ".", origin]);
   gitSetup(seed, ["push", "--quiet", origin, "main"]);
   gitSetup(seed, ["tag", "v1"]);
@@ -109,9 +139,31 @@ test("source pin: the guarded arm keeps the audited flags and the refusal gates"
   assert.match(src, /fetch --tags --force/, "force-moves the moving tag (plain fetch clobbers: \"would clobber existing tag\")");
   assert.match(src, /checkout -q --force v1/, "--force stays (a bare checkout silently keeps local mods — 2026-09-21) but only runs behind the gate");
   assert.match(src, /diff-index --quiet HEAD/, "tracked-modification gate (the payload checkout --force would destroy)");
-  assert.match(src, /symbolic-ref -q --short HEAD/, "working-branch gate");
+  assert.match(src, /symbolic-ref -q --short HEAD/, "the working-branch snapshot feeding the converge arm");
   assert.match(src, /GIT_OPTIONAL_LOCKS=0/, "never takes the index lock under a working agent");
   assert.match(src, /issue #276/, "the receipt is cited where the behavior lives");
+});
+
+test("source pin: the convergence arm + the single stamp owner exist and cite issues #614/#616", () => {
+  const src = readFileSync(SCRIPT, "utf8");
+  assert.match(src, /CONVERGING/, "the converge note is loud (the one LOUD success)");
+  assert.match(src, /issue #614/, "the receipt is cited where the converge arm lives");
+  assert.match(
+    src,
+    /refused-branch/,
+    "the note hands the boot arm its verdict — harness-drift refuses this shape, so a detach off a clean branch names the arm that moved HEAD (never silent)",
+  );
+  assert.match(src, /rev-list --count HEAD\.\.origin\/main/, "the drift poll answers against origin/main (deploy-drift's comparison base)");
+  // ONE stamp per checkout (issues #614 + #616): the landed owner writes it...
+  assert.match(src, /STAMP_OWNER="\$DIR\/scripts\/harness-drift\.sh"/, "the stamp owner is scripts/harness-drift.sh (issue #616)");
+  assert.match(src, /bash "\$STAMP_OWNER" stamp/, "the owner is INVOKED for the write — this arm never writes the stamp itself");
+  assert.match(src, /HARNESS_DEPLOYED_SHA/, "the single stamp is harness-drift's deploy record");
+  // ...and the PR's second per-checkout file is DROPPED, not aliased: it may
+  // appear only as the header's explanation, never as a write target.
+  assert.ok(
+    !/(cat|printf|echo|>)[^\n]*\.toolkit-pin-stamp[^\n]*(<<|>)/.test(src) && !src.includes('> "${DIR}/.toolkit-pin-stamp"'),
+    "the re-pin arm never writes a second per-checkout stamp (.toolkit-pin-stamp is dropped, not aliased)",
+  );
 });
 
 test("clean detached tree re-pins to the force-moved tag, quietly", () => {
@@ -170,17 +222,159 @@ test("a STAGED modification refuses too (diff-index sees the index, not just the
   }
 });
 
-test("a working branch (not main) refuses; the branch stays checked out", () => {
+test("issue #614: a clean working branch CONVERGES loudly; the branch ref survives, nothing discarded", () => {
   const f = fixture();
   try {
     f.detachAtPin();
     gitSetup(f.box, ["checkout", "--quiet", "-b", "dsh/issue-276-work"]);
     const res = runScript(f.box);
-    assert.equal(res.status, 3, res.stderr);
-    assert.match(res.stderr, /REFUSING re-pin/);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /CONVERGING/, "the converge is the one LOUD success — a HEAD move on the shared checkout must be visible in worker.log");
     assert.match(res.stderr, /dsh\/issue-276-work/, "the note names the branch");
-    assert.equal(f.onBranch(), "dsh/issue-276-work", "HEAD still on the working branch");
-    assert.equal(f.head(), f.revA, "HEAD unmoved");
+    assert.match(res.stderr, /issue #614/, "the note names the class");
+    assert.match(res.stderr, /git -C .*checkout .*dsh\/issue-276-work/, "the note carries the exact recovery command");
+    assert.equal(f.onBranch(), "", "detached at the pin, as the keepalive leaves it");
+    assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "HEAD sits exactly at the pin");
+    // the no-destroy property: the branch ref survives with its tip —
+    // converging moves HEAD only, it discards nothing
+    assert.equal(
+      git(f.box, ["rev-parse", "refs/heads/dsh/issue-276-work"]).stdout.trim(),
+      f.revA,
+      "the branch ref survives with exactly the tip the residue left",
+    );
+    // and the recovery command from the note restores the residue intact
+    git(f.box, ["checkout", "--quiet", "dsh/issue-276-work"]);
+    assert.equal(f.head(), f.revA, "checking the branch back out restores the residue verbatim");
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issue #614: the air16 shape — a branch [ahead 1, behind 1] of origin/main converges and the UNPUSHED commit stays recoverable", () => {
+  const f = fixture();
+  try {
+    f.detachAtPin();
+    git(f.box, ["checkout", "--quiet", "-b", "dsh/issue-530-c6027819073"]);
+    commitFile(f.box, "residue.md", "# local-only work never pushed\n");
+    f.advance(); // origin/main + v1 move on; the residue branch stays parked
+    const branchTip = git(f.box, ["rev-parse", "HEAD"]).stdout.trim();
+    const res = runScript(f.box);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /1 commit\(s\) not on origin\/main, 1 behind/, "the note carries the drift counts");
+    assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "HEAD converged onto the fresh pin");
+    // the unpushed commit survives on its ref — checkout --force touched
+    // only HEAD, so the never-pushed work is one checkout away
+    assert.equal(
+      git(f.box, ["rev-parse", "refs/heads/dsh/issue-530-c6027819073"]).stdout.trim(),
+      branchTip,
+      "the branch ref keeps the unpushed commit",
+    );
+    git(f.box, ["checkout", "--quiet", "dsh/issue-530-c6027819073"]);
+    assert.equal(
+      readFileSync(path.join(f.box, "residue.md"), "utf8"),
+      "# local-only work never pushed\n",
+      "the unpushed work is recoverable verbatim",
+    );
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("the absolute gate holds on a working branch too: tracked modifications refuse BEFORE any converge", () => {
+  const f = fixture();
+  try {
+    f.detachAtPin();
+    git(f.box, ["checkout", "--quiet", "-b", "dsh/issue-614-dirty"]);
+    const file = path.join(f.box, "settings.zai.yaml");
+    writeFileSync(file, "# mid-edit on a branch\n");
+    const res = runScript(f.box);
+    assert.equal(res.status, 3, res.stderr);
+    assert.match(res.stderr, /REFUSING re-pin/, "the refusal is loud");
+    assert.equal(f.onBranch(), "dsh/issue-614-dirty", "HEAD kept on the working branch");
+    assert.equal(readFileSync(file, "utf8"), "# mid-edit on a branch\n", "the mid-edit work SURVIVES");
+    assert.ok(
+      !existsSync(path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA")),
+      "a refused sweep stamps nothing (the landing never happened)",
+    );
+    assert.ok(!existsSync(path.join(f.box, ".toolkit-pin-stamp")), "and no second per-checkout stamp exists either (issues #614 + #616)");
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issues #614 + #616: every landing refreshes the ONE harness stamp through its owner", () => {
+  const f = fixture();
+  const stampPath = () => path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA");
+  const readStamp = () =>
+    Object.fromEntries(
+      readFileSync(stampPath(), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+  try {
+    f.detachAtPin(); // steady state: detached at the previous pin
+    f.advance(); // origin/main + v1 move on; HEAD stays at the old pin
+    let res = runScript(f.box);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout, "", "a steady-state re-pin stays QUIET (the owner's chatter is captured, never relayed)");
+    let stamp = readStamp();
+    assert.equal(stamp.sha, git(f.box, ["rev-parse", "v1"]).stdout.trim(), "sha == the LANDED head (deploy-drift's 'is the remote tip landed' answer)");
+    assert.equal(stamp.short, stamp.sha.slice(0, 7), "the short form rides along");
+    assert.equal(stamp.ref, "v1", "the landed pin tag is the recorded ref");
+    assert.ok(stamp.committed_at, "the commit date rides the stamp");
+    assert.match(stamp.stamped_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "the stamp is UTC");
+    // ONE stamp per checkout: the PR's second per-checkout file is gone.
+    assert.ok(
+      !existsSync(path.join(f.box, ".toolkit-pin-stamp")),
+      "no SECOND per-checkout stamp — .toolkit-pin-stamp is dropped, not aliased (issues #614 + #616)",
+    );
+
+    // the air16 shape again: a converge ALSO stamps the landed head. The
+    // fixture's advance() writes a FIXED content — a second call would be
+    // an empty no-op commit — so this leg advances origin with fresh
+    // content explicitly.
+    git(f.box, ["checkout", "--quiet", "-b", "dsh/issue-530-x"]);
+    commitFile(f.box, "residue.md", "# local-only\n");
+    writeFileSync(path.join(f.seed, "drift.md"), "# second release\n");
+    git(f.seed, ["add", "drift.md"]);
+    git(f.seed, ["commit", "--quiet", "-m", "second release"]);
+    git(f.seed, ["push", "--quiet", f.origin, "main"]);
+    git(f.seed, ["tag", "-f", "v1"]);
+    git(f.seed, ["push", "--quiet", "--force", f.origin, "v1"]);
+    res = runScript(f.box);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /CONVERGING/, "the converge is still announced");
+    stamp = readStamp();
+    assert.equal(stamp.sha, git(f.box, ["rev-parse", "v1"]).stdout.trim(), "the converge stamps the LANDED head too");
+    assert.equal(stamp.ref, "v1", "the branch identity is gone from the record: HEAD is detached at the pin again");
+
+    // a later sweep rewrites the same record and still leaves no second file
+    const third = runScript(f.box);
+    assert.equal(third.status, 0, third.stderr);
+    assert.equal(readStamp().sha, stamp.sha, "the stamp survives its own next write (same landed head)");
+    assert.ok(!existsSync(path.join(f.box, ".toolkit-pin-stamp")), "still exactly one stamp");
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issue #616: a landed tree with no stamp owner still lands, and SAYS the stamp was not written", () => {
+  // A box pinned before #616 carries no scripts/harness-drift.sh — the very
+  // stale shape this arm exists to heal. The landing must stand (refusing it
+  // would strand the box forever) and the missing stamp must be stated, not
+  // silently dropped.
+  const f = fixture({ stampOwner: false });
+  try {
+    f.advance();
+    const res = runScript(f.box);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /stamp owner absent/, "the missing owner is named");
+    assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "the landing still happened");
+    assert.ok(
+      !existsSync(path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA")),
+      "no stamp is invented when its owner is absent",
+    );
   } finally {
     f.cleanUp();
   }
