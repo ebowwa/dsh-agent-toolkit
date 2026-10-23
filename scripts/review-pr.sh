@@ -114,6 +114,22 @@ HEAD_REF="$(pr_field "$PR_JSON" headRefName)"
 PR_TITLE="$(pr_field "$PR_JSON" title)"
 [ -n "$BASE_REF" ] && [ -n "$HEAD_REF" ] || { echo "review-pr: PR #$PR_NUM has no base/head" >&2; exit 2; }
 
+# Issue #637: the tracking refs are PER-PR. They live in the SHARED mirror
+# store (scripts/dsh-worker.sh keeps ONE bare mirror per repo and adds each
+# review worktree from it, so refs/remotes/origin/* is a repo-wide namespace
+# that two concurrent reviews of DIFFERENT PRs of the SAME repo share). With
+# generic names (pr-merge / base / pr-head) review B's delete-and-force-fetch
+# window could hand review A its own graph — B's diff landing in A's prompt
+# under A's title (silent cross-PR contamination), or A's merge-base failing
+# and withholding the diff. The worktree fetches were already fully
+# PR-parameterized, so naming the refs by PR dissolves the contention
+# outright: no lock, no serialization, no shared cursor. The worker slot lock
+# stays per-ITEM (dsh-worker.sh w-<repo>-<num>), which is the right
+# granularity once the refs are per-PR too.
+TRACK_MERGE="refs/remotes/origin/pr-${PR_NUM}-merge"
+TRACK_BASE="refs/remotes/origin/pr-${PR_NUM}-base"
+TRACK_HEAD="refs/remotes/origin/pr-${PR_NUM}-head"
+
 RULES_TMP="$(mktemp)"
 RULES_OK=0
 # base-ref fetch via the contents API (base64) — falls back to the worktree
@@ -154,12 +170,12 @@ gh_fetch() { # <refspec:local-ref>
 # an un-forced ref leaves the OLD ref in place for merge-base to grade: a
 # freshness claim about the wrong graph. Forced, the tracking ref can never
 # trail the live remote ref.
-fetch_merge() { gh_fetch "+refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge"; }
-fetch_base()   { gh_fetch "+refs/heads/${BASE_REF}:refs/remotes/origin/base"; }
+fetch_merge() { gh_fetch "+refs/pull/${PR_NUM}/merge:${TRACK_MERGE}"; }
+fetch_base()   { gh_fetch "+refs/heads/${BASE_REF}:${TRACK_BASE}"; }
 # Issue #628: the PR's true fork point is a property of the PR HEAD, not of
 # the merge preview — fetch the head ref too (the freshness prose below is
 # derived from it; the preview's merge-base is the base tip by construction).
-fetch_head()   { gh_fetch "+refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"; }
+fetch_head()   { gh_fetch "+refs/pull/${PR_NUM}/head:${TRACK_HEAD}"; }
 # Issue #519: widen the shallow boundary of BOTH fetched refs by <depth>
 # commits — the recover arm for the disconnected graph the --depth 1
 # fetches construct. Same env-borne auth seam as gh_fetch. Issue #628: the
@@ -169,9 +185,9 @@ gh_deepen() { # <depth>
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="$(printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")" \
     git -c credential.helper= fetch -q --deepen="$1" origin \
-      "+refs/heads/${BASE_REF}:refs/remotes/origin/base" \
-      "+refs/pull/${PR_NUM}/merge:refs/remotes/origin/pr-merge" \
-      "+refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-head"
+      "+refs/heads/${BASE_REF}:${TRACK_BASE}" \
+      "+refs/pull/${PR_NUM}/merge:${TRACK_MERGE}" \
+      "+refs/pull/${PR_NUM}/head:${TRACK_HEAD}"
 }
 # Issue #631, arm 2: a fetch that fails for any reason (a refused update
 # under an older script, network, auth) must never grade a STALE graph —
@@ -179,9 +195,9 @@ gh_deepen() { # <depth>
 # ref and every downstream lookup degrades to its typed terminal state
 # (UNVERIFIED freshness prose / withheld diff / the base-fetch-failed arm),
 # never a positive claim computed off a ref from a previous review round.
-git update-ref -d refs/remotes/origin/pr-merge 2>/dev/null || true
-git update-ref -d refs/remotes/origin/base 2>/dev/null || true
-git update-ref -d refs/remotes/origin/pr-head 2>/dev/null || true
+git update-ref -d "$TRACK_MERGE" 2>/dev/null || true
+git update-ref -d "$TRACK_BASE" 2>/dev/null || true
+git update-ref -d "$TRACK_HEAD" 2>/dev/null || true
 fetch_merge 2>/dev/null \
   || { echo "review-pr: cannot fetch PR #$PR_NUM merge ref" >&2; rm -f "$RULES_TMP"; exit 2; }
 fetch_base 2>/dev/null || true
@@ -195,7 +211,7 @@ fetch_head 2>/dev/null || true
 # (ship-changes.sh: merge-base unresolvable ⇒ NOT verified): resolve the
 # merge-base explicitly; when it cannot be resolved, hand (diff unavailable)
 # and say so in the prompt — never silently degrade to a two-dot diff.
-FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
+FORK_BASE="$(git merge-base "$TRACK_BASE" "$TRACK_MERGE" 2>/dev/null || true)"
 # Issue #628: HEAD_FORK_BASE is the PR's TRUE fork point — merge-base of the
 # base tip and the PR HEAD ref. merge-base(base, pr-merge) can NEVER carry
 # the freshness claim (a fresh preview's first parent IS the base tip, so
@@ -203,7 +219,7 @@ FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
 # be asserted unconditionally — the #574 false prose). Degrade-safe like
 # every lookup here: empty means unresolvable, and the prose says
 # UNVERIFIED rather than claiming.
-HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
+HEAD_FORK_BASE="$(git merge-base "$TRACK_BASE" "$TRACK_HEAD" 2>/dev/null || true)"
 HEAD_DEEPEN_STEPS=""
 DEEPEN_STEPS=""
 # Issue #519: the --depth 1 fetches above (and the worker's --depth 1 clone)
@@ -217,8 +233,8 @@ DEEPEN_STEPS=""
 if [ -z "$FORK_BASE" ]; then
   for DEEPEN_STEP in 1 2 4; do
     gh_deepen "$DEEPEN_STEP" 2>/dev/null || true
-    FORK_BASE="$(git merge-base origin/base origin/pr-merge 2>/dev/null || true)"
-    HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
+    FORK_BASE="$(git merge-base "$TRACK_BASE" "$TRACK_MERGE" 2>/dev/null || true)"
+    HEAD_FORK_BASE="$(git merge-base "$TRACK_BASE" "$TRACK_HEAD" 2>/dev/null || true)"
     if [ -n "$FORK_BASE" ]; then
       DEEPEN_STEPS="$DEEPEN_STEP"
       break
@@ -233,7 +249,7 @@ fi
 if [ -n "$FORK_BASE" ] && [ -z "$HEAD_FORK_BASE" ]; then
   for HEAD_DEEPEN_STEP in 1 2 4; do
     gh_deepen "$HEAD_DEEPEN_STEP" 2>/dev/null || true
-    HEAD_FORK_BASE="$(git merge-base origin/base origin/pr-head 2>/dev/null || true)"
+    HEAD_FORK_BASE="$(git merge-base "$TRACK_BASE" "$TRACK_HEAD" 2>/dev/null || true)"
     if [ -n "$HEAD_FORK_BASE" ]; then
       HEAD_DEEPEN_STEPS="$HEAD_DEEPEN_STEP"
       break
@@ -247,9 +263,9 @@ fi
 # --verify makes the miss a real failure: BASE_TIP stays empty — the honest
 # unresolvable state the `else` arm already reports — and the miss is named
 # once on the worker log instead of dying silently.
-if ! BASE_TIP="$(git rev-parse --verify origin/base 2>/dev/null)"; then
+if ! BASE_TIP="$(git rev-parse --verify "$TRACK_BASE" 2>/dev/null)"; then
   BASE_TIP=""
-  echo "review-pr: origin/base does not resolve (git rev-parse --verify failed — the base fetch wrote no tracking ref) — base freshness UNVERIFIED" >&2
+  echo "review-pr: ${TRACK_BASE} does not resolve (git rev-parse --verify failed — the base fetch wrote no tracking ref) — base freshness UNVERIFIED" >&2
 fi
 DIFF=""
 DIFF_STAT=""
@@ -261,9 +277,9 @@ if [ -n "$FORK_BASE" ]; then
   # with no fallback arm left that could silently substitute another range.
   # RC-captured (issue #519): an EMPTY result from a clean diff is a real
   # empty diff and must stay distinguishable from a FAILED diff.
-  DIFF="$(git diff "$FORK_BASE" origin/pr-merge 2>/dev/null)" \
+  DIFF="$(git diff "$FORK_BASE" "$TRACK_MERGE" 2>/dev/null)" \
     && DIFF_RC=0 || DIFF_RC=1
-  DIFF_STAT_ALL="$(git diff --stat "$FORK_BASE" origin/pr-merge 2>/dev/null)" \
+  DIFF_STAT_ALL="$(git diff --stat "$FORK_BASE" "$TRACK_MERGE" 2>/dev/null)" \
     && STAT_RC=0 || STAT_RC=1
   DIFF_STAT="$(printf '%s' "$DIFF_STAT_ALL" | tail -n 30 || true)"
   # Issue #628: the freshness claim keys off HEAD_FORK_BASE — the merge-base
