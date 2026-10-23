@@ -411,3 +411,151 @@ test("milestone carry degrades, never fails the ship: ticket without a milestone
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+// --- hollow-ship invariant (issue #565) ------------------------------------
+// A branch tip equal to its stacking parent's head is not a change, and a
+// green gate over it proves only that the parent's tree builds. Shipping it
+// produced a DONE note for work that does not exist; the shipper now refuses
+// (no push, no PR, exit 4) and names BOTH heads.
+//
+// Git-fixture budget declaration (the #1030 shape): this repo has no
+// rig-timeout-guard script — the bound that actually kills a wedged suite is
+// the per-suite watchdog in scripts/bounded-gate.mjs (DSH_TEST_GATE_TIMEOUT_S,
+// 120s default). The budget is therefore declared ON the tests below and on
+// every child spawn of the shipper, so a hung fixture reds this file inside
+// the suite bound instead of being SIGKILLed by the gate with no diagnosis.
+// The fixtures are local-only git (a bare remote under the temp dir); each
+// leg is a handful of local git calls plus one shipper run.
+const GIT_FIXTURE_BUDGET_MS = 120_000;
+
+/** Build the stack: dsh/parent (already on the remote) + one stacked branch.
+ * `ownCommits` = 0 makes the stacked tip equal to its parent's head (hollow);
+ * >0 gives it real work beyond the parent. Returns the shas. */
+const stackFixture = (f, child, ownCommits) => {
+  gitRead(["checkout", "-q", "-b", "dsh/parent", "master"], { cwd: f.work });
+  writeFileSync(path.join(f.work, "parent.txt"), "the parent's work\n");
+  gitRead(["add", "parent.txt"], { cwd: f.work });
+  gitRead(["commit", "-q", "-m", "parent work"], { cwd: f.work });
+  const parentHead = gitRead(["rev-parse", "HEAD"], { cwd: f.work }).stdout.trim();
+  gitRead(["push", "-q", "origin", "dsh/parent"], { cwd: f.work });
+  gitRead(["checkout", "-q", "-b", child, "dsh/parent"], { cwd: f.work });
+  // a branch name carries slashes (dsh/child) — flatten it for the file path
+  const slug = child.replace(/[^A-Za-z0-9]+/g, "-");
+  for (let i = 0; i < ownCommits; i++) {
+    writeFileSync(path.join(f.work, `${slug}-own-${i}.txt`), `child work ${i}\n`);
+    gitRead(["add", `${slug}-own-${i}.txt`], { cwd: f.work });
+    gitRead(["commit", "-q", "-m", `child work ${i}`], { cwd: f.work });
+  }
+  const childHead = gitRead(["rev-parse", "HEAD"], { cwd: f.work }).stdout.trim();
+  gitRead(["checkout", "-q", "master"], { cwd: f.work });
+  return { parentHead, childHead };
+};
+
+test("hollow-ship (issue #565): a tip with no commit beyond its stacking parent is REFUSED, naming both heads", { timeout: GIT_FIXTURE_BUDGET_MS }, () => {
+  const f = fixture();
+  try {
+    const { parentHead, childHead } = stackFixture(f, "dsh/hollow", 0);
+    assert.equal(childHead, parentHead, "fixture shape: the stacked tip IS the parent's head");
+    writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+    writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "dsh/parent\n");
+    writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+    writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), "done: the parent work\n");
+
+    const res = spawnSync("bash", [SHIPPER], {
+      encoding: "utf8",
+      timeout: GIT_FIXTURE_BUDGET_MS,
+      env: f.env({ DSH_SHIP_STACK_PARENT: "dsh/parent" }),
+    });
+    assert.equal(
+      res.status,
+      4,
+      `a hollow ship must be a RED ship (exit 4), got ${res.status}\n${res.stdout}\n${res.stderr}`,
+    );
+    // the refusal names both heads: the branch, its tip, the parent ref, the parent's head
+    assert.match(res.stderr, /hollow ship REFUSED \(issue #565\)/);
+    assert.match(res.stderr, /dsh\/hollow/);
+    assert.match(res.stderr, /dsh\/parent/);
+    assert.ok(res.stderr.includes(parentHead), "the stacking parent's head sha is named");
+    assert.match(res.stderr, /no commit beyond its stacking parent/);
+
+    // nothing reached GitHub: no remote branch, no PR
+    const refs = gitRead(["ls-remote", f.bare]).stdout;
+    assert.ok(!refs.includes("refs/heads/dsh/hollow"), "a hollow branch is never pushed");
+    assert.ok(!existsSync(f.ghLog), "a hollow branch never opens a PR");
+
+    // the note records the refusal and never reads DONE
+    const note = readFileSync(path.join(f.cache, "ship-note.txt"), "utf8");
+    assert.match(note, /hollow ship REFUSED/);
+    assert.ok(!/shipped/i.test(note), `the note must not claim a ship: ${note}`);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("hollow-ship control (issue #565): the same stack ships once the tip carries a commit beyond its parent", { timeout: GIT_FIXTURE_BUDGET_MS }, () => {
+  const f = fixture();
+  try {
+    const { parentHead, childHead } = stackFixture(f, "dsh/child", 1);
+    assert.notEqual(childHead, parentHead, "fixture shape: the stacked tip is ahead of its parent");
+    writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+    writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "dsh/parent\n");
+    writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+    writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), "done: child work\n");
+
+    const res = spawnSync("bash", [SHIPPER], {
+      encoding: "utf8",
+      timeout: GIT_FIXTURE_BUDGET_MS,
+      env: f.env({ DSH_SHIP_STACK_PARENT: "dsh/parent" }),
+    });
+    assert.equal(res.status, 0, `a real change must ship green:\n${res.stdout}\n${res.stderr}`);
+    assert.ok(!/REFUSED/.test(res.stderr), "no hollow refusal for a branch with real work");
+    assert.match(gitRead(["ls-remote", f.bare]).stdout, /refs\/heads\/dsh\/child/, "the branch is pushed");
+    assert.match(readFileSync(f.ghLog, "utf8"), /--head dsh\/child/, "the PR is opened for it");
+    assert.match(readFileSync(path.join(f.cache, "ship-note.txt"), "utf8"), /shipped/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("hollow-ship (issue #565): the invariant also holds with NO declaration — a branch equal to the PR base head is refused", { timeout: GIT_FIXTURE_BUDGET_MS }, () => {
+  const f = fixture();
+  try {
+    // An agent branch that never got its commit: the tip is exactly the base
+    // head. No DSH_SHIP_STACK_PARENT — the PR base IS the stacking parent,
+    // which is the unstacked-branch shape of the same defect.
+    gitRead(["branch", "dsh/empty", "master"], { cwd: f.work });
+    writeFileSync(path.join(f.cache, "dsh-before-sha"), f.head);
+    writeFileSync(path.join(f.cache, "dsh-before-dsh-branches"), "");
+    writeFileSync(path.join(f.cache, "dsh-before-open-prs"), "");
+    writeFileSync(path.join(f.cache, "dsh-agent-output.txt"), "done\n");
+
+    const res = spawnSync("bash", [SHIPPER], {
+      encoding: "utf8",
+      timeout: GIT_FIXTURE_BUDGET_MS,
+      env: f.env({ DSH_SHIP_BASE: "master" }),
+    });
+    assert.equal(res.status, 4, `an empty branch must not ship DONE:\n${res.stdout}\n${res.stderr}`);
+    assert.match(res.stderr, /hollow ship REFUSED \(issue #565\)/);
+    assert.ok(res.stderr.includes(f.head), "the base head sha is named");
+    assert.ok(!gitRead(["ls-remote", f.bare]).stdout.includes("refs/heads/dsh/empty"));
+    assert.ok(!existsSync(f.ghLog), "no PR for an empty branch");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("hollow-ship structural (issue #565): the invariant is wired at BOTH push sites and documented", () => {
+  const s = readFileSync(SHIPPER, "utf8");
+  assert.match(s, /hollow_ship_guard\(\) \{/, "the invariant exists as a function");
+  assert.match(s, /hollow ship REFUSED \(issue #565\)/, "the refusal is typed and names the issue");
+  assert.match(s, /DSH_SHIP_STACK_PARENT/, "the declaration seam is referenced");
+  assert.match(
+    s,
+    /stacking parent %s \(head %s\)/,
+    "the refusal names the parent ref AND its head — both heads",
+  );
+  const guardCalls = s.match(/HOLLOW="\$\(hollow_ship_guard/g) ?? [];
+  assert.equal(guardCalls.length, 2, "both push sites are guarded: the dsh/* loop and the auto branch");
+  assert.match(s, /\[ -z "\$HOLLOW_SHIP" \] \|\| exit 4/, "the refusal is a nonzero ship (exit 4)");
+  assert.ok(!/for .* in .*retry/.test(s), "no retry loop was introduced");
+});
