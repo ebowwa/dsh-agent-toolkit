@@ -191,7 +191,16 @@ freshness_preflight() {
     return 0
   fi
   mb="$(git merge-base "$head_b" "origin/$base" 2>/dev/null || true)"
-  tip="$(git rev-parse "origin/$base" 2>/dev/null || true)"
+  # Issue #526: rev-parse WITHOUT --verify does not fail quiet on an unknown
+  # ref — it ECHOES the literal argument to stdout and exits 128, so the old
+  # `|| true` captured the string "origin/$base" (non-empty garbage) that the
+  # emptiness guard below cannot see through. --verify makes the miss a real
+  # failure, and the arm names the ref so the degrade is diagnosable.
+  if ! tip="$(git rev-parse --verify "origin/$base" 2>/dev/null)"; then
+    echo "freshness: origin/$base does not resolve (git rev-parse --verify failed — a failed fetch can leave the tracking ref absent) — NOT verified" >&2
+    echo "freshness UNVERIFIED (origin/$base unresolvable)"
+    return 0
+  fi
   if [ -z "$mb" ] || [ -z "$tip" ]; then
     echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) — NOT verified" >&2
     echo "freshness UNVERIFIED (merge-base unresolvable)"

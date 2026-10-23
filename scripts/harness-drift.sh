@@ -253,7 +253,19 @@ heal)
     printf 'pid=%s\nat=%s\n' "$$" "$(iso_now)" > "$LOCK_DIR/owner" 2>/dev/null || true
     lock_taken=1
   else
-    lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || date +%s) ))
+    # Portable mtime probe (issue #616 gate): GNU stat -f is --file-system, so
+    # on a Linux cell `stat -f %m` exits 1 AFTER printing a whole filesystem
+    # dump to STDOUT — inside $(( )) that text is arithmetic, and `set -u`
+    # dies with "File: unbound variable" on the word "File:" (the lock-refusal
+    # leg exited 1 instead of 3 on every Linux box; green only on the darwin
+    # cell that wrote it). GNU -c %Y is tried FIRST (Linux), BSD -f %m second
+    # (darwin), and a non-numeric answer degrades to "now" — a fresh lock,
+    # i.e. the honest refuse, never a takeover of a lock we could not age.
+    lock_mtime="$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s)"
+    case "$lock_mtime" in
+      ''|*[!0-9]*) lock_mtime="$(date +%s)" ;;
+    esac
+    lock_age=$(( $(date +%s) - lock_mtime ))
     if [ "$lock_age" -ge "$LOCK_STALE_S" ] 2>/dev/null; then
       rm -rf "$LOCK_DIR" 2>/dev/null || true
       if mkdir "$LOCK_DIR" 2>/dev/null; then
