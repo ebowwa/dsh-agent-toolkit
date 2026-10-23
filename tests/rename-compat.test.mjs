@@ -44,6 +44,22 @@ const gitInit = (dir, branch) => {
   return r;
 };
 
+// Issue #582: the rest of fixture SETUP gets the same discipline as the init.
+// spawnSync NEVER throws, so a failed `add`/`commit`/`push -u` in a fixture
+// silently built a different topology than the test names — the suite stayed
+// green measuring the wrong thing (the #575 receipt, generalised). Every call
+// that CONSTRUCTS the fixture asserts here; runtime probes that only READ
+// state for an assert (`rev-parse HEAD`) keep the plain `git` helper.
+const gitSetup = (args, opts = {}) => {
+  const r = git(args, opts);
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      `fixture setup failed: git ${args.join(" ")} (exit ${r.status ?? "?"})\n${r.error ?? r.stderr}`,
+    );
+  }
+  return r;
+};
+
 // Base child env: inherit the AMBIENT environment minus every DSH_* var, so
 // machine-specific toolchain shims (e.g. a PATH-mounted git wrapper and its
 // GIT_SCRUB_REAL target) keep working here AND on a clean CI cell, while no
@@ -175,15 +191,15 @@ test("shipper: only the retired DSH_BOT_DIR set still ships + opens the PR (exit
   const work = path.join(dir, "work");
   const shim = path.join(dir, "shim");
   mkdirSync(shim, { recursive: true });
-  git(["init", "--bare", "-q", bare], { cwd: dir });
+  gitSetup(["init", "--bare", "-q", bare], { cwd: dir });
   gitInit(work, "master"); // pinned: the fixture pushes a by-name `master` (issue #575)
-  git(["config", "user.name", "tester"], { cwd: work });
-  git(["config", "user.email", "tester@example.com"], { cwd: work });
+  gitSetup(["config", "user.name", "tester"], { cwd: work });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: work });
   writeFileSync(path.join(work, "a.txt"), "base content\n");
-  git(["add", "a.txt"], { cwd: work });
-  git(["commit", "-q", "-m", "base"], { cwd: work });
-  git(["remote", "add", "origin", bare], { cwd: work });
-  git(["push", "-q", "-u", "origin", "master"], { cwd: work });
+  gitSetup(["add", "a.txt"], { cwd: work });
+  gitSetup(["commit", "-q", "-m", "base"], { cwd: work });
+  gitSetup(["remote", "add", "origin", bare], { cwd: work });
+  gitSetup(["push", "-q", "-u", "origin", "master"], { cwd: work });
   const head = git(["rev-parse", "HEAD"], { cwd: work }).stdout.trim();
   const ghLog = path.join(dir, "gh.log");
   writeFileSync(path.join(shim, "gh"), `#!/usr/bin/env bash
@@ -371,17 +387,17 @@ test("worker composed: a legacy-only env file still drives ship→reply→review
   // refs/pull/999/merge so the review stage's merge fetch resolves against
   // the local store.
   const seed = path.join(dir, "seed");
-  git(["init", "-q", "-b", "master", seed]); // pin the branch: init.defaultBranch differs per lane and the review stage fetches refs/heads/<baseRefName>
-  git(["config", "user.name", "tester"], { cwd: seed });
-  git(["config", "user.email", "tester@example.com"], { cwd: seed });
+  gitSetup(["init", "-q", "-b", "master", seed]); // pin the branch: init.defaultBranch differs per lane and the review stage fetches refs/heads/<baseRefName>
+  gitSetup(["config", "user.name", "tester"], { cwd: seed });
+  gitSetup(["config", "user.email", "tester@example.com"], { cwd: seed });
   writeFileSync(path.join(seed, "REVIEW.md"), "# rules contract fixture\n");
   writeFileSync(path.join(seed, "a.txt"), "base content\n");
-  git(["add", "."], { cwd: seed });
-  git(["commit", "-q", "-m", "base"], { cwd: seed });
-  git(["init", "--bare", "-q", "-b", "master", bare]); // pin HEAD to the pushed branch: an unresolved HEAD fails the store worktree add exactly like an empty repo
-  git(["push", "-q", bare, "master"], { cwd: seed });
+  gitSetup(["add", "."], { cwd: seed });
+  gitSetup(["commit", "-q", "-m", "base"], { cwd: seed });
+  gitSetup(["init", "--bare", "-q", "-b", "master", bare]); // pin HEAD to the pushed branch: an unresolved HEAD fails the store worktree add exactly like an empty repo
+  gitSetup(["push", "-q", bare, "master"], { cwd: seed });
   const base = git(["rev-parse", "HEAD"], { cwd: seed }).stdout.trim();
-  git(["--git-dir", bare, "update-ref", "refs/pull/999/merge", base]);
+  gitSetup(["--git-dir", bare, "update-ref", "refs/pull/999/merge", base]);
 
   // gh shim: the queue poll yields ONE queued issue; the ack lookup yields 0;
   // the comments endpoint returns a trusted /dsh trigger (deliberately raw
