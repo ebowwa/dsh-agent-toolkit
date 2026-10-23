@@ -31,6 +31,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, readdirSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootProbe, probeWhy } from "./lib/live-boot.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
@@ -1049,12 +1050,14 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
   delete dumpEnv.DSH_MODEL;
   delete dumpEnv.DSH_SUBAGENT_MODEL;
   try {
-    const dump = spawnSync(
-      "dsh",
-      ["--profile", "headless", "--patch", overlay, "--dump-config"],
-      { encoding: "utf8", env: dumpEnv, timeout: 60_000 },
-    );
-    assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}`);
+    // Issue #600: every live dsh leg rides bootProbe — under the full
+    // suite's parallel execution the child starves (empty output, killed at
+    // the bound) and these asserts would red on load, not on the stamp.
+    const dump = bootProbe({
+      args: ["--profile", "headless", "--patch", overlay, "--dump-config"],
+      options: { encoding: "utf8", env: dumpEnv, timeout: 60_000 },
+    });
+    assert.equal(dump.status, 0, `dump-config must compose, stderr: ${dump.stderr}${probeWhy(dump)}`);
     for (const [id, provider, tool, mode] of [
       ["tool-subagent", "spawn", "subagent", "continuable"],
       ["tool-subagent-fork", "fork", "subagent_fork", "one-shot"],
@@ -1070,12 +1073,11 @@ test("the stamped overlay composes onto the real headless profile (skip when dsh
     // Drift guard: the restated provider/toolName/backgroundMode must equal
     // the profile's own defaults (no --patch). If dsh-headless ever changes
     // them, this red run forces the stamp to move in the same commit.
-    const def = spawnSync("dsh", ["--profile", "headless", "--dump-default-config"], {
-      encoding: "utf8",
-      env: dumpEnv,
-      timeout: 60_000,
+    const def = bootProbe({
+      args: ["--profile", "headless", "--dump-default-config"],
+      options: { encoding: "utf8", env: dumpEnv, timeout: 60_000 },
     });
-    assert.equal(def.status, 0, `dump-default-config must run, stderr: ${def.stderr}`);
+    assert.equal(def.status, 0, `dump-default-config must run, stderr: ${def.stderr}${probeWhy(def)}`);
     for (const [id, provider, tool, mode] of [
       ["tool-subagent", "spawn", "subagent", "continuable"],
       ["tool-subagent-fork", "fork", "subagent_fork", "one-shot"],
@@ -1168,13 +1170,11 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
-      encoding: "utf8",
-      timeout: 120_000,
-      cwd,
-      env,
+    const boot = bootProbe({
+      args: ["--profile", "headless", "--patch", overlay, "reply ok"],
+      options: { encoding: "utf8", timeout: 120_000, cwd, env },
     });
-    assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+    assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${probeWhy(boot)}`);
     const combined = `${boot.stdout}\n${boot.stderr}`;
     assert.doesNotMatch(
       combined,
@@ -1233,20 +1233,16 @@ test("the head stays on the settings model: boot resolves the SETTINGS provider 
     // Settings-migration warm-up (issue #650): boot 1 lets the CLI migrate
     // the stamped settings.yaml into the profile it actually resolves
     // against; its output is generation-dependent and never asserted.
-    const warmup = spawnSync("dsh", ["--profile", "headless", "reply ok"], {
-      encoding: "utf8",
-      timeout: 120_000,
-      cwd,
-      env,
+    const warmup = bootProbe({
+      args: ["--profile", "headless", "reply ok"],
+      options: { encoding: "utf8", timeout: 120_000, cwd, env },
     });
-    assert.notEqual(warmup.status, null, "the settings-migration warm-up boot must terminate, not hang");
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
-      encoding: "utf8",
-      timeout: 120_000,
-      cwd,
-      env,
+    assert.notEqual(warmup.status, null, `the settings-migration warm-up boot must terminate, not hang${probeWhy(warmup)}`);
+    const boot = bootProbe({
+      args: ["--profile", "headless", "--patch", overlay, "reply ok"],
+      options: { encoding: "utf8", timeout: 120_000, cwd, env },
     });
-    assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+    assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${probeWhy(boot)}`);
     const combined = `${boot.stdout}\n${boot.stderr}`;
     assert.match(combined, /MISSING_CREDENTIAL/, "the boot must reach credential resolution — proving the stamped settings apply at runtime (directly, or via the CLI's own settings→profile migration)");
     // Quote-agnostic on purpose: the message style differs across CLI
@@ -1359,8 +1355,11 @@ test("the warm-up boot lands the CLI's settings migration: the stamped route res
     assert.ok(migrated !== direct, "exactly one of settings.yaml.imported / settings.yaml must remain after the warm-up");
     // The contract: the FIRST boot after the warm-up composes the stamped
     // route (quote-agnostic — the pin is WHICH route, per the #650 leg).
-    const boot = spawnSync("dsh", ["--profile", "headless", "reply ok"], { encoding: "utf8", env, cwd, timeout: 120_000 });
-    assert.notEqual(boot.status, null, "the post-warm-up boot must terminate, not hang");
+    const boot = bootProbe({
+      args: ["--profile", "headless", "reply ok"],
+      options: { encoding: "utf8", env, cwd, timeout: 120_000 },
+    });
+    assert.notEqual(boot.status, null, `the post-warm-up boot must terminate, not hang${probeWhy(boot)}`);
     const combined = `${boot.stdout}\n${boot.stderr}`;
     assert.match(combined, /provider route ["']zai/, "the first post-warm-up boot must resolve the stamped route");
   } finally {
@@ -1681,13 +1680,11 @@ test("the stamped web overlay boots: the insert-listed provider tree loads (skip
   const env = { ...HERMETIC_ENV, DSH_HOME: home };
   for (const k of ["ZAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DOPPLER_SERVICE_TOKEN"]) delete env[k];
   try {
-    const boot = spawnSync("dsh", ["--profile", "headless", "--patch", overlay, "reply ok"], {
-      encoding: "utf8",
-      timeout: 120_000,
-      cwd,
-      env,
+    const boot = bootProbe({
+      args: ["--profile", "headless", "--patch", overlay, "reply ok"],
+      options: { encoding: "utf8", timeout: 120_000, cwd, env },
     });
-    assert.notEqual(boot.status, null, "the boot probe must terminate, not hang");
+    assert.notEqual(boot.status, null, `the boot probe must terminate, not hang${probeWhy(boot)}`);
     const combined = `${boot.stdout}\n${boot.stderr}`;
     assert.doesNotMatch(
       combined,
