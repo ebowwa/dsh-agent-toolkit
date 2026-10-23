@@ -98,3 +98,21 @@ test("unreachable origin fails loudly (no fake store, silent success)", () => {
     assert.notEqual(r.status, 0, "an unreachable origin must fail loudly");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+test("the task-base tracking ref is FORCED and cleared first (issue #636, the #631 shape)", () => {
+  // refs/remotes/origin/taskbase lives in the SHARED mirror namespace (one
+  // bare mirror per repo; worktrees share its refs), so it OUTLIVES the
+  // per-task worktree. An un-forced refspec against a force-pushed base ref
+  // is non-fast-forward: git refuses, the 2>/dev/null hides it, and the
+  // OLD base rides for a later task. Pin the two-arm shape: delete, then a
+  // FORCED fetch, with the degraded fallback NAMED instead of silent.
+  const src = readFileSync(WORKER, "utf8");
+  assert.match(src, /"\+refs\/heads\/\$\{t_base\}:refs\/remotes\/origin\/taskbase"/, "the tracking refspec must be forced (+refs/heads/...) — an un-forced update is refused by git");
+  assert.match(src, /update-ref -d refs\/remotes\/origin\/taskbase/, "the tracking ref is cleared before the fetch (a failed fetch must leave NO stale ref)");
+  assert.match(src, /refs\/remotes\/origin\/taskbase" 2>\/dev\/null; then/, "the fetch status still gates the checkout");
+  assert.match(src, /fetch failed .* default branch, not the requested base/, "a failed base fetch is NAMED, not silent");
+  assert.match(src, /Issue #636/, "the receipt is cited where the behavior lives");
+  const delIdx = src.indexOf("update-ref -d refs/remotes/origin/taskbase");
+  const fetchIdx = src.indexOf("+" + "refs/heads/${t_base}:refs/remotes/origin/taskbase");
+  assert.ok(delIdx > 0 && fetchIdx > delIdx, "delete-before-fetch ordering (the #631 arm-2 shape)");
+});
