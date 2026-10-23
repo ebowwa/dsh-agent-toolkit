@@ -8,7 +8,14 @@
 # auto-clean. The sweep deletes only CONFIRMED orphans: a remote
 # dsh/issue-* branch with NO open PR behind it (census = gh pr list), and
 # the sweep refuses loudly when the census is unreadable — deleting blind
-# is the accident the tool exists to prevent.
+# is the accident the tool exists to prevent. Since issue #643 the
+# confirmed-orphan class has one exclusion: a branch whose newest
+# closed-unmerged PR reads APPROVED through scripts/approved-lane.mjs
+# (gates green on the head and/or a final APPROVE verdict) is loudly
+# PROTECTED, never reaped — it is the reviewed work's only path back to
+# main (the #495/#544 receipts: approved, stale-closed, heads destroyed).
+# No runner-lane impact: same dsh cell, same node/bash toolchain, same
+# read-only census calls plus one closed-PR census and the consult.
 #
 # Scheduled like cell-disk-guard.yml (the repo-hygiene belt): weekly on
 # the dsh cell, dispatchable by hand. Always a DRY RUN by default — the

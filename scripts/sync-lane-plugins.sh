@@ -34,7 +34,16 @@ while IFS="$(printf '\t')" read -r SRC_REPO SRC_PATH SRC_REF DEST; do
   if [ "$VERIFY" = "1" ]; then
     if [ ! -f "$DEST/package.json" ]; then
       echo "sync-lane-plugins: VERIFY FAIL — $DEST missing (run without --verify to materialize)" >&2; FAIL=1
-    elif [ -d "$CACHE/.git" ] && ! git -C "$CACHE" diff --quiet "$SRC_REF" -- "$SRC_PATH" >/dev/null 2>&1 && [ "$(git -C "$CACHE" rev-parse HEAD 2>/dev/null)" != "$(git -C "$CACHE" rev-parse "$SRC_REF" 2>/dev/null)" ]; then
+    elif [ -d "$CACHE/.git" ] \
+      && REF_SHA="$(git -C "$CACHE" rev-parse --verify "$SRC_REF" 2>/dev/null)" && [ -n "$REF_SHA" ] \
+      && ! git -C "$CACHE" diff --quiet "$SRC_REF" -- "$SRC_PATH" >/dev/null 2>&1 \
+      && [ "$(git -C "$CACHE" rev-parse HEAD 2>/dev/null)" != "$REF_SHA" ]; then
+      # issue #548: the ref read is --verify-gated BEFORE the diff, so an
+      # unresolvable SRC_REF short-circuits here — bare `rev-parse` echoes the
+      # literal ref name (exit status unused inside $()) and `diff --quiet`
+      # fails for the same missing-ref reason, which together produced a
+      # "cache not at $SRC_REF" NOTE off garbage, not off a comparison. The
+      # NOTE stays verdict-free (never FAIL — keepalives run --verify `|| true`).
       echo "sync-lane-plugins: VERIFY NOTE — cache not at $SRC_REF (materializing refreshes it)" >&2
     fi
     continue

@@ -11,7 +11,11 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   (`scripts/merge-guard.sh`, armed by the driver via the gh-scrub-shim) —
   a PR whose gates run is queued, in-progress, cancelled, failed, or absent
   on its head SHA must not merge, and the guard takes ONE snapshot (never a
-  poll-until-green loop). The receipt: PR #422 merged while its gates run
+  poll-until-green loop): the check-runs rollup is paged to exhaustion
+  inside that snapshot (?per_page=100 pages until the fetched count covers
+  total_count, issue #566), so a red conclusion beyond the endpoint's
+  default per_page=30 truncation can never pass a green head. The receipt:
+  PR #422 merged while its gates run
   sat queued and never ran — zero completed CI runs graded the head it
   landed. Since FleetTower issue #1132, an ABSENT run under the DEFAULT
   name (`gates`) means the guard grades the head by the rollup instead of
@@ -103,9 +107,11 @@ Review rules for dsh-bot, applied by the dsh review stage (and any human).
   Overstatement is a blocking defect, same as a bug.
 - Evidence counts are pasted from the run's own summary block, never
   transcribed by hand (issue #433): a PR's "Tests / evidence" section
-  quotes the runner's printed `# tests / # pass / # fail / # skipped`
-  lines (node --test emits them at the end of every run) instead of a
-  hand-written "N/N pass" claim. Hand-transcribed counts describe an
+  quotes the runner's printed summary block — its `tests` / `pass` /
+  `fail` / `skipped` lines (node --test emits them at the end of every
+  run; `#`-prefixed TAP or `ℹ`-prefixed spec, depending on the
+  reporter/node version — issue #556) — instead of a hand-written "N/N
+  pass" claim. Hand-transcribed counts describe an
   earlier revision of the suite — the PR #415 receipt: the merged body
   said 5 pass / 6/6 / 446 where the tree it merged ran 8 tests / 497.
   A count that overstates is a blocking defect under the rule above;

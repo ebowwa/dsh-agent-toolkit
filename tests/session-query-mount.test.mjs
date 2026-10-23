@@ -27,7 +27,17 @@ const SKILL = join(ROOT, ".agents", "skills", "verify-before-dismissal", "SKILL.
 // live boot proof fails them (measured: 0.1.7-alpha.2 imports SessionSeq).
 const PINNED_VERSION = "0.1.0-rc.8";
 
-const DSH_PRESENT = spawnSync("dsh", ["--version"]).status === 0;
+// Issue #598: the presence probe is a LIVE spawn and it carries a budget.
+// spawnSync waits INDEFINITELY by default, so a wedged `dsh --version` (a
+// broken shell shim, a hung first-run path) wedged this whole file: no
+// assertion reds, no file-level result prints, and the outer suite budget is
+// the only backstop (the #423 wedge class). 30s is ~60x a quiet --version.
+const DSH_PROBE = spawnSync("dsh", ["--version"], { timeout: 30_000 });
+const DSH_PRESENT = DSH_PROBE.status === 0;
+// status === null + a signal is the BUDGET KILL, not proof of absence: still
+// take the absent path (never hang), but the skip reason NAMES the wedge so
+// the box is diagnosable instead of silently "absent" (issue #598).
+const DSH_PROBE_WEDGED = DSH_PROBE.status === null && DSH_PROBE.signal != null;
 
 // The live legs need MORE than the CLI: stampOverlays symlinks the box's
 // real backend packages (~/.dsh/profiles/node_modules/@deepseek-ai/...) —
@@ -44,11 +54,13 @@ function backendPackagesPresent(home) {
     (name) => existsSync(join(ns, name, "package.json")),
   );
 }
-const LIVE_SKIP_REASON = !DSH_PRESENT
-  ? "dsh is absent"
-  : backendPackagesPresent(process.env.HOME)
-    ? false
-    : `box profile tree lacks the backend packages under ~/.dsh/profiles/node_modules/@deepseek-ai (dsh-session-query-sqlite, dsh-session-persistence-jsonl) — box state, not a code regression (issue #273)`;
+const LIVE_SKIP_REASON = DSH_PROBE_WEDGED
+  ? `dsh --version WEDGED — killed by the 30s probe budget (signal ${DSH_PROBE.signal}); treated as absent (issue #598)`
+  : !DSH_PRESENT
+    ? "dsh is absent"
+    : backendPackagesPresent(process.env.HOME)
+      ? false
+      : `box profile tree lacks the backend packages under ~/.dsh/profiles/node_modules/@deepseek-ai (dsh-session-query-sqlite, dsh-session-persistence-jsonl) — box state, not a code regression (issue #273)`;
 
 // Hermetic lane-plugin consult (issue #129): empty-entry manifest — nothing
 // mounts regardless of what answers on the box.

@@ -194,7 +194,9 @@ test("review queue: worker claims dsh/review items and runs review-pr.sh on them
   assert.match(w, /REVIEW_LABEL="\$\{DSH_WORKER_REVIEW_LABEL:-dsh\/review\}"/);
   assert.match(w, /review_item\(\) \{/);
   // the sweep polls the review label and routes PRs to review_item
-  const pollIdx = w.indexOf("labels=${REVIEW_LABEL}&per_page=100");
+  // (issue #527 moved the poll URL into the shared poll_label helper —
+  // the pin rides the sweep's CALL, not the URL text)
+  const pollIdx = w.indexOf(`poll_label "$repo" "$REVIEW_LABEL"`);
   assert.ok(pollIdx !== -1, "sweep must poll the review label");
   assert.match(w, /review_item "\$repo" "\$num"/);
   // claim semantics identical to agent tasks: DELETE the label to claim
@@ -278,7 +280,7 @@ test("task queue: dispatched tasks run on the worker (the last runner-holding pa
   const w = read("scripts/dsh-worker.sh");
   assert.match(w, /TASK_LABEL="\$\{DSH_WORKER_TASK_LABEL:-dsh\/task\}"/);
   assert.match(w, /task_item\(\) \{/);
-  const pollIdx = w.indexOf("labels=${TASK_LABEL}&per_page=100");
+  const pollIdx = w.indexOf(`poll_label "$repo" "$TASK_LABEL"`);
   assert.ok(pollIdx !== -1, "the sweep polls the task label");
   assert.match(w, /task_item "\$repo" "\$num"/);
   // the marker is REQUIRED — a user-labeled issue is never a task

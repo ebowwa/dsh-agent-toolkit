@@ -31,8 +31,16 @@ run straight off the tree on Node.
      smoke suites — bare discovery runs every `test/` directory too,
      a shell glob does not — so after touching `plugins/`, verify with
      the parity form
-     `node --test tests/*.test.mjs plugins/*/test/smoke.mjs`, the
-     exact set CI grades (issue #301). The plugin smoke tests need the
+     `node --test tests/*.test.mjs plugins/*/test/smoke.mjs` (issue #301).
+     Even that parity form is NARROWER than what CI's bare discovery
+     grades: discovery is recursive — every `*.test.mjs` anywhere in the
+     tree (under `tests/fixtures/`, a build dir, anywhere) and every
+     `.mjs` under any directory named `test/`, not just `smoke.mjs`,
+     while `node_modules` and dot-directories are skipped (issue #521).
+     Inside an agent session, gate with the bounded runner — it
+     enumerates exactly that bare-discovery set, one `node --test`
+     child per suite under a per-suite watchdog:
+     `node scripts/bounded-gate.mjs`. The plugin smoke tests need the
      `@deepseek-ai/*` / `@local/*` dep install first — on a bare clean
      checkout run `node scripts/install-plugin-smoke-deps.mjs` once (it
      converges the peer closure, installs once, and verifies the tree;

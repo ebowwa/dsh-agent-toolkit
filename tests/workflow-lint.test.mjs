@@ -637,3 +637,25 @@ test("CLI arm runs through a symlinked tool path (#302): the lint executes, neve
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a parameterized runs-on carries the self-hosted-only tripwire (the no-hosted doctrine, #2017 + the owner directive)", () => {
+  // The fleet runs ZERO hosted minutes. Every workflow with a
+  // runs-on built from a dispatch input must refuse a GitHub-hosted
+  // placement AT RUNTIME (runs-on evaluates before steps, so a static
+  // guard cannot catch a bad input value): the `runner.environment ==
+  // 'github-hosted'` tripwire step is the decidable line. This pin
+  // exists so a future parameterized-runs-on workflow ships with the
+  // belt or goes red — the #2228 class one level down.
+  const wfDir = path.join(ROOT, ".github", "workflows");
+  for (const file of readdirSync(wfDir)) {
+    if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
+    const text = readFileSync(path.join(wfDir, file), "utf8");
+    const hasParameterizedRunsOn = /runs-on:\s*\$\{\{\s*(fromJSON|toJSON)\(/.test(text);
+    if (!hasParameterizedRunsOn) continue;
+    assert.match(
+      text,
+      /runner\.environment\s*==\s*['"]github-hosted['"]/,
+      `${file}: a parameterized runs-on (${(text.match(/runs-on:\s*\S+/) || ["?"])[0]}) must carry the self-hosted-only runtime tripwire`,
+    );
+  }
+});

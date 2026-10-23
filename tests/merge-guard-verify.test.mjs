@@ -31,6 +31,7 @@ import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync, existsSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { scrubGuardInputAmbient } from "./lib/guard-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = path.join(ROOT, "scripts", "merge-guard.sh");
@@ -72,6 +73,11 @@ const channelStub = (t, comments, { apiFail = false } = {}) => {
     number: 326, headRefOid: HEAD, url: "https://github.com/owner/repo/pull/326",
   }));
   writeFileSync(path.join(dir, "comments.json"), JSON.stringify(comments));
+  // The channel is both-channels since issue #560: pr-verification now reads
+  // pulls/N/reviews as well. These legs grade the COMMENT channel, so the
+  // reviews channel is served empty (apiFail still fails whichever read the
+  // tool makes first, which is what the unresolvable leg needs).
+  writeFileSync(path.join(dir, "reviews.json"), JSON.stringify([]));
   if (apiFail) writeFileSync(path.join(dir, "api-fail"), "1");
   writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${dir}/channel-gh.log"
@@ -79,7 +85,10 @@ if [ "$1" = "--version" ]; then echo "stub gh"; exit 0; fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then cat "${dir}/pr-view.json"; exit 0; fi
 if [ "$1" = "api" ]; then
   [ -f "${dir}/api-fail" ] && { echo "stub: api fails" >&2; exit 1; }
-  cat "${dir}/comments.json"
+  case "$*" in
+    */reviews) cat "${dir}/reviews.json" ;;
+    *) cat "${dir}/comments.json" ;;
+  esac
   exit 0
 fi
 echo "channel stub: unexpected call: $*" >&2
@@ -97,24 +106,27 @@ const marker = (id, body) => ({
 const runGuard = (t, { legs = [leg()], comments = [], armed = false, apiFail = false, tool = null } = {}) => {
   const gates = gatesStub(t, legs);
   const channel = channelStub(t, comments, { apiFail });
-  const env = {
-    ...process.env,
-    MERGE_GUARD_GH: path.join(gates, "gh"),
-    PR_VERIFICATION_GH: path.join(channel, "gh"),
-    MERGE_GUARD_VERIFY_TOOL: tool ?? path.join(ROOT, "scripts", "pr-verification.mjs"),
-  };
+  // Issues #490/#503: this suite scrubbed only MERGE_GUARD_VERIFY by hand and
+  // never mentioned MERGE_GUARD_CHECK, so on a lane exporting that name the
+  // guard flipped to CHECK_EXPLICIT and refused a rollup no fixture carried —
+  // green on a clean box, red on an armed lane. The scrub now comes from the
+  // SAME shared set as tests/merge-guard.test.mjs (tests/lib/guard-env.mjs)
+  // and runs on the process.env spread BEFORE this leg's deliberate stamps,
+  // so the explicit VERIFY_TOOL below and the conditional arm still win.
+  const env = scrubGuardInputAmbient({ ...process.env });
+  env.MERGE_GUARD_GH = path.join(gates, "gh");
+  env.PR_VERIFICATION_GH = path.join(channel, "gh");
+  env.MERGE_GUARD_VERIFY_TOOL = tool ?? path.join(ROOT, "scripts", "pr-verification.mjs");
   // #498 — the FIFTH carrier of the #483/#487/#490 env-construction class:
   // the verified names ride the process.env spread. MERGE_GUARD_VERIFY is
   // ambient-only here (set below ONLY for a deliberate arm), so a lane
-  // exporting it arms every UNARMED leg — delete it before the conditional
-  // so an unarmed leg on such a lane grades unarmed, while the deliberate
-  // `armed` below still wins (exactly the #487 fix's contract in
-  // tests/merge-guard.test.mjs). MERGE_GUARD_VERIFY_TOOL is deliberately
-  // constructed in the literal (default or passed), never ambient, so it
-  // needs no delete. Without the VERIFY delete the "UNARMED default" leg
+  // exporting it arms every UNARMED leg; the shared scrub above removes it
+  // (and every other guard-input name, #490/#503) before this conditional, so
+  // an unarmed leg on such a lane grades unarmed while the deliberate `armed`
+  // below still wins (exactly the #487 fix's contract in
+  // tests/merge-guard.test.mjs). Without the scrub the "UNARMED default" leg
   // consults the channel on an armed lane and reds (live repro on the
   // #489 head: 6 pass / 1 fail).
-  delete env.MERGE_GUARD_VERIFY;
   if (armed) env.MERGE_GUARD_VERIFY = "on";
   const r = spawnSync("bash", [GUARD, "merge", "326", "--squash"], {
     encoding: "utf8", env, cwd: gates,
