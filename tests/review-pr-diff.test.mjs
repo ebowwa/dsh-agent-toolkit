@@ -320,9 +320,9 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
   const code = rp.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
   assert.ok(!code.includes("|| echo origin/base"),
     "the `|| echo origin/base` two-dot degrade arm is gone (the #495 bug)");
-  assert.match(rp, /FORK_BASE="\$\(git merge-base origin\/base origin\/pr-merge 2>\/dev\/null \|\| true\)"/,
+  assert.match(rp, /FORK_BASE="\$\(git merge-base "\$TRACK_BASE" "\$TRACK_MERGE" 2>\/dev\/null \|\| true\)"/,
     "the merge-base is resolved explicitly, degrade-safe (the ship-changes.sh freshness shape)");
-  assert.match(rp, /git diff "\$FORK_BASE" origin\/pr-merge/,
+  assert.match(rp, /git diff "\$FORK_BASE" "\$TRACK_MERGE"/,
     "the diff is computed from the RESOLVED fork point — two-dot from the merge-base IS the three-dot semantics, with no fallback arm left to substitute another range");
   assert.match(rp, /HAS advanced since the fork/, "the basis line reports base advancement past the fork");
   assert.match(rp, /NOT advanced since the fork/, "the basis line reports an unadvanced base");
@@ -344,9 +344,9 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
   // Issue #628: the freshness prose keys off the PR-head merge-base, never
   // the merge preview (whose merge-base is the base tip by construction),
   // and an unresolvable head fork degrades to UNVERIFIED — no claim.
-  assert.match(rp, /HEAD_FORK_BASE="\$\(git merge-base origin\/base origin\/pr-head 2>\/dev\/null \|\| true\)"/,
+  assert.match(rp, /HEAD_FORK_BASE="\$\(git merge-base "\$TRACK_BASE" "\$TRACK_HEAD" 2>\/dev\/null \|\| true\)"/,
     "the PR's TRUE fork point is computed from refs/pull/N/head, not the preview (issue #628)");
-  assert.match(rp, /refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head/,
+  assert.match(rp, /refs\/pull\/\$\{PR_NUM\}\/head:\$\{TRACK_HEAD\}/,
     "the PR head ref is fetched (and rides the same deepen arm) alongside base and the preview");
   assert.match(rp, /freshness UNVERIFIED/,
     "an unresolvable PR-head fork degrades the prose to UNVERIFIED — the #574 acceptance shape, never a positive claim");
@@ -356,11 +356,11 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
   // capture class. A bare `git rev-parse origin/base` echoes the ref NAME on
   // a missing ref (exit 128, status swallowed), and every `[ -n "$BASE_TIP" ]`
   // guard below then reads a non-empty lie as a resolved base tip.
-  assert.match(code, /BASE_TIP="\$\(git rev-parse --verify origin\/base 2>\/dev\/null\)"/,
+  assert.match(code, /BASE_TIP="\$\(git rev-parse --verify "\$TRACK_BASE" 2>\/dev\/null\)"/,
     "the base tip is read with --verify (issue #545)");
   assert.ok(!/BASE_TIP="?\$\(git rev-parse origin\/base/.test(code),
     "no bare `git rev-parse origin/base` capture may come back — it captures the ref name on a miss");
-  assert.match(rp, /origin\/base does not resolve \(git rev-parse --verify failed/,
+  assert.match(rp, /\$\{TRACK_BASE\} does not resolve \(git rev-parse --verify failed/,
     "a miss is named on the worker log instead of dying silently");
   // Issue #631: the tracking refspecs are FORCED and the tracking refs are
   // deleted before the fetches — a force-pushed head between review rounds
@@ -368,18 +368,38 @@ test("issue #516/#519 structural: the diff fallback can never change diff semant
   // leave a tracking ref trailing the live remote refs, and a fetch that
   // fails for any reason leaves NO ref, so every downstream lookup degrades
   // to its typed terminal state instead of grading the stale graph.
-  assert.match(rp, /fetch_merge\(\) \{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/merge:refs\/remotes\/origin\/pr-merge"; \}/,
+  assert.match(rp, /fetch_merge\(\) \{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/merge:\$\{TRACK_MERGE\}"; \}/,
     "the preview refspec is forced — a non-fast-forward update can never be refused-and-swallowed (issue #631; the un-forced shape turned a force-push into a typed exit-2 review death)");
-  assert.match(rp, /fetch_base\(\)\s*\{ gh_fetch "\+refs\/heads\/\$\{BASE_REF\}:refs\/remotes\/origin\/base"; \}/,
+  assert.match(rp, /fetch_base\(\)\s*\{ gh_fetch "\+refs\/heads\/\$\{BASE_REF\}:\$\{TRACK_BASE\}"; \}/,
     "the base refspec is forced — the stale-base twin of the #631 class");
-  assert.match(rp, /fetch_head\(\)\s*\{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head"; \}/,
+  assert.match(rp, /fetch_head\(\)\s*\{ gh_fetch "\+refs\/pull\/\$\{PR_NUM\}\/head:\$\{TRACK_HEAD\}"; \}/,
     "the PR-head refspec is forced — the freshness signal's ref can never trail the live head (issue #631)");
-  assert.match(rp, /"\+refs\/heads\/\$\{BASE_REF\}:refs\/remotes\/origin\/base" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/merge:refs\/remotes\/origin\/pr-merge" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/head:refs\/remotes\/origin\/pr-head"/,
+  assert.match(rp, /"\+refs\/heads\/\$\{BASE_REF\}:\$\{TRACK_BASE\}" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/merge:\$\{TRACK_MERGE\}" \\\n\s+"\+refs\/pull\/\$\{PR_NUM\}\/head:\$\{TRACK_HEAD\}"/,
     "the deepen arm's re-fetches carry the forced refspecs too (issue #631)");
-  const delIdx = rp.indexOf("git update-ref -d refs/remotes/origin/pr-head");
+  const delIdx = rp.indexOf('git update-ref -d "$TRACK_HEAD"');
   const fetchIdx = rp.indexOf("fetch_merge 2>/dev/null");
   assert.ok(delIdx !== -1 && fetchIdx !== -1 && delIdx < fetchIdx,
     "the tracking refs are deleted BEFORE the fetches — a failed fetch leaves no ref, so the prose degrades (UNVERIFIED / withheld / base-fetch-failed) instead of claiming off a stale graph (issue #631)");
+  // Issue #637: the tracking refs are PER-PR. They live in the shared mirror
+  // namespace (one bare mirror per repo; two reviews of different PRs of the
+  // SAME repo run concurrently under per-item slot locks), so a generic name
+  // let review B's delete-and-force-fetch hand review A its graph. Per-PR
+  // names dissolve the contention instead of serializing it.
+  assert.match(rp, /TRACK_MERGE="refs\/remotes\/origin\/pr-\$\{PR_NUM\}-merge"/,
+    "the preview tracking ref is per-PR (issue #637)");
+  assert.match(rp, /TRACK_BASE="refs\/remotes\/origin\/pr-\$\{PR_NUM\}-base"/,
+    "the base tracking ref is per-PR too — two PRs with different base refs shared one name");
+  assert.match(rp, /TRACK_HEAD="refs\/remotes\/origin\/pr-\$\{PR_NUM\}-head"/,
+    "the head tracking ref is per-PR");
+  assert.ok(!/refs\/remotes\/origin\/(pr-merge|base|pr-head)\b/.test(code),
+    "NO generic tracking ref may survive in code — a single one re-opens the cross-PR overwrite (the migration is all-or-nothing)");
+  for (const use of [
+    /git merge-base "\$TRACK_BASE" "\$TRACK_MERGE"/,
+    /git merge-base "\$TRACK_BASE" "\$TRACK_HEAD"/,
+    /git diff "\$FORK_BASE" "\$TRACK_MERGE"/,
+    /git rev-parse --verify "\$TRACK_BASE"/,
+    /git update-ref -d "\$TRACK_(MERGE|BASE|HEAD)"/,
+  ]) assert.match(code, use, `every lookup/diff/delete must read through the per-PR variables (${use})`);
 });
 
 // Issue #628 e2e: the REAL GitHub preview shape. The trial-merge commit's
