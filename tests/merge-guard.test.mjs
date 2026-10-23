@@ -448,6 +448,20 @@ test("guard: an ambient MERGE_GUARD_VERIFY=on cannot arm the verify leg through 
   // a path that cannot exist — so the harness env's hermeticity is graded on
   // every machine, not just on mis-configured lanes (the #479/#483 pin
   // shape, applied to the guard's verify opt-in).
+  //
+  // Save-and-RESTORE, never delete (issue #490): this pin sits early in the
+  // file, and a `finally { delete … }` here would permanently scrub an armed
+  // lane's export out of this test process — every leg declared AFTER the pin
+  // (all of sections 2–6, every shim leg included) would then be graded
+  // DE-ARMED even where the lane exports the arm, laundering exactly the
+  // failure shape this file pins against (the whole file ran green on an
+  // armed lane while the isolated armed+green shim leg ran red). Restore the
+  // caller's values so an armed lane stays armed for them; on a clean box the
+  // restore IS a delete (both were unset).
+  const savedVerifyEnv = {
+    verify: process.env.MERGE_GUARD_VERIFY,
+    tool: process.env.MERGE_GUARD_VERIFY_TOOL,
+  };
   process.env.MERGE_GUARD_VERIFY = "on";
   process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
   try {
@@ -460,8 +474,10 @@ test("guard: an ambient MERGE_GUARD_VERIFY=on cannot arm the verify leg through 
       "the verify leg must not run at all under the harness",
     );
   } finally {
-    delete process.env.MERGE_GUARD_VERIFY;
-    delete process.env.MERGE_GUARD_VERIFY_TOOL;
+    if (savedVerifyEnv.verify === undefined) delete process.env.MERGE_GUARD_VERIFY;
+    else process.env.MERGE_GUARD_VERIFY = savedVerifyEnv.verify;
+    if (savedVerifyEnv.tool === undefined) delete process.env.MERGE_GUARD_VERIFY_TOOL;
+    else process.env.MERGE_GUARD_VERIFY_TOOL = savedVerifyEnv.tool;
   }
 });
 
@@ -766,13 +782,15 @@ test("pin: no leg of this file bare-deletes a lane arm from process.env — rest
   // from their local env objects, never from process.env. Scoped to the arm
   // names this branch's pins own and that are save-restored on this base —
   // GH_MERGE_GUARD (the #479 pin, healed by #612), GH_MERGE_GUARD_CHECK and
-  // MERGE_GUARD_CHECK (the #483/#553 pins) ; the MERGE_GUARD_VERIFY/_TOOL
-  // pair joins the same rule with PR #550's #490 heal, whose #487 pin still
-  // carries the older shape on the pre-#550 base.
+  // MERGE_GUARD_CHECK (the #483/#553 pins), and since issue #638 the
+  // MERGE_GUARD_VERIFY / MERGE_GUARD_VERIFY_TOOL pair: #550's #490 heal turns
+  // BOTH verify pins (#487 above and the new shim pin) into guarded restores,
+  // so the pair is now gradeable by the same line rule instead of riding on
+  // the next rebase's good behaviour.
   const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
   assert.doesNotMatch(
     src,
-    /^\s*delete process\.env\.(GH_MERGE_GUARD|GH_MERGE_GUARD_CHECK|MERGE_GUARD_CHECK);?\s*$/m,
+    /^\s*delete process\.env\.(GH_MERGE_GUARD|GH_MERGE_GUARD_CHECK|MERGE_GUARD_CHECK|MERGE_GUARD_VERIFY|MERGE_GUARD_VERIFY_TOOL);?\s*$/m,
     "a bare `delete process.env.<lane arm>` launders an armed lane's export (issues #553/#612) — save-and-restore instead",
   );
 });
@@ -827,6 +845,45 @@ test("shim: the in-process lane-arm pins leave this process exactly as they foun
   const graded = ["GH_MERGE_GUARD", "GH_MERGE_GUARD_CHECK", "MERGE_GUARD_CHECK"];
   for (const name of graded) {
     assert.equal(process.env[name], LANE_ARMS_AT_LOAD[name], `an arming pin laundered the lane's ${name} export out of this process`);
+  }
+});
+
+test("shim: an ambient MERGE_GUARD_VERIFY=on cannot arm the guard's verify leg through the shim (issue #490 pin)", (t) => {
+  // The #490 defect is invisible on a clean dev box: the shim's guard
+  // invocation only PREFIXES MERGE_GUARD_GH to its inherited env (assignments
+  // add, they never strip), so on a lane that exports MERGE_GUARD_VERIFY=on
+  // the arm rode runShim's process.env spread through the shim into the
+  // guard's verify_gate and armed the verify leg under every armed+green shim
+  // leg — the tool then graded the stubbed fixture gh and the leg went red
+  // (the #479/#483/#487 shape, fourth carrier). Arm the lane INSIDE this
+  // process — both names, the tool pointing at a path that cannot exist — so
+  // the shim env's hermeticity is graded on every machine (the #479/#487 pin
+  // shape, applied to the shim's forward). Save-and-RESTORE in the finally:
+  // like the #487 pin above, this pin must never launder an armed lane's
+  // export for the legs after it (issue #490).
+  const savedVerifyEnv = {
+    verify: process.env.MERGE_GUARD_VERIFY,
+    tool: process.env.MERGE_GUARD_VERIFY_TOOL,
+  };
+  process.env.MERGE_GUARD_VERIFY = "on";
+  process.env.MERGE_GUARD_VERIFY_TOOL = "/nonexistent/pr-verification.mjs";
+  try {
+    const { res, dir } = runShim(t, ["pr", "merge", "12", "-m"], {
+      legs: [leg()],
+      guardEnv: { GH_MERGE_GUARD: "on" },
+    });
+    assert.equal(res.status, 0, `the ambient verify arm must not flip the armed+green shim leg (stderr: ${res.stderr})`);
+    assert.deepEqual(mergeCapture(dir), ["pr", "merge", "12", "-m"]);
+    assert.doesNotMatch(
+      `${res.stdout}${res.stderr}`,
+      /independent verification/i,
+      "the verify leg must not run at all under the shim harness",
+    );
+  } finally {
+    if (savedVerifyEnv.verify === undefined) delete process.env.MERGE_GUARD_VERIFY;
+    else process.env.MERGE_GUARD_VERIFY = savedVerifyEnv.verify;
+    if (savedVerifyEnv.tool === undefined) delete process.env.MERGE_GUARD_VERIFY_TOOL;
+    else process.env.MERGE_GUARD_VERIFY_TOOL = savedVerifyEnv.tool;
   }
 });
 
