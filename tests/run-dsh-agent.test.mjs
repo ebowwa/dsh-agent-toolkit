@@ -38,6 +38,25 @@ const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
 // mounts regardless of what answers on the box.
 const HERMETIC_LANE_PLUGINS = path.join(ROOT, "tests", "fixtures", "lane-plugins-hermetic.json");
 
+// Issue #601 (the #598 class, one file over): the presence probe is a LIVE
+// spawn and it carries a budget. `spawnSync` waits INDEFINITELY by default, so
+// a wedged `dsh --version` (a broken shell shim, a hung first-run path) wedged
+// this whole FILE: the skip gates are evaluated at LOAD time, so nothing reds,
+// no file-level result prints, and the outer suite budget is the only backstop
+// (the #423 wedge class). One shared budgeted probe — it also collapses five
+// per-gate spawns into one child.
+const DSH_PROBE = spawnSync("dsh", ["--version"], { timeout: 30_000 });
+const DSH_PRESENT = DSH_PROBE.status === 0;
+// status === null + a signal is the BUDGET KILL, not proof of absence: still
+// take the absent path (never hang), but the skip reason NAMES the wedge so the
+// box is diagnosable instead of silently "absent" (issues #598, #601).
+const DSH_PROBE_WEDGED = DSH_PROBE.status === null && DSH_PROBE.signal != null;
+const DSH_SKIP = DSH_PRESENT
+  ? false
+  : DSH_PROBE_WEDGED
+    ? "dsh --version exceeded its 30s budget — the probe was KILLED, not absent (issue #601)"
+    : "dsh is absent";
+
 // Hermetic base env (issue #131): an agent job's ambient dsh-agent exports
 // (DSH_HOME, DSH_SESSION_JSONL, DSH_SESSION_ID, DSH_SHELL, DSH_RUNNER_NAME,
 // DSH_LANE_PLUGINS_MANIFEST, RUNNER_NAME, ...) leak into driver spawns and
@@ -88,6 +107,56 @@ const reapedPid = () =>
   });
 
 // --- 1. the streamer must degrade gracefully, not die on set -u ---------
+
+
+// Issue #601 pin: presence probing stays ONE budgeted spawn. The defect this
+// ticket names is a `skip:` gate that spawns `dsh --version` INLINE — no
+// budget, evaluated at load time, one child per gated test — so the pin
+// counts the probe sites in this file's own source rather than trusting a
+// convention nobody enforces.
+
+// Issue #619 pin: REPO_ROOT is the CHECKOUT root, and every config path built
+// from it agrees with the ones built from SCRIPT_DIR. The defect was a path
+// that resolved two levels ABOVE the checkout, so the settings-bootstrap
+// fallback read a file that cannot exist and died on a bare `cp` under
+// `set -euo pipefail`. Graded from source, because the fallback only fires on
+// a box with no settings template — exactly where a silent/confusing boot
+// death is least diagnosable.
+test("REPO_ROOT resolves the CHECKOUT root, so the settings fallback can find config/ (issue #619)", () => {
+  const driver = readFileSync(SCRIPT, "utf8");   // the DRIVER's own source
+  assert.match(driver, /^SCRIPT_DIR="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd\)"$/m);
+  assert.match(
+    driver,
+    /^REPO_ROOT="\$\(cd "\$SCRIPT_DIR\/\.\." && pwd\)"$/m,
+    "REPO_ROOT must be one level above scripts/ — the checkout root",
+  );
+  assert.doesNotMatch(
+    driver,
+    /REPO_ROOT="\$\(cd "\$SCRIPT_DIR\/\.\.\/\.\.\/\.\."/,
+    "two-plus levels above scripts/ escapes the checkout (the #619 defect)",
+  );
+  // The two faces of the same file must agree: the primary template path and
+  // the fallback copy both name config/settings.zai.yaml under the checkout.
+  assert.match(driver, /SETTINGS_TEMPLATE="\$\{DSH_SETTINGS_TEMPLATE:-\$SCRIPT_DIR\/\.\.\/config\/settings\.zai\.yaml\}"/);
+  assert.match(driver, /cp "\$REPO_ROOT\/config\/settings\.zai\.yaml" "\$DSH_HOME\/settings\.yaml"/);
+});
+
+test("presence probing is ONE budgeted spawn — no inline skip-gate probes (issue #601)", () => {
+  const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const probes = src.match(/spawnSync\("dsh", \["--version"\]/g) || [];
+  assert.equal(probes.length, 1, `exactly one --version probe in this file, found ${probes.length}`);
+  assert.match(
+    src,
+    /const DSH_PROBE = spawnSync\("dsh", \["--version"\], \{ timeout: 30_000 \}\)/,
+    "the one probe carries the 30s budget",
+  );
+  assert.doesNotMatch(
+    src,
+    /skip: spawnSync\(/,
+    "no skip gate spawns a live child inline (the #601 shape)",
+  );
+  assert.match(src, /const DSH_SKIP = DSH_PRESENT/, "the gates read the shared verdict const");
+});
 
 test("stream_session_progress degrades gracefully when the wrapper pid is already dead (run 32797020619, line 246)", async () => {
   const fn = extractFunction("stream_session_progress");
@@ -962,7 +1031,7 @@ test("DSH_SUBAGENT_MODEL without provider/model fails closed before any launch",
   assert.equal(args, "", "dsh must never be launched on a malformed override");
 });
 
-test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped overlay composes onto the real headless profile (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5-turbo" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped");
@@ -1081,7 +1150,7 @@ test("DSH_SUBAGENT_MODEL rejects YAML metacharacters and malformed shapes before
 // credential lookup, so with no API key in env it dies fast at credential
 // resolution — and reaching that step IS the pass condition. Skipped when
 // the dsh CLI is absent (lanes without it keep the stub-level coverage).
-test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped overlay boots: the real plugin tree loads against it (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "zai/glm-5.2" });
   const overlay = path.join(home, "subagent-model.patch.yml");
   assert.ok(existsSync(overlay), "overlay stamped by the launcher run");
@@ -1144,7 +1213,7 @@ test("the stamped overlay boots: the real plugin tree loads against it (skip whe
 // This is also the runtime proof that the stamped settings apply to the
 // booted tree (a --dump-config cannot show it: it prints layer views
 // without resolving them). Skipped when the dsh CLI is absent.
-test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the head stays on the settings model: boot resolves the SETTINGS provider route, not the override (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   // Children overridden to a provider DIFFERENT from settings' zai so the
   // two halves are distinguishable in the credential-resolution error.
   const { home } = runLauncher({ DSH_SUBAGENT_MODEL: "opencode-go2/deepseek-v4-flash" });
@@ -1255,7 +1324,7 @@ test("settings warm-up structure: one credential-stripped boot per spawn, after 
   assert.ok(idxWarmCall < idxLaunch, "the warm-up must run BEFORE the real doppler launch");
 });
 
-test("the warm-up boot lands the CLI's settings migration: the stamped route resolves on the first post-warm-up boot (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the warm-up boot lands the CLI's settings migration: the stamped route resolves on the first post-warm-up boot (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "dsh-warmup-boot-"));
   const home = path.join(cwd, "home");
   mkdirSync(home);
@@ -1596,7 +1665,7 @@ test("DSH_WEB_SEARCH_BROWSER_BROWSERS pins the browser list into the overlay; me
 // with no credentials in env the run must die at credential resolution —
 // reaching that step proves the restated web/tool-web rows and the
 // insert-listed @local provider tree all passed the real plugins' validation.
-test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: spawnSync("dsh", ["--version"]).status !== 0 }, () => {
+test("the stamped web overlay boots: the insert-listed provider tree loads (skip when dsh is absent)", { skip: DSH_SKIP }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "dsh-web-boot-"));
   const { home } = runLauncher(WEB_BASE(makePluginCopy(dir)));
   const overlay = path.join(home, "web-search-browser.patch.yml");

@@ -17,12 +17,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import {
   Union,
   seed,
   walkToFixpoint,
+  registryPeers,
   resolveUnionSpecs,
   localPeers,
   verify,
@@ -30,6 +31,8 @@ import {
   closureSeamsAbsent,
   testedPlugins,
   allPlugins,
+  NpmTransportError,
+  classifyNpmViewFailure,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -364,6 +367,521 @@ test("re-walking a converged walk-accumulated union adds nothing (anti-oscillati
   assert.equal(rounds, 0, "already converged — zero further rounds");
   assert.deepEqual(union.specs(), once, "re-walking changes nothing");
 });
+
+// ---- issue #512: a transport failure is NOT an unsatisfiable spec -------
+//
+// `npm view` exits non-zero for a GENUINE no-match (E404) and for every
+// TRANSPORT failure (npm missing, offline/DNS-broken cell, registry 5xx)
+// alike; flattening both into [] made resolveUnionSpecs refuse a
+// transport red as "unsatisfiable spec" — a phantom root cause an
+// operator bisects trust against (REVIEW.md Honesty: failures surface
+// as typed errors with context; no swallowed exits).
+
+// A fake npm on PATH drives the REAL default seam (npmViewVersions)
+// hermetically: stdout+exit scripts for the registry's answer shapes.
+const fakeNpmOnPath = (script) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-npm-"));
+  fs.writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${script}\n`, {
+    mode: 0o755,
+  });
+  return bin;
+};
+const withPath = (bin, fn) => {
+  const keep = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${keep}`;
+  try {
+    fn();
+  } finally {
+    process.env.PATH = keep;
+  }
+};
+
+test("classifyNpmViewFailure: only a positively-identified E404 reads as a genuine no-match (issue #512)", () => {
+  assert.equal(
+    classifyNpmViewFailure({
+      status: 1,
+      stderr: "npm error code E404\nnpm error 404 No match found for version ^9.0.0\n",
+    }),
+    null,
+    "npm's own E404 is the registry speaking: no version under this spec",
+  );
+  for (const [label, err] of [
+    [
+      "spawn failure (npm missing, the #512 repro)",
+      Object.assign(new Error("spawn npm ENOENT"), { code: "ENOENT", status: null }),
+    ],
+    [
+      "network failure",
+      {
+        status: 1,
+        stderr: "npm error code ECONNREFUSED\nnpm error network request to https://registry.npmjs.org/pkg failed\n",
+      },
+    ],
+    ["registry 5xx", { status: 1, stderr: "npm error code E500\nnpm error 500 Internal Server Error - GET\n" }],
+    ["unrecognized non-zero exit — fail-closed", { status: 1, stderr: "" }],
+    [
+      "killed by signal — no exit status",
+      { status: null, signal: "SIGTERM", stderr: "" },
+    ],
+  ]) {
+    const detail = classifyNpmViewFailure(err);
+    assert.equal(typeof detail, "string", `${label} must classify as transport, not no-match`);
+    assert.doesNotMatch(
+      detail ?? "",
+      /unsatisfiable/,
+      `the transport detail never borrows the unsatisfiable-spec voice (${label})`,
+    );
+  }
+  assert.match(
+    classifyNpmViewFailure({
+      status: 1,
+      stderr: "npm error code ECONNREFUSED\nnpm error network request failed\n",
+    }),
+    /ECONNREFUSED/,
+    "the transport detail names npm's own error code",
+  );
+});
+
+test("the #512 repro: an unspawnable npm reds as NpmTransportError — never 'unsatisfiable spec'", () => {
+  const u = new Union();
+  u.add("pkg", "^1.0.0", "walk");
+  u.add("pkg", "^2.0.0", "walk");
+  const keep = process.env.PATH;
+  // npm cannot spawn — transport failure, not an empty match. The PATH
+  // is a prepared EMPTY dir: no npm on it anywhere, hermetically, on
+  // every box (a literal `/nonexistent` is tests-lint-banned and
+  // lane-fragile — ambient re-inclusion would keep npm spawnable).
+  process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-no-npm-"));
+  try {
+    assert.throws(
+      () => resolveUnionSpecs(u),
+      (e) =>
+        e instanceof NpmTransportError &&
+        /npm did not run/.test(e.message) &&
+        !/unsatisfiable spec/.test(e.message),
+      "the gate red names the transport (npm never ran), not a phantom unsatisfiable range",
+    );
+  } finally {
+    process.env.PATH = keep;
+  }
+});
+
+test("the real default seam: registry answers classify through fake npm on PATH (issue #512)", () => {
+  const multi = new Union();
+  multi.add("pkg", "^1.0.0", "plugin");
+  multi.add("pkg", ">=9.0.0", "plugin");
+
+  // npm's E404 no-match → the UNSATISFIABLE refusal, now trustworthy
+  // evidence (the registry itself said there is no version)
+  withPath(
+    fakeNpmOnPath('echo "npm error code E404" >&2\necho "npm error 404 No match found" >&2\nexit 1'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) => !(e instanceof NpmTransportError) && /unsatisfiable spec: pkg@\^1\.0\.0 has no registry version/.test(e.message),
+        "a genuine E404 still refuses as unsatisfiable — the refusal keeps its shape",
+      ),
+  );
+
+  // network failure → NpmTransportError naming npm's code
+  withPath(
+    fakeNpmOnPath('echo "npm error code ECONNREFUSED" >&2\nexit 1'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) =>
+          e instanceof NpmTransportError &&
+          /ECONNREFUSED/.test(e.message) &&
+          !/unsatisfiable spec/.test(e.message),
+        "a dead registry reds as transport with the right root cause",
+      ),
+  );
+
+  // a truncated/garbled success is NOT evidence of an empty registry
+  withPath(
+    fakeNpmOnPath('echo "registry-garbage-not-json"\nexit 0'),
+    () =>
+      assert.throws(
+        () => resolveUnionSpecs(multi),
+        (e) =>
+          e instanceof NpmTransportError &&
+          /unparseable/.test(e.message) &&
+          !/unsatisfiable spec/.test(e.message),
+        "a garbled registry answer must not collapse into []",
+      ),
+  );
+});
+
+// ---- issue #653: a degraded walk is NOT convergence ----------------------
+//
+// registryPeers' old swallow fed the walk {} for every transport
+// failure, and walkToFixpoint stopped at the first stall — so a round
+// whose failing calls held the undiscovered peers read as "no peers
+// exist", the install proceeded under-converged, and verify passed the
+// degraded union quietly (exit 0, "closure satisfied", walked peers
+// missing). The walk now counts transport failures, gives a starved
+// stall ONE backoff re-query, and a degraded verdict is attributed —
+// the install path refuses to claim closure off it, the warm
+// install-once path keeps exit 0 with the warning.
+
+test("the walk default seam: registryPeers throws transport on ECONNREFUSED, stays quiet on E404 (issue #653)", () => {
+  withPath(
+    fakeNpmOnPath(
+      'echo "npm error code ECONNREFUSED" >&2\n' +
+        'echo "npm error network request failed" >&2\nexit 1',
+    ),
+    () =>
+      assert.throws(
+        () => registryPeers("@deepseek-ai/lib653", "^1.0.0"),
+        (e) =>
+          e instanceof NpmTransportError &&
+          /ECONNREFUSED/.test(e.message) &&
+          /peers of @deepseek-ai\/lib653/.test(e.message),
+        "a registry blip is a typed transport failure, never a silent {}",
+      ),
+  );
+  withPath(
+    fakeNpmOnPath(
+      'echo "npm error code E404" >&2\n' +
+        'echo "npm error 404 No match found for version ^9.0.0" >&2\nexit 1',
+    ),
+    () =>
+      assert.deepEqual(
+        registryPeers("@deepseek-ai/lib653", "^9.0.0"),
+        {},
+        "npm's own E404 stays a quiet no-peer answer — a genuine no-match needs no attribution",
+      ),
+  );
+  withPath(
+    fakeNpmOnPath('echo "registry-garbage-not-json"\nexit 0'),
+    () =>
+      assert.throws(
+        () => registryPeers("@deepseek-ai/lib653", "^1.0.0"),
+        (e) =>
+          e instanceof NpmTransportError && /unparseable/.test(e.message),
+        "a garbled peer map is transport, not evidence of a peerless package",
+      ),
+  );
+  // Same hermetic-absence shape as the #512 repro above: a prepared
+  // EMPTY dir as the whole PATH — no npm spawnable on any box, no
+  // literal banned path, no ambient re-inclusion to keep npm alive.
+  const keep = process.env.PATH;
+  process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-no-npm-"));
+  try {
+    assert.throws(
+      () => registryPeers("@deepseek-ai/lib653", "^1.0.0"),
+      (e) =>
+        e instanceof NpmTransportError && /npm did not run/.test(e.message),
+      "an unspawnable npm is transport (the #512 repro, now on the walk seam too)",
+    );
+  } finally {
+    process.env.PATH = keep;
+  }
+});
+
+test("a starved stall re-queries once after a backoff and recovers the hidden peers (issue #653)", () => {
+  // Round 1's only registry call hits the blip; the re-query succeeds —
+  // the transient-blip shape the #654 receipts watched turn into
+  // convergence-in-4-reruns. The walk self-heals instead of stopping.
+  const events = [];
+  const sleeps = [];
+  let calls = 0;
+  const peersFn = () => {
+    if (++calls === 1)
+      throw new NpmTransportError(
+        "registry transport failure fetching peers of m@^1.0.0 (issue #653)",
+      );
+    return { p: "^1.0.0" };
+  };
+  const plugins = [plugin("@local/a", { m: "^1.0.0" })];
+  const union = seed(plugins);
+  const rounds = walkToFixpoint(union, plugins, peersFn, {
+    onDegraded: (info) => events.push(info),
+    sleep: (ms) => sleeps.push(ms),
+  });
+  assert.ok(
+    union.specs().includes("p@^1.0.0"),
+    `the peers the blipped round held are discovered: ${union.specs().join(" ")}`,
+  );
+  assert.deepEqual(
+    events.map((e) => e.stage),
+    ["stall-retry"],
+    "exactly one stall-retry event — the healed verdict fires none",
+  );
+  assert.deepEqual(sleeps, [2000], "one bounded backoff before the re-query");
+  assert.ok(rounds >= 1, "the walk kept growing past the healed stall");
+});
+
+test("a walk that stays degraded through the re-query fires the verdict — and stops (bounded, issue #653)", () => {
+  const events = [];
+  const sleeps = [];
+  const plugins = [plugin("@local/a", { m: "^1.0.0" })];
+  const union = seed(plugins);
+  const rounds = walkToFixpoint(union, plugins, () => {
+    throw new NpmTransportError(
+      "registry transport failure fetching peers of m@^1.0.0 (issue #653)",
+    );
+  }, {
+    onDegraded: (info) => events.push(info),
+    sleep: (ms) => sleeps.push(ms),
+  });
+  assert.equal(rounds, 0, "a fully-starved walk returns the seed-only union");
+  assert.deepEqual(union.specs(), ["m@^1.0.0"], "the seed union is unchanged");
+  assert.deepEqual(
+    events.map((e) => e.stage),
+    ["stall-retry", "verdict"],
+    "the starved stall retried once, then the DEGRADED verdict fired",
+  );
+  assert.equal(events[1].failures, 1, "the verdict names the failure count");
+  assert.match(events[1].detail, /ECONNREFUSED|transport/, "…and the detail");
+  assert.deepEqual(
+    sleeps,
+    [2000],
+    "BOUNDED: exactly one backoff — a hard-down registry cannot loop the walk",
+  );
+});
+
+test("the partial-walk stop: failing calls holding the undiscovered peers no longer end the walk (issue #653)", () => {
+  // The ticket's easier hole: round 1's successful call adds nothing
+  // while the FAILING call held the only undiscovered peer — pre-fix
+  // that stall was final and p never reached the closure.
+  const events = [];
+  const sleeps = [];
+  const seen = new Set();
+  const peersFn = (n, spec) => {
+    const key = `${n}@${spec}`;
+    if (n === "m") return {}; // succeeds, contributes nothing
+    if (!seen.has(key)) {
+      seen.add(key);
+      throw new NpmTransportError(`blip on ${key}`);
+    }
+    return { p: "^1.0.0" }; // the peers the failed call held
+  };
+  const plugins = [
+    plugin("@local/a", { m: "^1.0.0" }),
+    plugin("@local/b", { q: "^1.0.0" }),
+  ];
+  const union = seed(plugins);
+  walkToFixpoint(union, plugins, peersFn, {
+    onDegraded: (info) => events.push(info),
+    sleep: (ms) => sleeps.push(ms),
+  });
+  assert.ok(
+    union.specs().includes("p@^1.0.0"),
+    `the starved entry's peers reached the closure on the re-query: ${union.specs().join(" ")}`,
+  );
+  assert.ok(
+    events.some((e) => e.stage === "stall-retry"),
+    "the starved stall was counted and retried",
+  );
+});
+
+test("a non-transport error from peersFn still propagates — the walk never swallows it (issue #653)", () => {
+  const plugins = [plugin("@local/a", { m: "^1.0.0" })];
+  assert.throws(
+    () =>
+      walkToFixpoint(seed(plugins), plugins, () => {
+        throw new RangeError("a genuine bug, not a registry blip");
+      }),
+    RangeError,
+    "only NpmTransportError is tolerated-as-degraded; everything else is loud",
+  );
+});
+
+// The ticket's exact 4-step false green, end-to-end through the real CLI
+// and a fake npm on PATH: view=ECONNREFUSED (the walk ends degraded on
+// the seed-only union), install=succeeds (the blip is over) and
+// materializes the one required package, so verify passes the
+// under-converged union — pre-fix that read "closure satisfied" exit 0
+// with every walked peer missing (npm will not re-add them under
+// --legacy-peer-deps). Post-fix the install path refuses typed, naming
+// the transport and the remedy. Sabotage probe: delete the
+// `if (walkDegraded) die(...)` arm in main() and this leg exits 0 —
+// the false green this pin exists to kill.
+test("CLI: a cold install off a degraded walk refuses 'closure satisfied' — the #653 false green is dead", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-cold-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib653": "^1.0.0" },
+      }),
+    );
+    const bin = fakeNpmOnPath(
+      [
+        'case "$1" in',
+        "  view)",
+        '    echo "npm error code ECONNREFUSED" >&2',
+        '    echo "npm error network request to registry failed" >&2',
+        "    exit 1;;",
+        "  install)",
+        '    mkdir -p node_modules/@deepseek-ai/lib653',
+        '    printf \'{"name":"@deepseek-ai/lib653","peerDependencies":{}}\' > node_modules/@deepseek-ai/lib653/package.json',
+        '    echo "added 1 package in 0s"',
+        "    exit 0;;",
+        "  *)",
+        "    exit 0;;",
+        "esac",
+      ].join("\n"),
+    );
+    const keep = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${keep}`;
+    let failed = false;
+    try {
+      execFileSync("node", [script], {
+        cwd: tmp,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      failed = true;
+      const out = String(e.stdout);
+      const err = String(e.stderr);
+      assert.match(err, /ENDED degraded/, "the walk's degraded verdict is loud");
+      assert.match(err, /ECONNREFUSED/, "the transport is named, not hidden");
+      assert.match(
+        err,
+        /refusing to claim "closure satisfied"/,
+        "the install path refuses the under-converged closure",
+      );
+      assert.match(err, /Rerun once the registry is reachable/, "…with the remedy");
+      assert.doesNotMatch(
+        out,
+        /closure satisfied/,
+        "the false green is gone from stdout too",
+      );
+    } finally {
+      process.env.PATH = keep;
+    }
+    assert.ok(failed, "a cold install off a degraded walk must exit non-zero");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// The #642-protected property, pinned on BOTH sides of the fix: a warm
+// cell whose tree already satisfies the walked closure keeps exit 0
+// during a registry blip (no false red, npm still skipped) — and the
+// verdict now carries the degraded-walk warning instead of passing
+// quietly.
+test("CLI: a warm install-once tree stays exit 0 on a degraded walk — with the warning attached (issue #653)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-warm-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib653": "^1.0.0" },
+      }),
+    );
+    fs.mkdirSync(path.join(tmp, "node_modules", "@deepseek-ai", "lib653"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmp, "node_modules", "@deepseek-ai", "lib653", "package.json"),
+      JSON.stringify({ name: "@deepseek-ai/lib653", peerDependencies: {} }),
+    );
+    linkLocals(tmp);
+    const bin = fakeNpmOnPath(
+      'echo "npm error code ECONNREFUSED" >&2\nexit 1',
+    );
+    const keep = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${keep}`;
+    let out = "";
+    let err = "";
+    let status = null;
+    try {
+      // spawnSync, not execFileSync: the SUCCESS path must have its
+      // stderr AND its real exit code pinned too — a zero exit that
+      // discards the warning channel is exactly the quiet pass #653
+      // closed.
+      const r = spawnSync("node", [script], { cwd: tmp, encoding: "utf8" });
+      out = String(r.stdout);
+      err = String(r.stderr);
+      status = r.status;
+    } finally {
+      process.env.PATH = keep;
+    }
+    assert.equal(status, 0, "the warm cell keeps exit 0 during the blip");
+    assert.match(
+      out,
+      /npm skipped \(install-once\)/,
+      "the warm cell keeps its install-once fast path — no false red",
+    );
+    assert.match(
+      err,
+      /ENDED degraded/,
+      "the degraded walk is named on stderr, not passed quietly",
+    );
+    assert.match(err, /ECONNREFUSED/, "the transport is attributed");
+    assert.doesNotMatch(
+      out,
+      /closure satisfied/,
+      "no full-satisfaction claim rides a degraded walk",
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("structural: the degraded-walk arms stay owned — classifier inside registryPeers, bounded retry, typed refusal (issue #653)", () => {
+  const src = fs.readFileSync(
+    path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs"),
+    "utf8",
+  );
+  const peersBody = src.slice(
+    src.indexOf("export function registryPeers"),
+    src.indexOf("export function resolveUnionSpecs"),
+  );
+  assert.match(
+    peersBody,
+    /classifyNpmViewFailure/,
+    "registryPeers classifies its failures — the swallow cannot silently return",
+  );
+  assert.match(
+    peersBody,
+    /NpmTransportError/,
+    "transport failures throw the typed error the walk counts",
+  );
+  assert.doesNotMatch(
+    peersBody,
+    /Deliberate swallow/,
+    "the #642 swallow justification is superseded — degraded is no longer silent",
+  );
+  const walkBody = src.slice(
+    src.indexOf("export function walkToFixpoint"),
+    src.indexOf("export function linkLocals"),
+  );
+  assert.match(walkBody, /stage: "stall-retry"/, "the bounded re-query arm");
+  assert.match(walkBody, /stage: "verdict"/, "the degraded-verdict arm");
+  assert.match(
+    walkBody,
+    /if\s*\(failures > 0 && !stallRetried\)/,
+    "the re-query is budgeted — a hard-down registry cannot loop the walk",
+  );
+  assert.match(
+    src,
+    /refusing to claim "closure satisfied"/,
+    "the install path's typed refusal exists",
+  );
+  assert.match(
+    src,
+    /npm skipped \(install-once\)/,
+    "the warm install-once fast path is untouched (the #642 property)",
+  );
+  assert.match(
+    src,
+    /dependency closure did not converge after install/,
+    "the post-install non-convergence refusal is untouched",
+  );
+});
+
+
 
 const splitSpec = (spec) => {
   const i = spec.lastIndexOf("@");
