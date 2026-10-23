@@ -782,13 +782,15 @@ test("pin: no leg of this file bare-deletes a lane arm from process.env — rest
   // from their local env objects, never from process.env. Scoped to the arm
   // names this branch's pins own and that are save-restored on this base —
   // GH_MERGE_GUARD (the #479 pin, healed by #612), GH_MERGE_GUARD_CHECK and
-  // MERGE_GUARD_CHECK (the #483/#553 pins) ; the MERGE_GUARD_VERIFY/_TOOL
-  // pair joins the same rule with PR #550's #490 heal, whose #487 pin still
-  // carries the older shape on the pre-#550 base.
+  // MERGE_GUARD_CHECK (the #483/#553 pins), and since issue #638 the
+  // MERGE_GUARD_VERIFY / MERGE_GUARD_VERIFY_TOOL pair: #550's #490 heal turns
+  // BOTH verify pins (#487 above and the new shim pin) into guarded restores,
+  // so the pair is now gradeable by the same line rule instead of riding on
+  // the next rebase's good behaviour.
   const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
   assert.doesNotMatch(
     src,
-    /^\s*delete process\.env\.(GH_MERGE_GUARD|GH_MERGE_GUARD_CHECK|MERGE_GUARD_CHECK);?\s*$/m,
+    /^\s*delete process\.env\.(GH_MERGE_GUARD|GH_MERGE_GUARD_CHECK|MERGE_GUARD_CHECK|MERGE_GUARD_VERIFY|MERGE_GUARD_VERIFY_TOOL);?\s*$/m,
     "a bare `delete process.env.<lane arm>` launders an armed lane's export (issues #553/#612) — save-and-restore instead",
   );
 });
