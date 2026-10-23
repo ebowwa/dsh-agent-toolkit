@@ -33,6 +33,11 @@ import {
   allPlugins,
   NpmTransportError,
   classifyNpmViewFailure,
+  withTransientRetry,
+  classifyInstallFailure,
+  npmFailureCode,
+  TRANSIENT_NPM_CODES,
+  RETRY_BACKOFF_MS,
 } from "../scripts/install-plugin-smoke-deps.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1325,6 +1330,257 @@ test("CLI: a spec that loses the readdir race still reaches the seed + verify li
       );
     }
     assert.ok(failed, "the bare fixture stays loud red");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// --- issue #660: ONE bounded transient retry -------------------------------
+// gates.yml runs the installer as a single `run:` with no shell retry (the
+// per-round shell loop is forbidden by tests/gates-plugin-deps.test.mjs), so
+// a registry blip that killed spec resolution or the materialization killed
+// the gate. The retry lives in the installer, is bounded to two attempts
+// total, and re-runs ONLY the allow-listed transport/availability classes —
+// a resolution VERDICT (ETARGET / ERESOLVE / E404) is never retried.
+
+const npmError = (code, message = "boom") => {
+  const e = new Error(`npm install failed${code ? ` (${code})` : ""}: ${message}`);
+  e.status = 1;
+  e.stderr = code ? `npm error code ${code}\nnpm error ${message}\n` : `npm error ${message}\n`;
+  return e;
+};
+
+test("issue #660: a transient npm code retries EXACTLY once, then succeeds", () => {
+  const calls = [];
+  const retries = [];
+  const sleeps = [];
+  const out = withTransientRetry(
+    (attempt) => {
+      calls.push(attempt);
+      if (attempt === 1) throw npmError("EAI_AGAIN", "network request to registry failed");
+      return "installed";
+    },
+    { sleep: (ms) => sleeps.push(ms), onRetry: (i) => retries.push(i), what: "npm install" },
+  );
+  assert.equal(out, "installed");
+  assert.equal(calls.length, 2, "two attempts total — ONE retry, never a loop");
+  assert.equal(retries.length, 1, "the retry fired exactly once");
+  assert.equal(retries[0].code, "EAI_AGAIN", "the retried class is named");
+  assert.equal(retries[0].backoffMs, RETRY_BACKOFF_MS, "the backoff is the bounded default");
+  assert.deepEqual(sleeps, [RETRY_BACKOFF_MS], "exactly one bounded backoff");
+});
+
+test("issue #660: a hard resolution failure is never retried (zero retries, zero waits)", () => {
+  for (const code of ["ETARGET", "ERESOLVE", "E404", "EINTEGRITY", "ENOENT"]) {
+    const calls = [];
+    const sleeps = [];
+    assert.throws(
+      () =>
+        withTransientRetry(
+          (attempt) => {
+            calls.push(attempt);
+            throw npmError(code, `hard failure ${code}`);
+          },
+          { sleep: (ms) => sleeps.push(ms), onRetry: () => assert.fail(`retried ${code}`) },
+        ),
+      (e) => npmFailureCode(e) === code,
+      `${code} must surface on the FIRST attempt`,
+    );
+    assert.equal(calls.length, 1, `${code}: a resolution verdict is authoritative — no second look`);
+    assert.deepEqual(sleeps, [], `${code}: no backoff is spent on a verdict`);
+  }
+});
+
+test("issue #660: a persistent transient failure stays bounded at two attempts (no third)", () => {
+  const calls = [];
+  assert.throws(
+    () =>
+      withTransientRetry(
+        (attempt) => {
+          calls.push(attempt);
+          throw npmError("ECONNRESET");
+        },
+        { sleep: () => {} },
+      ),
+    /ECONNRESET|npm install failed/,
+  );
+  assert.equal(calls.length, 2, "a hard-down registry reds after the bounded retry — it never loops");
+});
+
+test("issue #660: the retried classes are the transport/availability allow-list, never a verdict", () => {
+  // named in the source comment above withTransientRetry — the classes a
+  // second attempt can honestly clear
+  for (const code of ["ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "ECONNREFUSED",
+    "ETIMEDOUT", "EPIPE", "E503", "E502", "E504", "E429", "ELOCKED", "EBUSY"]) {
+    assert.equal(
+      classifyInstallFailure(npmError(code)).transient,
+      true,
+      `${code} is a transient class and must be retried`,
+    );
+    assert.ok(TRANSIENT_NPM_CODES.has(code), `${code} is declared in TRANSIENT_NPM_CODES`);
+  }
+  // …and the verdicts stay verdicts, even though they are npm codes too
+  for (const code of ["ETARGET", "ERESOLVE", "E404", "EINTEGRITY", "EJSONPARSE", "EACCES"]) {
+    assert.equal(
+      classifyInstallFailure(npmError(code)).transient,
+      false,
+      `${code} is a real resolution/dependency error — retrying it would only bury it`,
+    );
+  }
+  // an UNRECOGNIZED code is fail-closed (not retried), matching the #512
+  // classifier's stance — an unknown class must not be assumed transient
+  assert.equal(classifyInstallFailure(npmError("EWEIRD")).transient, false);
+  // npm never ran (spawn/signal failure) — retrying a missing binary is pointless
+  const spawnFail = Object.assign(new Error("spawn npm ENOENT"), { code: "ENOENT" });
+  assert.equal(classifyInstallFailure(spawnFail).transient, false);
+  assert.match(classifyInstallFailure(spawnFail).detail, /npm did not run/);
+});
+
+test("issue #660 structural: main() carries the retry at both transient boundaries", () => {
+  const src = fs.readFileSync(
+    path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs"),
+    "utf8",
+  );
+  const mainBody = src.slice(src.indexOf("export async function main"));
+  assert.match(
+    mainBody,
+    /withTransientRetry\(\(\) => resolveUnionSpecs\(union\)/,
+    "spec resolution is retried once on NpmTransportError only",
+  );
+  assert.match(
+    mainBody,
+    /isTransient: \(e\) => e instanceof NpmTransportError/,
+    "…classified by the typed transport error, never by a bare throw",
+  );
+  assert.match(
+    mainBody,
+    /stdio: \["ignore", "inherit", "pipe"\]/,
+    "the install keeps stdout streaming and captures stderr for classification",
+  );
+  assert.match(mainBody, /what: "npm install"/, "the materialization boundary is retried");
+  assert.match(
+    src,
+    /TRANSIENT_NPM_CODES/,
+    "the allow-list is a named constant, not an inline condition",
+  );
+  assert.doesNotMatch(
+    src,
+    /while\s*\(\s*true\s*\).*npm install/s,
+    "no unbounded npm loop",
+  );
+});
+
+test("issue #660 CLI: an install that fails EAI_AGAIN once is retried and the gate goes GREEN", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-retry-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib660": "^1.0.0" },
+      }),
+    );
+    // stateful fake npm: the FIRST install attempt fails with a transient
+    // transport code, the second materializes the package.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-npm-"));
+    fs.writeFileSync(
+      path.join(bin, "npm"),
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  view) echo '{}'; exit 0;;",
+        "  install)",
+        '    n="$(cat .npm-install-attempts 2>/dev/null || echo 0)"',
+        '    n=$((n + 1)); echo "$n" > .npm-install-attempts',
+        '    if [ "$n" -eq 1 ]; then',
+        '      echo "npm error code EAI_AGAIN" >&2',
+        '      echo "npm error network request to registry failed" >&2',
+        "      exit 1",
+        "    fi",
+        "    mkdir -p node_modules/@deepseek-ai/lib660",
+        `    printf '%s' '{"name":"@deepseek-ai/lib660","peerDependencies":{}}' > node_modules/@deepseek-ai/lib660/package.json`,
+        '    echo "added 1 package in 0s"',
+        "    exit 0;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n") + "\n",
+      { mode: 0o755 },
+    );
+    const keep = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${keep}`;
+    let r;
+    try {
+      r = spawnSync("node", [script], { cwd: tmp, encoding: "utf8" });
+    } finally {
+      process.env.PATH = keep;
+    }
+    const out = String(r.stdout);
+    const err = String(r.stderr);
+    assert.equal(r.status, 0, `the retried run must converge green:\n${out}\n${err}`);
+    assert.equal(
+      fs.readFileSync(path.join(tmp, ".npm-install-attempts"), "utf8").trim(),
+      "2",
+      "exactly two install attempts: the failure, then the ONE retry",
+    );
+    assert.match(err, /issue #660/, "the retry is a recorded, loud event");
+    assert.match(err, /EAI_AGAIN/, "the retried transient class is named on stderr");
+    assert.match(out, /closure satisfied/, "the gate's verdict is a real one — the install completed");
+    assert.doesNotMatch(out, /closure satisfied.*DEGRADED/s, "no degraded claim rides this verdict");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("issue #660 CLI: a hard resolution failure makes exactly ONE install attempt (no retry)", () => {
+  const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-hard-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "plugins", "a", "package.json"),
+      JSON.stringify({
+        name: "@local/a",
+        peerDependencies: { "@deepseek-ai/lib660h": "^1.0.0" },
+      }),
+    );
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660h-npm-"));
+    fs.writeFileSync(
+      path.join(bin, "npm"),
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  view) echo '{}'; exit 0;;",
+        "  install)",
+        '    n="$(cat .npm-install-attempts 2>/dev/null || echo 0)"',
+        '    n=$((n + 1)); echo "$n" > .npm-install-attempts',
+        '    echo "npm error code ETARGET" >&2',
+        '    echo "npm error notarget No matching version found for @deepseek-ai/lib660h@^1.0.0" >&2',
+        "    exit 1;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n") + "\n",
+      { mode: 0o755 },
+    );
+    const keep = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${keep}`;
+    let r;
+    try {
+      r = spawnSync("node", [script], { cwd: tmp, encoding: "utf8" });
+    } finally {
+      process.env.PATH = keep;
+    }
+    assert.notEqual(r.status, 0, "a real resolution error is a red gate");
+    assert.equal(
+      fs.readFileSync(path.join(tmp, ".npm-install-attempts"), "utf8").trim(),
+      "1",
+      "ETARGET is a verdict — the install ran exactly once, never retried",
+    );
+    assert.match(String(r.stderr), /FAILED \(ETARGET\)/, "the red names npm's own code");
+    assert.match(String(r.stderr), /not retried|not a transient class/, "…and says why it was not retried");
+    assert.doesNotMatch(String(r.stderr), /one bounded retry/, "no retry was spent on a verdict");
+    assert.doesNotMatch(String(r.stdout), /closure satisfied/, "no false green on a hard failure");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
