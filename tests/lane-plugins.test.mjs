@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync, copyFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync, copyFileSync, chmodSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -59,6 +59,29 @@ test("manifest: parses, required fields per seam, external refs pinned", () => {
   // issue #254: the reflex directive is a mac-lane bake-in — a system-prompt
   // entry must not silently ride the linux set (Linux nodes never mount it).
   assert.ok(!m.linux.some((e) => e.seam === "system-prompt"), "no system-prompt entry on the linux set");
+
+  // FleetTower#2641 (the 2026-10-13 purge postmortem, ask 1 — the write
+  // side): claim-lane session persistence roots at the FLEET corpus on
+  // BOTH platforms — NEVER the user's real ~/.dsh, which on a web box IS
+  // the user's chat history (194 claim-lane workspaces measured in the
+  // user corpus, 2026-10-24). The consult runs only at dispatched spawn,
+  // so this row is fleet-lane-scoped by construction: user web chats keep
+  // the shipped profile row, untouched. The search index moves with it —
+  // a dispatched job's index is derived CLAIM text; it belongs in fleet
+  // space too.
+  for (const set of [m.macos, m.linux]) {
+    const row = set.find((e) => e.id === "session-persistence-jsonl");
+    assert.ok(row, "session-persistence row present on both platforms");
+    // The manifest stores the `~` spelling — the consult expands it
+    // against the invoking user's real home at spawn time (the test two
+    // blocks down pins that expansion).
+    assert.equal(row.config.root, "~/.dsh-native/agent-home/sessions", "persistence root is the fleet corpus, never the user corpus");
+    assert.notEqual(row.config.root, "~/.dsh/sessions", "the #110 shared-corpus root is gone");
+    assert.equal(row.ensure_dir, true, "the consult mints the fleet corpus before the first job writes there");
+    const idx = set.find((e) => e.id === "session-query-sqlite");
+    assert.ok(idx, "session-query row present on both platforms");
+    assert.equal(idx.shared_index, "~/.dsh-native/agent-home/session-index", "the search index (derived claim text) lives in fleet space too");
+  }
 });
 
 test("consult: platform gate — linux node sees nothing from the macos set", () => {
@@ -248,7 +271,7 @@ test("consult: profile-config — bare RESTATING row (no insert grammar), ~/ con
   writeFileSync(
     manifest,
     JSON.stringify({
-      macos: [{ id: "session-persistence-jsonl", seam: "profile-config", nodes: ["*"], package: "@deepseek-ai/dsh-session-persistence-jsonl", config: { root: "~/.dsh/sessions" } }],
+      macos: [{ id: "session-persistence-jsonl", seam: "profile-config", nodes: ["*"], package: "@deepseek-ai/dsh-session-persistence-jsonl", config: { root: "~/.dsh-native/agent-home/sessions" } }],
     })
   );
   const lines = consult(["--platform", "Darwin", "--node", "mini-native-open", "--home", d, manifest]);
@@ -258,7 +281,38 @@ test("consult: profile-config — bare RESTATING row (no insert grammar), ~/ con
   assert.doesNotMatch(body, /insert/, "bare row — the id already ships; insert would append a duplicate");
   assert.match(body, /- id: session-persistence-jsonl/, "restates the SHIPPED id");
   assert.match(body, /name: '@deepseek-ai\/dsh-session-persistence-jsonl'/, "names the package");
-  assert.match(body, new RegExp(`root: "${join(homedir(), ".dsh", "sessions").replace(/\\/g, "\\\\")}"`), "~/ expanded to the real home (job homes are discarded; the corpus is not)");
+  assert.match(body, new RegExp(`root: "${join(homedir(), ".dsh-native", "agent-home", "sessions").replace(/\\/g, "\\\\")}"`), "~/ expanded to the real home (job homes are discarded; the corpus is not)");
+});
+
+test("consult: profile-config ensure_dir — the fleet corpus is minted 0700 before the first write; a root-less row skips loud", () => {
+  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const manifest = join(d, "m.json");
+  makeProfilePkg(d, "@deepseek-ai/dsh-session-persistence-jsonl");
+  const corpus = join(d, "corpus-root", "sessions");
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      macos: [{ id: "session-persistence-jsonl", seam: "profile-config", nodes: ["*"], package: "@deepseek-ai/dsh-session-persistence-jsonl", ensure_dir: true, config: { root: corpus } }],
+    })
+  );
+  const lines = consult(["--platform", "Darwin", "--node", "mini-native-open", "--home", d, manifest]);
+  assert.ok(lines.some((l) => l.startsWith("PATCH\t")), "overlay emitted for a healthy ensure_dir row");
+  assert.ok(existsSync(corpus), "ensure_dir minted the corpus before the first job writes there");
+  const mode = statSync(corpus).mode & 0o777;
+  assert.equal(mode, 0o700, `corpus is owner-only, got ${mode.toString(8)}`);
+
+  // The manifest-bug arm: ensure_dir with no config.root is a loud SKIP,
+  // never a crash mid-loop and never a silent mount.
+  const bad = join(d, "m2.json");
+  writeFileSync(
+    bad,
+    JSON.stringify({
+      macos: [{ id: "session-persistence-jsonl", seam: "profile-config", nodes: ["*"], package: "@deepseek-ai/dsh-session-persistence-jsonl", ensure_dir: true, config: {} }],
+    })
+  );
+  const skip = consult(["--platform", "Darwin", "--node", "mini-native-open", "--home", d, bad]);
+  assert.ok(skip.some((l) => l.startsWith("SKIP\tsession-persistence-jsonl") && /ensure_dir set but config\.root missing/.test(l)), `loud skip for the root-less row, got: ${skip}`);
+  assert.ok(!skip.some((l) => l.startsWith("PATCH\t")), "no overlay for a root-less ensure_dir row");
 });
 
 test("consult: profile-config shared_index — unique per-job db under the shared dir, dir created, stale files pruned", () => {

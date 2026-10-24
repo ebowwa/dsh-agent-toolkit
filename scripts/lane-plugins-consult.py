@@ -240,6 +240,10 @@ def main():
         # whole config, so the overlay restates every shipped field it cares
         # about. Config strings expand `~/`; `shared_index` swaps in a
         # per-job db path under a shared per-box directory (owner contract).
+        # `ensure_dir` mints the expanded config.root (0700) before the
+        # first job writes there — the fleet session corpus row
+        # (FleetTower#2641) rides it, so a fresh node's first dispatched
+        # job never fails its persistence write on a missing dir.
         if seam == "profile-config":
             if home is None:
                 print(f"SKIP\t{pid}\tno --home given")
@@ -250,6 +254,16 @@ def main():
                 print(f"SKIP\t{pid}\tprofile package '{pkg_name or '?'}' missing/incomplete at {pkg_at} (a restated row naming a missing package is a dead mount)")
                 continue
             cfg = expand_config(entry.get("config") or {})
+            if entry.get("ensure_dir"):
+                target_dir = cfg.get("root")
+                if not target_dir:
+                    print(f"SKIP\t{pid}\tensure_dir set but config.root missing (manifest bug — gate cannot run)")
+                    continue
+                try:
+                    os.makedirs(target_dir, mode=0o700, exist_ok=True)
+                except OSError as e:
+                    print(f"SKIP\t{pid}\tcannot mint ensure_dir {target_dir}: {e}")
+                    continue
             if entry.get("shared_index"):
                 err = shared_index_db(entry, cfg)
                 if err:

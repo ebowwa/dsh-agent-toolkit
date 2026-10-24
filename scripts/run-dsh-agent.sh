@@ -1592,13 +1592,35 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT \
     dsh --profile headless ${DSH_LAUNCH_ARGS[@]+"${DSH_LAUNCH_ARGS[@]}"} "$TASK" >"$FINAL_OUT" 2> >(tee "$ATTEMPT_ERR_LOG" >&2) &
 DSH_PID=$!
 
-# Box-shared session corpus (lane-plugins.json session-persistence-jsonl):
-# dispatched jobs WRITE their session to the box-shared dir (~/.dsh/sessions
-# by manifest config), NOT the job-fresh $DSH_HOME — every session-file
-# probe must search BOTH roots or it reports "no live session file" on every
-# healthy run. Progress streaming, per-run token accounting, attempt
-# tombstone had_session, and transcript archiving all ride these finds.
-SESSION_ROOTS=("${DSH_BOX_SESSIONS:-$HOME/.dsh/sessions}" "$DSH_HOME/sessions")
+# Box-shared session corpus (lane-plugins.json session-persistence-jsonl).
+# Since FleetTower#2641 dispatched jobs WRITE the fleet corpus
+# (~/.dsh-native/agent-home/sessions — the manifest row and the node env's
+# DSH_SESSIONS_HOME name it; before that, the user's real ~/.dsh/sessions),
+# NOT the job-fresh $DSH_HOME — every session-file probe must search the
+# roots a run could have written or it reports "no live session file" on
+# every healthy run (the issue #110 burn, read side). Progress streaming,
+# per-run token accounting, attempt tombstone had_session, and transcript
+# archiving all ride these finds. Three roots, deduped, first-match-wins:
+#   1. the corpus this env names (DSH_BOX_SESSIONS wins outright, then
+#      DSH_SESSIONS_HOME — the native installer sets it — else the legacy
+#      $HOME/.dsh/sessions default, byte-identical when unset everywhere);
+#   2. the fleet corpus — the manifest row writes there the moment the
+#      toolkit tag lands, which can PREDATE the node regenerating its env
+#      (the drift law: a stale env is armed), so the write root is probed
+#      even while the env still spells the legacy default;
+#   3. the job home's own sessions/ (persistent-home shapes; on the native
+#      installer's DSH_HOME it IS the fleet corpus — deduped away).
+# The user corpus is probed READ-ONLY here (find by mtime); nothing in the
+# driver ever writes it.
+SESSION_ROOTS=("${DSH_BOX_SESSIONS:-${DSH_SESSIONS_HOME:-$HOME/.dsh}/sessions}")
+_fleet_corpus="$HOME/.dsh-native/agent-home/sessions"
+if [ "$_fleet_corpus" != "${SESSION_ROOTS[0]}" ]; then
+  SESSION_ROOTS+=("$_fleet_corpus")
+fi
+if [ "$DSH_HOME/sessions" != "${SESSION_ROOTS[0]}" ] && [ "$DSH_HOME/sessions" != "$_fleet_corpus" ]; then
+  SESSION_ROOTS+=("$DSH_HOME/sessions")
+fi
+unset _fleet_corpus
 
 stream_session_progress() {
   # $1: marker newer-than, $2: pid of dsh wrapper
