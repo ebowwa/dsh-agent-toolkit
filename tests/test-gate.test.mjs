@@ -33,7 +33,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { discoverSuites } from "../scripts/bounded-gate.mjs";
+import {
+  discoverSuites,
+  // the bound's measurement contract (#680): the default is set FROM these
+  // numbers, so the pins below grade the numbers as well as the default.
+  DEFAULT_TIMEOUT_S,
+  MEASURED_SLOWEST_SUITES,
+  MEASURED_BOX_CORES,
+  MEASURED_WORST_CASE_S,
+  MIN_HEADROOM_FACTOR,
+  timeoutS,
+} from "../scripts/bounded-gate.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GATE = path.join(ROOT, "scripts", "bounded-gate.mjs");
@@ -161,7 +171,7 @@ test("passes", () => assert.equal(1 + 1, 2));
   }
 });
 
-test("a blank knob falls to the 120s default — only a malformed value is a bad knob (issue #538)", () => {
+test("a blank knob falls to the documented default bound — only a malformed value is a bad knob (issue #538)", () => {
   const f = fixtureDir();
   try {
     const green = f.suite("green.test.mjs", `
@@ -174,6 +184,70 @@ test("passes", () => assert.equal(1 + 1, 2));
     assert.match(res.stdout, /ok +.*green\.test\.mjs/, "the suite must pass under the default bound");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+// --- the bound is set from a MEASUREMENT, not a guess (#680's class) ------
+// A timeout on this gate is a LOAD signal, not a test signal. At the former
+// 120s default two GREEN integration suites — tests/run-dsh-agent.test.mjs at
+// 139.4s and tests/plugin-smoke-deps.test.mjs at 115.0s, both measured on a
+// busy 2-core box — were SIGKILLed at the bound and reported HANG, so a full
+// gate printed "72/74 suites ok — HANG: <those two>" and every lane that read
+// the HANG as a red spent a round proving its own diff innocent. These pins
+// make the measurement part of the contract: the documented facts are frozen
+// (a tighter default may not be justified by shrinking them), the default must
+// clear whole-suite headroom over the worst of them, the knob-free resolution
+// must actually be that default, and the comment carrying the measurement must
+// stay in the source. A future "tighten the timeouts" change has to argue with
+// the numbers instead of quietly editing one.
+
+test("the default bound clears whole-suite headroom over the measured worst case — a busy box cannot manufacture a HANG false red (#680)", () => {
+  // the frozen measurement: these are wall times observed on the 2-core box,
+  // not aspirations — shrinking one to license a tighter default reds here
+  assert.deepEqual(
+    MEASURED_SLOWEST_SUITES.map((s) => [s.rel, s.seconds]),
+    [
+      ["tests/run-dsh-agent.test.mjs", 139.4],
+      ["tests/plugin-smoke-deps.test.mjs", 115.0],
+    ],
+    "the documented measured wall times must stay the measured ones (#680) — a tighter default may not be justified by shrinking the measurement",
+  );
+  const worst = MEASURED_SLOWEST_SUITES.reduce((a, s) => Math.max(a, s.seconds), 0);
+  assert.equal(MEASURED_WORST_CASE_S, worst, "MEASURED_WORST_CASE_S must actually be the worst documented suite");
+  assert.equal(MEASURED_BOX_CORES, 2, "the measurement's box shape (2 cores) is part of the fact being argued from");
+  assert.ok(MIN_HEADROOM_FACTOR >= 2, "whole-suite headroom means at least 2x the measured worst case, not 1.1x");
+
+  const suiteList = MEASURED_SLOWEST_SUITES.map((s) => `${s.rel} ${s.seconds}s`).join(", ");
+  const floor = MIN_HEADROOM_FACTOR * MEASURED_WORST_CASE_S;
+  assert.ok(
+    DEFAULT_TIMEOUT_S >= floor,
+    `the default bound (${DEFAULT_TIMEOUT_S}s) must stay >= ${MIN_HEADROOM_FACTOR}x the measured worst case ` +
+    `(${MEASURED_WORST_CASE_S}s on a ${MEASURED_BOX_CORES}-core box — floor ${floor}s); measured: ${suiteList}. ` +
+    `#680: a timeout here is a LOAD signal, not a test signal — a hang verdict on a load tail is a false red ` +
+    `that costs a lane a round.`,
+  );
+});
+
+test("the knob-free bound the gate actually runs is the documented default (#680)", () => {
+  // the resolution, not just the constant: an unset/blank knob must land on
+  // DEFAULT_TIMEOUT_S, and an explicit knob must still win
+  assert.equal(timeoutS({}), DEFAULT_TIMEOUT_S, "an unset knob must resolve to DEFAULT_TIMEOUT_S");
+  assert.equal(timeoutS({ DSH_TEST_GATE_TIMEOUT_S: "" }), DEFAULT_TIMEOUT_S, "a blank knob must resolve to DEFAULT_TIMEOUT_S");
+  assert.equal(timeoutS({ DSH_TEST_GATE_TIMEOUT_S: "   " }), DEFAULT_TIMEOUT_S, "a whitespace knob must resolve to DEFAULT_TIMEOUT_S");
+  assert.equal(timeoutS({ DSH_TEST_GATE_TIMEOUT_S: "600" }), 600, "an explicit bound must still win over the default");
+});
+
+test("the default's source comment carries the measurement it was set from — the suites, their wall times, the box shape, and why (#680)", () => {
+  const src = read("scripts/bounded-gate.mjs");
+  // the comment is the argument: without it the number is unfalsifiable, and
+  // the next lane has no way to tell 300s from an arbitrary bump
+  for (const [re, why] of [
+    [/tests\/run-dsh-agent\.test\.mjs\s+139\.4s/, "the worst-case suite and its measured wall time"],
+    [/tests\/plugin-smoke-deps\.test\.mjs\s+115\.0s/, "the second measured suite and its wall time"],
+    [/2-core/, "the box shape the measurement was taken on"],
+    [/false red/i, "the reason — a hang verdict on a load tail is a false red"],
+  ]) {
+    assert.match(src, re, `the DEFAULT_TIMEOUT_S comment must keep ${why} (${re}) — #680: do not bump the number silently`);
   }
 });
 
