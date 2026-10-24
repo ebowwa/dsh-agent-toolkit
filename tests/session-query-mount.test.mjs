@@ -133,11 +133,12 @@ test("manifest: the three session-query entries cross-pin (ids are the SHIPPED p
     // id from the real profile dump, or the overlay adds a duplicate plugin.
     assert.equal(byId["session-persistence-jsonl"]?.seam, "profile-config", `${platform}: corpus row restates the shipped id`);
     assert.equal(byId["session-persistence-jsonl"]?.package, "@deepseek-ai/dsh-session-persistence-jsonl");
-    assert.equal(byId["session-persistence-jsonl"]?.config?.root, "~/.dsh/sessions", `${platform}: corpus rooted at the box-shared sessions dir`);
+    assert.equal(byId["session-persistence-jsonl"]?.config?.root, "~/.dsh-native/agent-home/sessions", `${platform}: corpus rooted at the FLEET agent home — the user's real corpus is never a dispatched write root (FleetTower#2641, the #2396 purge ask 1)`);
     const sqlite = byId["session-query-sqlite"];
     assert.equal(sqlite?.seam, "profile-config", `${platform}: backend row restates the shipped id`);
     assert.equal(sqlite?.config?.openAt, "first-search", `${platform}: boot unaffected; an unopenable index fails one search`);
     assert.ok(sqlite?.shared_index, `${platform}: per-job db under a shared dir — one shared FILE breaks the single-process-owner contract`);
+    assert.equal(sqlite?.shared_index, "~/.dsh-native/agent-home/session-index", `${platform}: the derived index lives in fleet space too (FleetTower#2641)`);
     const tool = byId["tool-session-query"];
     assert.equal(tool?.seam, "plugin", `${platform}: tools ride the compose seam`);
     assert.equal(tool?.source?.path, "plugins/tool-session-query", `${platform}: in-tree vendored build`);
@@ -211,7 +212,8 @@ test("the three overlays compose into the real profile (live: needs dsh + the bo
   assert.match(dump.stdout, /- id: session-query-sqlite\n\s+name: ['"]@deepseek-ai\/dsh-session-query-sqlite['"]\n\s+config:\n\s+openAt: first-search/, "backend row ON in the composed tree");
   assert.doesNotMatch(dump.stdout, /openAt: never/, "shipped-off default must not survive the restatement");
   assert.match(dump.stdout, /- id: tool-session-query\n\s+name: ['"]@deepseek-ai\/dsh-tool-session-query['"]/, "tool row resolved (not warn-and-skipped)");
-  assert.match(dump.stdout, /root: .*\/\.dsh\/sessions/, "corpus rooted at the shared store");
+  assert.match(dump.stdout, /root: .*\/\.dsh-native\/agent-home\/sessions/, "corpus rooted at the FLEET agent home (FleetTower#2641), not the user's real ~/.dsh");
+  assert.doesNotMatch(dump.stdout, /root: .*\/\.dsh\/sessions/, "the #110 shared-corpus root must not survive the restatement");
 });
 
 test("the composed tree BOOTS: all three plugins load, boot dies at the credential wall (live: needs dsh + the box backend packages)", { skip: LIVE_SKIP_REASON }, () => {

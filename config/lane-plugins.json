@@ -55,22 +55,23 @@
       "id": "session-persistence-jsonl",
       "seam": "profile-config",
       "nodes": ["*"],
-      "_doc": "Shared session corpus (issue #110, the load-bearing half of 'shared location'): the shipped row roots persistence at dshHomePath('sessions') — under the JOB-FRESH dispatched home that is an empty dir, so prior-session search would silently see nothing. Restating root at the box-shared sessions dir makes every dispatched job read AND write the box's accumulated history (the store the zstd parsers hand-mined). Persistent-home runs already resolve here — a no-op for them. Per-session files, so concurrent jobs do not contend. Cross-session tool authorization is exact-cwd (package README), so visibility is per-box per-workdir: same-lane jobs see each other; that is the honest scope.",
+      "ensure_dir": true,
+      "_doc": "FLEET session corpus (issue #110's shared location, superseded for claim lanes by the 2026-10-13 purge postmortem ask 1 — FleetTower#2641): the row used to root persistence at ~/.dsh/sessions, so every dispatched job WROTE its workspace into the box's real dsh home — which on a web box IS the user's chat history (194 claim-lane workspaces measured in the user corpus, 2026-10-24). Dispatched jobs now root writes at the fleet-owned corpus under the agent home — the same home the native node's env carries as DSH_SESSIONS_HOME, so node reads, driver probes, and the receipted #2396 prune all name one corpus. The #110 requirement survives: prior-session search sees accumulated history — the fleet corpus accumulates claim history (the tower's one-time migrate-claim-sessions.sh pass seeds it from the user corpus), and the shipped profile row still roots USER web chats at the real home, untouched (user chats never consult this manifest; only the dispatched runner does). ensure_dir makes the consult mint the corpus 0700 before the first job writes there.",
       "package": "@deepseek-ai/dsh-session-persistence-jsonl",
       "config": {
-        "root": "~/.dsh/sessions"
+        "root": "~/.dsh-native/agent-home/sessions"
       }
     },
     {
       "id": "session-query-sqlite",
       "seam": "profile-config",
       "nodes": ["*"],
-      "_doc": "Session search backend ON (issue #110): the profile ships this row as path ':memory:' / openAt 'never' — FTS5 search deliberately off. Both shipped fields are restated (patch rows replace whole config). openAt 'first-search' keeps boot unaffected (an unopenable index fails one search, never service activation). 'shared_index' stamps a per-job db under the shared per-box dir: ONE shared file would break the backend's single-process-owner contract — it reconciles under BEGIN IMMEDIATE with no busy timeout, and node:sqlite throws immediately on lock contention, so the worker's parallel slots would flake every search. The index is the backend's own 'dedicated disposable database'; the durable half of sharing is the corpus row above.",
+      "_doc": "Session search backend ON (issue #110): the profile ships this row as path ':memory:' / openAt 'never' — FTS5 search deliberately off. Both shipped fields are restated (patch rows replace whole config). openAt 'first-search' keeps boot unaffected (an unopenable index fails one search, never service activation). 'shared_index' stamps a per-job db under the shared per-box dir: ONE shared file would break the backend's single-process-owner contract — it reconciles under BEGIN IMMEDIATE with no busy timeout, and node:sqlite throws immediately on lock contention, so the worker's parallel slots would flake every search. The index is the backend's own 'dedicated disposable database'; the durable half of sharing is the corpus row above. The index dir moved to the fleet agent home with the corpus row (FleetTower#2641): a dispatched job's search index is derived CLAIM text — it belongs in fleet space, not beside the user's dsh home.",
       "package": "@deepseek-ai/dsh-session-query-sqlite",
       "config": {
         "openAt": "first-search"
       },
-      "shared_index": "~/.dsh/session-index"
+      "shared_index": "~/.dsh-native/agent-home/session-index"
     },
     {
       "id": "tool-session-query",
@@ -92,22 +93,23 @@
       "id": "session-persistence-jsonl",
       "seam": "profile-config",
       "nodes": ["*"],
-      "_doc": "See the macos entry — identical seam, box-shared corpus.",
+      "ensure_dir": true,
+      "_doc": "See the macos entry — identical seam, fleet corpus (FleetTower#2641).",
       "package": "@deepseek-ai/dsh-session-persistence-jsonl",
       "config": {
-        "root": "~/.dsh/sessions"
+        "root": "~/.dsh-native/agent-home/sessions"
       }
     },
     {
       "id": "session-query-sqlite",
       "seam": "profile-config",
       "nodes": ["*"],
-      "_doc": "See the macos entry — identical seam, per-job index db under the shared dir.",
+      "_doc": "See the macos entry — identical seam, per-job index db under the fleet agent home.",
       "package": "@deepseek-ai/dsh-session-query-sqlite",
       "config": {
         "openAt": "first-search"
       },
-      "shared_index": "~/.dsh/session-index"
+      "shared_index": "~/.dsh-native/agent-home/session-index"
     },
     {
       "id": "tool-session-query",
