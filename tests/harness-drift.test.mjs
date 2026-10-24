@@ -10,7 +10,7 @@
 // ssh session to pin it). These tests pin the wrapper-sized contract with
 // REAL git against a local bare origin (no network):
 //
-//   STAMP    scripts/HARNESS_DEPLOYED_SHA beside the wrapper — sha, short,
+//   STAMP    .dsh/HARNESS_DEPLOYED_SHA at the checkout root — sha, short,
 //            ref, committed_at, stamped_at; refreshed after every heal.
 //   COMPARE  one ls-remote round trip against the expected ref: the
 //            checkout's branch, or the tag a detached pin sits on (the
@@ -65,7 +65,7 @@ const commitFile = (cwd, name, body) => {
   return git(cwd, ["commit", "-m", `add ${name}`]);
 };
 
-const stampPath = (box) => path.join(box, "scripts", "HARNESS_DEPLOYED_SHA");
+const stampPath = (box) => path.join(box, ".dsh", "HARNESS_DEPLOYED_SHA");
 const readStamp = (box) => {
   const p = stampPath(box);
   if (!existsSync(p)) return null;
@@ -126,7 +126,7 @@ const fixture = () => {
 
 // ------------------------------- STAMP ---------------------------------------
 
-test("stamp: writes sha/short/ref/committed_at/stamped_at beside the wrapper; re-stamp refreshes", () => {
+test("stamp: writes sha/short/ref/committed_at/stamped_at at the checkout root; re-stamp refreshes", () => {
   const f = fixture();
   try {
     const r1 = runScript(f.box, "stamp");
@@ -553,8 +553,8 @@ test("source pin: the posted artifacts stamp the wrapper sha", () => {
 
 test("the stamp is gitignored runtime state, never repo content", () => {
   const gi = readFileSync(path.join(ROOT, ".gitignore"), "utf8");
-  assert.match(gi, /^scripts\/HARNESS_DEPLOYED_SHA$/m, ".gitignore must ignore the per-checkout stamp");
-  const st = spawnSync("git", ["-C", ROOT, "check-ignore", "-q", "scripts/HARNESS_DEPLOYED_SHA"], { encoding: "utf8" });
+  assert.match(gi, /^\.dsh\/HARNESS_DEPLOYED_SHA$/m, ".gitignore must ignore the per-checkout stamp");
+  const st = spawnSync("git", ["-C", ROOT, "check-ignore", "-q", ".dsh/HARNESS_DEPLOYED_SHA"], { encoding: "utf8" });
   assert.equal(st.status, 0, "git check-ignore confirms the stamp never dirties a harness checkout");
 });
 
@@ -619,4 +619,87 @@ test("source pin: the collision refusal is a first-class verdict in arm + wrappe
   assert.ok(collIdx > 0 && moveIdx > collIdx, "the guard runs BEFORE the move, so no arm can destroy first");
   const driver = readFileSync(DRIVER, "utf8");
   assert.match(driver, /refused-untracked-collision/, "the wrapper's verdict whitelist knows the token (unknown tokens read as degraded)");
+});
+
+// ------------------------ ISSUE #679: stamp location -------------------------
+
+test("issue #679: nothing under scripts/ is gitignored — the invariant the stamp move creates", () => {
+  // The stamp used to sit at scripts/HARNESS_DEPLOYED_SHA, i.e. a GITIGNORED
+  // runtime file inside the directory the README file map (and any future
+  // filesystem walk) enumerates. Living outside it is only a fix if nothing
+  // else can land there, so pin the invariant directly.
+  const tracked = spawnSync("git", ["-C", ROOT, "ls-files", "scripts"], { encoding: "utf8" });
+  assert.equal(tracked.status, 0, "git ls-files scripts must succeed");
+  const paths = tracked.stdout.split("\n").filter(Boolean);
+  assert.ok(paths.length > 0, "scripts/ carries tracked files to check");
+
+  const ignored = spawnSync("git", ["-C", ROOT, "check-ignore", "--stdin"], {
+    encoding: "utf8",
+    input: paths.join("\n") + "\n",
+  });
+  // check-ignore exits 1 when nothing matched, so the OUTPUT is the assertion
+  assert.equal(
+    ignored.stdout.trim(),
+    "",
+    `nothing under scripts/ may be gitignored (matched: ${ignored.stdout.trim()})`,
+  );
+});
+
+test("issue #679: the stamp path is advertised by its writer, so the reader cannot pin a second copy", () => {
+  const f = fixture();
+  try {
+    const advertised = spawnSync("bash", [SCRIPT, "stamp-path", f.box], {
+      encoding: "utf8",
+      env: HERMETIC_ENV,
+    });
+    assert.equal(advertised.status, 0, "stamp-path must exit 0");
+    assert.equal(
+      advertised.stdout.trim(),
+      path.join(f.box, ".dsh", "HARNESS_DEPLOYED_SHA"),
+      "stamp-path prints the absolute stamp path",
+    );
+
+    const r = runScript(f.box, "stamp");
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(advertised.stdout.trim()), "the advertised path is where stamp writes");
+    assert.ok(
+      !existsSync(path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA")),
+      "the write never lands beside the wrapper",
+    );
+
+    // the reader in the driver resolves through the writer, never by pinning
+    const driver = readFileSync(DRIVER, "utf8");
+    assert.match(
+      driver,
+      /harness-drift\.sh" stamp-path/,
+      "run-dsh-agent.sh asks the writer where the stamp lives (issue #679)",
+    );
+    assert.doesNotMatch(
+      driver,
+      /\$SCRIPT_DIR\/HARNESS_DEPLOYED_SHA/,
+      "the reader must not pin the pre-#679 path a second time",
+    );
+  } finally {
+    f.cleanUp();
+  }
+});
+
+test("issue #679: a pre-move stamp is removed by the next write, never a second source of truth", () => {
+  const f = fixture();
+  try {
+    const legacy = path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA");
+    mkdirSync(path.join(f.box, "scripts"), { recursive: true });
+    writeFileSync(legacy, "sha=deadbeefdeadbeef\nref=origin/main\ncommitted_at=2020-01-01T00:00:00Z\n");
+
+    const r = runScript(f.box, "stamp");
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!existsSync(legacy), "the migrated box drops the stale scripts/ stamp");
+    assert.ok(
+      existsSync(path.join(f.box, ".dsh", "HARNESS_DEPLOYED_SHA")),
+      "and carries exactly one deploy record, at the new path",
+    );
+    assert.match(r.stderr, /migrated the pre-#679 stamp/, "the migration is announced, not silent");
+  } finally {
+    f.cleanUp();
+  }
 });

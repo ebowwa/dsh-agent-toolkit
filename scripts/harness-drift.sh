@@ -13,7 +13,7 @@
 # Stale-deployed-code is inert but LOOKING alive (#776's words) — verbatim
 # true of the wrapper. This script is the node's contract, wrapper-sized:
 #
-#   STAMP   scripts/HARNESS_DEPLOYED_SHA beside the wrapper (an UNTRACKED,
+#   STAMP   .dsh/HARNESS_DEPLOYED_SHA at the checkout root (an UNTRACKED,
 #           gitignored file): the checkout sha + commit date the tree
 #           carries, refreshed after every heal. Written at every sync
 #           point this repo controls — the wrapper's boot heal — so a run
@@ -88,8 +88,20 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMD="${1:-}"
 DIR="${2:-$(cd "$SELF_DIR/.." && pwd)}"
-STAMP_REL="scripts/HARNESS_DEPLOYED_SHA"
+# Issue #679: the stamp lives OUTSIDE scripts/ — the directory the README
+# file map (and any future filesystem walk) enumerates — so a gitignored
+# runtime file can never look like repo content. STAMP_REL is the SINGLE
+# source of this path: the reader in run-dsh-agent.sh asks for it through
+# the `stamp-path` subcommand instead of pinning a second copy, so writer
+# and reader cannot drift apart.
+STAMP_REL=".dsh/HARNESS_DEPLOYED_SHA"
 STAMP_FILE="$DIR/$STAMP_REL"
+# Pre-#679 boxes carry the stamp beside the wrapper. It is IGNORED (never
+# read as a second source of truth — the reader only opens STAMP_REL) and
+# removed by the next successful write, so a migration cannot leave two
+# answers to "what is deployed here".
+LEGACY_STAMP_REL="scripts/HARNESS_DEPLOYED_SHA"
+LEGACY_STAMP_FILE="$DIR/$LEGACY_STAMP_REL"
 LOCK_DIR="$DIR/.git/harness-drift.lock"
 LOCK_STALE_S=600
 
@@ -106,7 +118,7 @@ G() {
 }
 
 usage() {
-  echo "harness-drift: usage: harness-drift.sh <stamp|check|heal> [checkout-dir]" >&2
+  echo "harness-drift: usage: harness-drift.sh <stamp|check|heal|stamp-path> [checkout-dir]" >&2
   exit 2
 }
 
@@ -115,7 +127,15 @@ say() { # verdict token + final line — every outcome ends with verdict=
 }
 
 [ -n "$CMD" ] || usage
-case "$CMD" in stamp|check|heal) ;; *) usage ;; esac
+# Issue #679: `stamp-path` prints the absolute stamp path and exits — the
+# reader (run-dsh-agent.sh) resolves the location by asking this writer, so
+# the path exists in exactly one file.
+case "$CMD" in stamp|check|heal) ;; stamp-path) ;; *) usage ;; esac
+if [ "$CMD" = "stamp-path" ]; then
+  printf '%s\n' "$STAMP_FILE"
+  exit 0
+fi
+
 if [ ! -d "$DIR/.git" ]; then
   echo "harness-drift: $DIR is not a git checkout (.git missing)" >&2
   exit 2
@@ -136,6 +156,13 @@ write_stamp() { # <sha> <ref> — the STAMP half; best-effort, loud on failure
     echo "harness-drift: could not write $STAMP_REL — stamp skipped" >&2
     return 1
   }
+  # Issue #679 migration: a pre-move stamp is stale by definition once the
+  # new one is written — remove it so no box reports two deploy records.
+  if [ -f "$LEGACY_STAMP_FILE" ]; then
+    if rm -f "$LEGACY_STAMP_FILE" 2>/dev/null; then
+      echo "harness-drift: migrated the pre-#679 stamp ($LEGACY_STAMP_REL -> $STAMP_REL)" >&2
+    fi
+  fi
   return 0
 }
 

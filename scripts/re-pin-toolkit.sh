@@ -51,7 +51,7 @@
 #
 #   STAMP (issues #614 + #616) — ONE stamp per checkout, written by its
 #   LANDED OWNER. `scripts/harness-drift.sh` (#616) owns the harness
-#   checkout's deploy record (`scripts/HARNESS_DEPLOYED_SHA`: sha + ref +
+#   checkout's deploy record (`.dsh/HARNESS_DEPLOYED_SHA`: sha + ref +
 #   commit date); this arm does NOT keep a second per-checkout file — the
 #   original #614 `.toolkit-pin-stamp` is DROPPED, not aliased, because
 #   two files answering "what is deployed here" drift apart the first time
@@ -185,7 +185,7 @@ fi
 
 # STAMP (issues #614 + #616) — ONE stamp per checkout, refreshed through its
 # landed owner. scripts/harness-drift.sh (#616) owns the harness deploy record
-# (scripts/HARNESS_DEPLOYED_SHA) and this arm INVOKES it rather than writing a
+# (.dsh/HARNESS_DEPLOYED_SHA) and this arm INVOKES it rather than writing a
 # second file (see the header: .toolkit-pin-stamp is dropped, not aliased).
 # The owner's stdout/stderr are captured so a steady-state sweep stays QUIET;
 # only a FAILED stamp speaks, and it degrades — an unstamped landing is an
@@ -194,7 +194,7 @@ STAMP_OWNER="$DIR/scripts/harness-drift.sh"
 if [ -f "$STAMP_OWNER" ]; then
   if ! STAMP_OUT="$(bash "$STAMP_OWNER" stamp "$DIR" 2>&1)"; then
     printf '%s\n' "$STAMP_OUT" | sed 's/^/    /' >&2
-    echo "re-pin-toolkit: harness-drift stamp write failed at $DIR (scripts/HARNESS_DEPLOYED_SHA) — landing treated as unverified (exit 4); the keepalive retries next sweep" >&2
+    echo "re-pin-toolkit: harness-drift stamp write failed at $DIR (.dsh/HARNESS_DEPLOYED_SHA) — landing treated as unverified (exit 4); the keepalive retries next sweep" >&2
     exit 4
   fi
 else

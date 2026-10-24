@@ -31,7 +31,7 @@ const read = (p) => readFileSync(path.join(ROOT, p), "utf8");
 // untracked, gitignored artifact sitting in the checkout is not in the
 // repo, so it must not be enumerable here. The defect that forced this
 // (#674): `scripts/harness-drift.sh` writes its deploy record,
-// `scripts/HARNESS_DEPLOYED_SHA` (gitignored runtime state), beside the
+// `.dsh/HARNESS_DEPLOYED_SHA` (gitignored runtime state) at the checkout root, not
 // wrapper — on every box AND inside the CI checkout — so the
 // working-tree walk turned that artifact into a red repo contract: the
 // suite was 6/6 green with no stamp on disk and red with it, which is

@@ -23,7 +23,7 @@
 // tip; the unpushed commit stays recoverable) and the loudness property
 // (the converge note names the branch, the drift counts, and the
 // recovery command), plus the stamp: ONE stamp per checkout (issues #614
-// + #616) — every landing refreshes `scripts/HARNESS_DEPLOYED_SHA` by
+// + #616) — every landing refreshes `.dsh/HARNESS_DEPLOYED_SHA` by
 // invoking its landed owner `scripts/harness-drift.sh stamp`, so a box's
 // deploy state is answerable on the box. The original #614
 // `.toolkit-pin-stamp` is DROPPED (not aliased): two files answering
@@ -293,7 +293,7 @@ test("the absolute gate holds on a working branch too: tracked modifications ref
     assert.equal(f.onBranch(), "dsh/issue-614-dirty", "HEAD kept on the working branch");
     assert.equal(readFileSync(file, "utf8"), "# mid-edit on a branch\n", "the mid-edit work SURVIVES");
     assert.ok(
-      !existsSync(path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA")),
+      !existsSync(path.join(f.box, ".dsh", "HARNESS_DEPLOYED_SHA")),
       "a refused sweep stamps nothing (the landing never happened)",
     );
     assert.ok(!existsSync(path.join(f.box, ".toolkit-pin-stamp")), "and no second per-checkout stamp exists either (issues #614 + #616)");
@@ -304,7 +304,7 @@ test("the absolute gate holds on a working branch too: tracked modifications ref
 
 test("issues #614 + #616: every landing refreshes the ONE harness stamp through its owner", () => {
   const f = fixture();
-  const stampPath = () => path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA");
+  const stampPath = () => path.join(f.box, ".dsh", "HARNESS_DEPLOYED_SHA");
   const readStamp = () =>
     Object.fromEntries(
       readFileSync(stampPath(), "utf8")
@@ -372,7 +372,7 @@ test("issue #616: a landed tree with no stamp owner still lands, and SAYS the st
     assert.match(res.stderr, /stamp owner absent/, "the missing owner is named");
     assert.equal(f.head(), git(f.box, ["rev-parse", "v1"]).stdout.trim(), "the landing still happened");
     assert.ok(
-      !existsSync(path.join(f.box, "scripts", "HARNESS_DEPLOYED_SHA")),
+      !existsSync(path.join(f.box, ".dsh", "HARNESS_DEPLOYED_SHA")),
       "no stamp is invented when its owner is absent",
     );
   } finally {
