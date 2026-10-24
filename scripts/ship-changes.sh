@@ -181,8 +181,10 @@ ship_milestone() {
 # and its as-merge tree did not compile). Before the PR opens, compare the
 # head branch's merge-base against the LIVE base tip:
 #
-#   - fresh (merge-base == tip): nothing, silently — the common case must
-#     stay zero-cost;
+#   - fresh (merge-base == tip): one line naming the graded tip and its
+#     distance, `fresh (origin/base @ <sha7>, behind=0)` - issue #524: a
+#     silent fresh arm is what let a stale/phantom tip ride into the PR
+#     body unremarked; disclosing it costs no git work;
 #   - stale (behind > 0): rebase the head onto the base tip and re-push with
 #     --force-with-lease, so the tree GitHub will merge is the tree that can
 #     still be gated. The rebase runs ONLY on the CURRENT branch (the caller
@@ -224,11 +226,30 @@ freshness_preflight() {
     return 0
   fi
   if [ -z "$mb" ] || [ -z "$tip" ]; then
-    echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) — NOT verified" >&2
+    echo "freshness: merge-base of $head_b vs origin/$base unresolvable (shallow clone? run git fetch --unshallow) - NOT verified" >&2
     echo "freshness UNVERIFIED (merge-base unresolvable)"
     return 0
   fi
+  tip7="${tip:0:7}"
+  # Issue #524: a merge-base grades a currency claim ONLY against a tip this
+  # graph can actually connect. Under a bounded-deepen clone the resolved
+  # origin/$base can be a phantom tip (behind=0 about a tree that is not the
+  # merge tree), and a shallow-boundary graft can hand back a "merge-base"
+  # the tip cannot reach at all (the #651 artifact class). Prove the
+  # connection before any count grades it, and ship UNVERIFIED (never
+  # "fresh") when the proof fails. One graph walk, no deepening: the deepen
+  # budget belongs to the caller, not to this guard.
+  if ! git merge-base --is-ancestor "$mb" "$tip" 2>/dev/null; then
+    echo "freshness: merge-base $mb is not provably connected to origin/$base @ $tip7 (shallow / bounded-deepen graph) - NOT verified; no advancement claim either way" >&2
+    echo "freshness UNVERIFIED (merge-base not connected to origin/$base @ $tip7)"
+    return 0
+  fi
   if [ "$mb" = "$tip" ]; then
+    # Issue #524: disclose what was graded, not just "nothing to do". A silent
+    # fresh arm lets a stale/phantom tip ride into the PR body unremarked;
+    # naming the graded tip and its distance is the direction the ticket asks
+    # for, and it costs no git work.
+    echo "fresh (origin/$base @ $tip7, behind=0)"
     return 0
   fi
   behind="$(git rev-list --count "$mb..origin/$base" 2>/dev/null || echo '?')"
@@ -236,19 +257,19 @@ freshness_preflight() {
   if [ "$(git branch --show-current 2>/dev/null)" = "$head_b" ]; then
     if git rebase "origin/$base" >/dev/null 2>&1; then
       if git push --force-with-lease origin "$head_b" >/dev/null 2>&1; then
-        echo "rebased onto origin/$base (was $behind behind)"
+        echo "rebased onto origin/$base @ $tip7 (was $behind behind)"
       else
         echo "::warning::rebased $head_b onto origin/$base but the force-with-lease re-push FAILED — remote head is stale, the PR may show the pre-rebase tree" >&2
-        echo "rebased locally but re-push FAILED ($head_b was $behind behind)"
+        echo "rebased locally but re-push FAILED ($head_b was $behind behind origin/$base @ $tip7)"
       fi
     else
       git rebase --abort >/dev/null 2>&1 || true
       echo "::warning::$head_b is $behind behind origin/$base and the rebase CONFLICTED (aborted clean) — fix round must rebase before merge" >&2
-      echo "rebase CONFLICTED ($head_b was $behind behind origin/$base)"
+      echo "rebase CONFLICTED ($head_b was $behind behind origin/$base @ $tip7)"
     fi
   else
     echo "::warning::$head_b is $behind behind origin/$base and is not the checked-out branch — no rebase attempted; update before merge" >&2
-    echo "stale, no rebase attempted ($head_b was $behind behind origin/$base)"
+    echo "stale, no rebase attempted ($head_b was $behind behind origin/$base @ $tip7)"
   fi
   if [ -n "$overlap" ]; then
     echo "::warning::same-scope overlap since the branch point: $overlap — base commits touched files this branch also touches; verify the PR does not duplicate already-landed work (factory#830)" >&2
