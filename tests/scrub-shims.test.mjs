@@ -39,7 +39,7 @@ const SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3";
  * $SHIM_TEST_CAPTURE and exits 0. The shims exec $GH_SCRUB_REAL/$GIT_SCRUB_REAL
  * by absolute path, so no PATH shadowing is needed — the ambient PATH only
  * has to still resolve `node` for the scrubber itself. */
-function stage(t, scrubBody) {
+function stage(t, scrubBody, opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-shim-test-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const scrub = path.join(dir, "scrub-under-test.mjs");
@@ -58,7 +58,11 @@ function stage(t, scrubBody) {
       '  case "$a" in */gh-scrubbed.*|*/git-scrubbed.*) cat "$a" >> "$SHIM_TEST_CAPTURE.content";; esac\n' +
       'done\n' +
       'cat >> "$SHIM_TEST_CAPTURE.stdin"\n' +
-      "exit 0\n",
+      // Issue #537: a stand-in that FAILS the way the forge does under a
+      // secondary rate limit — non-zero status plus the 403 body on stderr —
+      // so the shim's forwarding (not its argv rewrite) can be graded.
+      (opts.realStderr ? `printf '%s\\n' ${JSON.stringify(opts.realStderr)} >&2\n` : "") +
+      `exit ${opts.realExit ?? 0}\n`,
   );
   fs.chmodSync(real, 0o755);
   return { dir, scrub, capture, real };
@@ -67,7 +71,7 @@ function stage(t, scrubBody) {
 /** Run one shim with a staged scrubber + recorder. Returns the harness `dir`
  * too, so tests can inspect it (payload files, scrub temp leftovers). */
 function runShim(t, shim, scrubBody, argv, opts = {}) {
-  const { dir, scrub, capture, real } = stage(t, scrubBody);
+  const { dir, scrub, capture, real } = stage(t, scrubBody, opts);
   const envKey = shim === GH_SHIM ? "GH_SCRUB_REAL" : "GIT_SCRUB_REAL";
   const env = {
     ...process.env,
@@ -1801,4 +1805,43 @@ test("run-dsh-agent.sh: persists the shim env contract to GITHUB_ENV (issue #251
       `the driver must carry ${name} onto GITHUB_ENV so later steps inheriting the shim dir stay fully scrubbed (issue #251)`,
     );
   }
+});
+
+// --- issue #537: a create the forge DROPS must never look shipped ----------
+//
+// Observed during the fleet-wide GitHub secondary-rate-limit block: two
+// `gh issue create` runs through this shim exited 0 with empty output and
+// created nothing, so an agent trusting `$?` believed it had filed the issue
+// (REVIEW.md: "Failures surface as typed errors with context; no swallowed
+// exits"). The ticket's ask is to pin the seam rather than leave the shape
+// untested: the child gh's non-zero status and its stderr — the 403 body
+// naming the secondary limit — must reach the agent's seat unchanged, and the
+// shim must never manufacture a success line of its own.
+test("gh shim: a dropped `issue create` (403 secondary rate limit) forwards exit 1 + the 403 body (issue #537)", (t) => {
+  const body = "HTTP 403: You have exceeded a secondary rate limit and have been temporarily blocked from content creation";
+  const { res, capture } = runShim(
+    t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["issue", "create", "--repo", "ebowwa/dsh-agent-toolkit", "--title", "found: x", "--body", "y"],
+    { realExit: 1, realStderr: body },
+  );
+  assert.equal(res.status, 1,
+    "the child's non-zero status must survive the shim — exit 0 over a dropped write IS the #537 defect");
+  assert.match(res.stderr, /secondary rate limit/,
+    "the 403 body reaches the agent's seat; an empty stderr is what made the drop invisible");
+  assert.equal(res.stdout.trim(), "",
+    "the shim fabricates no success line of its own on a failed create");
+  assert.ok(fs.existsSync(capture),
+    "the create DID reach the real gh — this pin grades the forwarded RESULT, not the argv rewrite");
+});
+
+test("gh shim: a silent non-zero child (no stderr, no stdout) still never exits 0 (issue #537)", (t) => {
+  // The variant that is easiest to swallow by accident: gh fails with no
+  // diagnostics at all. Forwarding the status is the ONLY signal left, so a
+  // shim that normalizes quiet failures to 0 hides the drop completely.
+  const { res } = runShim(
+    t, GH_SHIM, fs.readFileSync(REAL_SCRUB, "utf8"),
+    ["issue", "create", "--title", "found: y", "--body", "z"],
+    { realExit: 4 },
+  );
+  assert.equal(res.status, 4, "the exact child status is forwarded, not normalized");
 });
