@@ -228,21 +228,36 @@ agents:
 
 - `session-persistence-jsonl` (**profile-config** seam) — the shipped row
   roots persistence at the (job-fresh) home's `sessions/`; the restatement
-  roots it at the box-shared `~/.dsh/sessions`, so every dispatched job reads
-  AND writes the box's accumulated history. This is the load-bearing half of
-  "shared": without it the index derives from an empty corpus and every
-  search silently returns nothing.
+  roots it at the **fleet corpus** `~/.dsh-native/agent-home/sessions`
+  (FleetTower#2641 — the 2026-10-13 purge postmortem, ask 1: the row's
+  earlier `~/.dsh/sessions` root wrote every dispatched job's workspace
+  into the box's real dsh home, which on a web box IS the user's chat
+  history — 194 claim-lane workspaces measured in the user corpus,
+  2026-10-24). Only the dispatched runner consults this manifest, so the
+  row is fleet-lane-scoped by construction: user web chats keep the
+  shipped real-home row, untouched. This is the load-bearing half of
+  "shared" for fleet lanes: without a rooted corpus the index derives
+  from an empty store and every search silently returns nothing; the
+  fleet corpus accumulates claim history (the tower's one-time receipted
+  migration pass seeds it from the user corpus), and the native node
+  env's `DSH_SESSIONS_HOME` names the same home, so node reads and the
+  receipted #2396 prune agree with the writes by construction.
+  `ensure_dir` has the consult mint the corpus 0700 before the first job
+  writes there.
 - `session-query-sqlite` (**profile-config** seam) — the backend ships in
   every profile as `path: ':memory:'`, `openAt: never` (FTS5 search
   deliberately off). The restatement turns it on with `openAt: first-search`
   (boot unaffected; an unopenable index fails one search, never activation)
-  and hands out a **per-job db file under the shared** `~/.dsh/session-index/`
+  and hands out a **per-job db file under the shared**
+  `~/.dsh-native/agent-home/session-index/`
   — ONE shared file would break the backend's single-process-owner contract:
   it reconciles under `BEGIN IMMEDIATE` with no busy timeout, and
   `node:sqlite` throws immediately on lock contention, so the worker's
   parallel slots would flake every search. The index is the backend's own
   "dedicated disposable database"; the durable half of sharing is the corpus
-  row above.
+  row above. The index dir moved to the fleet agent home with the corpus
+  row: a dispatched job's index is derived claim text — it belongs in
+  fleet space, not beside the user's dsh home.
 - `tool-session-query` (**plugin** seam) — the five model-facing tools
   (`session_search`, `session_event_search`, `session_trace`,
   `session_event_trace`, `session_event_read`). The build is vendored at
