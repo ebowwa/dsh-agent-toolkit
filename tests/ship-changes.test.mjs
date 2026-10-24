@@ -421,7 +421,8 @@ test("milestone carry degrades, never fails the ship: ticket without a milestone
 // Git-fixture budget declaration (the #1030 shape): this repo has no
 // rig-timeout-guard script — the bound that actually kills a wedged suite is
 // the per-suite watchdog in scripts/bounded-gate.mjs (DSH_TEST_GATE_TIMEOUT_S,
-// 120s default). The budget is therefore declared ON the tests below and on
+// 300s default, set from the measured load tail — see DEFAULT_TIMEOUT_S).
+// The budget is therefore declared ON the tests below and on
 // every child spawn of the shipper, so a hung fixture reds this file inside
 // the suite bound instead of being SIGKILLed by the gate with no diagnosis.
 // The fixtures are local-only git (a bare remote under the temp dir); each

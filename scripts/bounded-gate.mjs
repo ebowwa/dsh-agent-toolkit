@@ -13,7 +13,8 @@
 // --test <file>` child per suite, sequential like CI's default) and adds
 // what the bare invocation cannot have:
 //
-//   1. a hard per-file watchdog — DSH_TEST_GATE_TIMEOUT_S (default 120s)
+//   1. a hard per-file watchdog — DSH_TEST_GATE_TIMEOUT_S (default 300s,
+//      set from the measured load tail documented at DEFAULT_TIMEOUT_S)
 //      kills the suite's WHOLE process group and reports HANG, so the gate
 //      always degrades loud: every file gets a verdict line (ok / red /
 //      HANG) and the loop finishes;
@@ -66,10 +67,11 @@
 // resolution is a script name outside the match set.
 //
 // Env:
-//   DSH_TEST_GATE_TIMEOUT_S  per-suite kill bound (default 120; unset or
-//                            blank falls to the default — a non-numeric or
-//                            sub-1 value is a typed bad-knob error, exit 2,
-//                            before any suite runs — issue #538)
+//   DSH_TEST_GATE_TIMEOUT_S  per-suite kill bound (default 300, i.e.
+//                            DEFAULT_TIMEOUT_S — unset or blank falls to the
+//                            default; a non-numeric or sub-1 value is a
+//                            typed bad-knob error, exit 2, before any suite
+//                            runs — issue #538)
 
 import { spawn } from "node:child_process";
 import { globSync } from "node:fs";
@@ -113,14 +115,54 @@ export const discoverSuites = (root = ROOT) => {
   return [...hits].sort();
 };
 
+// --- the bound, and the MEASUREMENT that sets it (issue #680's class) -----
+// A timeout here is a LOAD signal, not a test signal. Both suites below are
+// large integration suites — plugin-smoke-deps drives real npm child processes
+// through its retry/backoff legs, run-dsh-agent spawns the agent launcher and
+// its live probes — and on a busy 2-core box (seed-node-prod-1, the shape this
+// gate is used on: `nproc` = 2) they legitimately outrun a tight bound:
+//
+//   tests/run-dsh-agent.test.mjs       139.4s   measured on the busy 2-core box
+//   tests/plugin-smoke-deps.test.mjs   115.0s   measured on the busy 2-core box
+//
+// At the former 120s default BOTH were killed at 120.2s / 120.1s and reported
+// HANG, so a full gate printed "72/74 suites ok — HANG: <those two>" for suites
+// that are green. Every lane that reads that HANG as a red then spends a round
+// proving its own diff innocent. A hang verdict on a load tail is a FALSE RED,
+// and manufacturing false reds is the one failure mode this gate may not have:
+// the gate exists to turn silence into signal, not signal into noise.
+//
+// Hence 300s = 2.15x the measured worst case (139.4s): whole-suite headroom for
+// a box that is merely busy rather than wedged. This is NOT slack to hide a real
+// wedge — a genuinely wedged suite still never reaches a verdict, so the gate
+// still kills it and still says HANG; the bound only lets a load tail prove
+// itself innocent first. tests/test-gate.test.mjs holds the floor (>= the
+// documented measured facts and >= MIN_HEADROOM_FACTOR x MEASURED_WORST_CASE_S),
+// so a future "tighten the timeouts" change has to argue with this measurement
+// instead of quietly editing a number.
+export const MEASURED_SLOWEST_SUITES = Object.freeze([
+  Object.freeze({ rel: "tests/run-dsh-agent.test.mjs", seconds: 139.4 }),
+  Object.freeze({ rel: "tests/plugin-smoke-deps.test.mjs", seconds: 115.0 }),
+]);
+// the box the measurement was taken on — the reason the tail is this long
+export const MEASURED_BOX_CORES = 2;
+// the worst measured wall time; the bound's floor is derived from this one
+export const MEASURED_WORST_CASE_S = 139.4;
+// headroom multiplier the default must clear over the measured worst case
+export const MIN_HEADROOM_FACTOR = 2;
+// The per-suite kill bound default: whole-suite headroom over the measured load
+// tail (see the block above — 300s against a 139.4s worst case).
+export const DEFAULT_TIMEOUT_S = 300;
+
 // The per-suite kill bound. Resolved inside main() (not at module load):
 // the module is importable (the contract pins import discoverSuites), and
 // an import must never process.exit over an AMBIENT malformed knob — the
 // exit-2-first contract belongs to a gate INVOCATION, whose pins set the
-// knob explicitly per spawn.
-const timeoutS = () => {
-  const raw = process.env.DSH_TEST_GATE_TIMEOUT_S;
-  if (raw === undefined || raw.trim() === "") return 120;
+// knob explicitly per spawn. `env` is injectable so the pins grade the
+// unset/blank resolution to DEFAULT_TIMEOUT_S without spawning a 300s gate.
+export const timeoutS = (env = process.env) => {
+  const raw = env.DSH_TEST_GATE_TIMEOUT_S;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_TIMEOUT_S;
   const n = Number(raw);
   // A non-numeric value Number()s to NaN and Math.max(1, NaN) is NaN —
   // setTimeout(fn, NaN) fires ~immediately and every suite is SIGKILLed at
@@ -132,7 +174,7 @@ const timeoutS = () => {
     console.error(
       `test-gate: bad knob — DSH_TEST_GATE_TIMEOUT_S=${JSON.stringify(raw)} is not a positive number of seconds ` +
       `(issue #538: a non-numeric value NaNs the bound and reports green suites HANG at 0.0s; a sub-1 value ` +
-      `insta-kills). Unset it for the 120s default, or set a bound >= 1.`,
+      `insta-kills). Unset it for the ${DEFAULT_TIMEOUT_S}s default, or set a bound >= 1.`,
     );
     process.exit(2);
   }
