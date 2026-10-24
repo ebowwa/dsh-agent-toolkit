@@ -1,4 +1,6 @@
 node_modules/
-# harness-drift.sh per-checkout stamp (issue #616) — runtime state of a
-# deployed checkout, never repo content
-scripts/HARNESS_DEPLOYED_SHA
+# harness-drift.sh per-checkout stamp (issues #616 + #679) — runtime state of
+# a deployed checkout, never repo content. It lives OUTSIDE scripts/ so a
+# gitignored runtime file can never sit inside a directory the README file
+# map (or any future filesystem walk) enumerates.
+.dsh/HARNESS_DEPLOYED_SHA

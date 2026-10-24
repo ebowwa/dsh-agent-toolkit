@@ -78,7 +78,7 @@
 #                       DSH_ARCHIVE_KEEP files (default 50).
 #   DSH_HARNESS_DRIFT   harness checkout self-heal switch (issue #616;
 #                       default on): at boot the wrapper stamps its own
-#                       checkout (scripts/HARNESS_DEPLOYED_SHA — sha +
+#                       checkout (.dsh/HARNESS_DEPLOYED_SHA — sha +
 #                       commit date), compares it against origin's tip of
 #                       the expected ref, and fast-forward-heals a stale
 #                       checkout (guarded: never over a dirty tree, a
@@ -255,7 +255,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # session to pin it). Same STAMP/COMPARE/LOUD contract, wrapper-sized, run
 # BEFORE anything reads this tree (the input scrub below spawns scripts
 # from it):
-#   STAMP   scripts/HARNESS_DEPLOYED_SHA beside this wrapper (untracked,
+#   STAMP   .dsh/HARNESS_DEPLOYED_SHA at the checkout root (untracked,
 #           gitignored): the checkout sha + commit date the tree carries,
 #           refreshed after every heal — boot is this repo's sync point.
 #   COMPARE one bounded `git ls-remote`/fetch round trip against the
@@ -289,10 +289,16 @@ if [ -f "$SCRIPT_DIR/harness-drift.sh" ]; then
   fi
 fi
 # The stamp answers provenance even where the arm is off or skipped.
-if [ -f "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" ]; then
-  _h_raw_sha="$(sed -n 's/^sha=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
-  _h_raw_ref="$(sed -n 's/^ref=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
-  _h_raw_date="$(sed -n 's/^committed_at=//p' "$SCRIPT_DIR/HARNESS_DEPLOYED_SHA" | head -n1)"
+# Issue #679: ask the WRITER where its stamp lives rather than pinning the
+# path a second time here — writer and reader cannot drift apart. The literal
+# fallback keeps an older checkout (pre-stamp-path writer) readable mid-upgrade;
+# a writer that cannot be queried leaves the stamp unread, never guessed at.
+_h_stamp="$(bash "$SCRIPT_DIR/harness-drift.sh" stamp-path 2>/dev/null || true)"
+[ -n "$_h_stamp" ] || _h_stamp="$SCRIPT_DIR/../.dsh/HARNESS_DEPLOYED_SHA"
+if [ -f "$_h_stamp" ]; then
+  _h_raw_sha="$(sed -n 's/^sha=//p' "$_h_stamp" | head -n1)"
+  _h_raw_ref="$(sed -n 's/^ref=//p' "$_h_stamp" | head -n1)"
+  _h_raw_date="$(sed -n 's/^committed_at=//p' "$_h_stamp" | head -n1)"
   # charset guards: these values ride JSON tombstones and shell-sourced
   # meta env — a malformed stamp degrades to empty, never injects
   case "$_h_raw_sha" in

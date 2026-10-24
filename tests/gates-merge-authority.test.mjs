@@ -64,3 +64,19 @@ test("issue #431 revert guard: gates.yml still fires on push to main", () => {
     "the main-side trigger is the leg the authority contract rests on — it must stay",
   );
 });
+
+test("issue #680: the gates job budget outlives the slowest observed pass, so a busy box cannot erase main's verdict", () => {
+  const gates = read(".github/workflows/gates.yml");
+  const m = /^\s{4}timeout-minutes:\s*(\d+)\s*$/m.exec(gates);
+  assert.ok(m, "the gates job declares a timeout-minutes budget");
+  const budget = Number(m[1]);
+  assert.equal(budget, 20, "the cap is 20 minutes (issue #680), not the load-sensitive 10");
+  assert.ok(budget > 10, "never back under the cap that cancelled a passing run");
+  assert.match(gates, /8m50s/, "the rationale cites the measured under-load duration");
+  assert.match(gates, /40062597588/, "and the run the old cap cancelled, so the number is auditable");
+  assert.match(
+    gates,
+    /LOAD\s*\n\s*#?\s*signal|LOAD signal/,
+    "and states that a timeout here is a load signal, not a test signal",
+  );
+});

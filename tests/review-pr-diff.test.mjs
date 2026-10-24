@@ -533,3 +533,117 @@ test("issue #631 e2e: a force-push between review rounds cannot leave a stale re
     rmSync(fx.dir, { recursive: true, force: true });
   }
 });
+
+// --------------------- ISSUE #651: the validated fork point ------------------
+
+test("issue #651 e2e: a STALE preview base is never narrated as the fork point — the basis names the PR-head fork and says the preview is stale", () => {
+  // The #554 receipt shape: GitHub built refs/pull/N/merge when base sat at
+  // BASETIP, then base advanced one more commit and the preview was never
+  // rebuilt. merge-base(base_tip, pr-merge) now legitimately resolves to
+  // BASETIP — a base-side commit that is NOT the PR head's fork — and the
+  // pre-#651 narration printed exactly that value as "the fork point".
+  const fx = fixture({ trialMerge: true });
+  try {
+    // Advance base FROM THE PREVIEW'S BASE, not from master: the trial-merge
+    // commit sits on the seed's master (the fixture merged there to build the
+    // preview), so committing on master would make the PREVIEW a base
+    // ancestor and merge-base(base, pr-merge) would return the preview itself
+    // — a different graph than the one this test is named for.
+    gitSetup(["checkout", "-q", "--detach", fx.baseTip], { cwd: fx.seed });
+    writeFileSync(path.join(fx.seed, "late.txt"), "late base landing\n");
+    gitSetup(["add", "-A"], { cwd: fx.seed });
+    gitSetup(["commit", "-q", "-m", "c4 base advances after the preview"], { cwd: fx.seed });
+    gitSetup(["push", "-q", fx.bare, "HEAD:master"], { cwd: fx.seed });
+
+    const { res, taskOut } = runReviewPr({ dir: fx.dir, bare: fx.bare });
+    assert.equal(res.status, 0, `review-pr must still post (issue #516 availability): ${res.stderr}`);
+    const task = readFileSync(taskOut, "utf8");
+
+    assert.match(
+      task,
+      new RegExp(`PR-head fork point ${fx.fork}`),
+      "the narrated fork point is the merge-base(base, PR HEAD) — the branch's true fork",
+    );
+    assert.doesNotMatch(
+      task,
+      new RegExp(`fork point ${fx.baseTip}`),
+      "the PREVIEW BASE must never be narrated as the fork point (the #554 mislabel)",
+    );
+    assert.match(task, /merge preview is STALE/, "a preview whose base is not the tip is disclosed");
+    assert.doesNotMatch(
+      task,
+      /FORK_HEAD_UNREADABLE|FORK_POINT_UNRESOLVED|FORK_POINT_NOT_REACHABLE/,
+      "a connected graph yields no typed fork error",
+    );
+    assert.match(
+      task,
+      /cross-check \(issue #651\) (VERIFIED|UNAVAILABLE)/,
+      "the shown diff is cross-checked against the branch's own diff before the prompt is minted",
+    );
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #651 e2e: a single-commit PR cross-checks VERIFIED on the head-parent arm — the shown stat IS the branch's own diff", () => {
+  const fx = fixture();
+  try {
+    const { res, taskOut } = runReviewPr({ dir: fx.dir, bare: fx.bare });
+    assert.equal(res.status, 0, res.stderr);
+    const task = readFileSync(taskOut, "utf8");
+
+    assert.match(
+      task,
+      new RegExp(`PR-head fork point ${fx.fork}`),
+      "head^ is the validated fork point here",
+    );
+    assert.match(
+      task,
+      /cross-check \(issue #651\) VERIFIED: the shown stat equals the parent-diff \(head\^ -> head\)/,
+      "the head-parent arm proves the shown stat is the branch's own change",
+    );
+    assert.doesNotMatch(task, /FORK_DIFF_MISMATCH/, "no mismatch on a clean single-commit PR");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #651 structural: the fork point is validated against rev-list --parents, typed on failure, and never narrated from the preview", () => {
+  const rp = read("scripts", "review-pr.sh");
+
+  assert.match(
+    rp,
+    /git rev-list --parents -1 "\$TRACK_HEAD"/,
+    "the head's parentage is read straight off the commit object — no deepening needed (acceptance criterion 1)",
+  );
+  for (const token of [
+    "FORK_HEAD_UNREADABLE",
+    "FORK_POINT_UNRESOLVED",
+    "FORK_POINT_NOT_REACHABLE",
+    "FORK_DIFF_MISMATCH",
+  ]) {
+    assert.match(rp, new RegExp(token), `the typed token ${token} must exist (a value that is neither legal arm is an error, not prose)`);
+  }
+  assert.match(
+    rp,
+    /git merge-base --is-ancestor "\$FORK_OK" "\$TRACK_HEAD"/,
+    "the anti-graft tripwire: a fork point IS an ancestor of the head by definition",
+  );
+  assert.match(rp, /FORK_SOURCE="head-parent"/, "the head-parent arm is named");
+  assert.match(rp, /FORK_SOURCE="merge-base"/, "and the merge-base arm is named");
+  assert.match(
+    rp,
+    /HEAD_NPARENTS" -eq 1 \] && \[ "\$HEAD_FORK_BASE" = "\$HEAD_PARENT1"/,
+    "head^ is chosen only when proven by merge-base(base, head) == head^",
+  );
+  assert.match(
+    rp,
+    /git diff --stat "\$FORK_OK" "\$TRACK_HEAD"/,
+    "acceptance criterion 2: the branch's own diff is computed from the VALIDATED fork point",
+  );
+  assert.doesNotMatch(
+    rp,
+    /fork point \$\{FORK_BASE\}/,
+    "no basis line may narrate the merge-preview base as the fork point",
+  );
+});
