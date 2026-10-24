@@ -27,8 +27,17 @@
 # standard production flow — the merge-base lookup exits 1 on essentially
 # every review, and #516's fail-closed arm would withhold the diff on every
 # one of them. When the lookup fails, the checkout is deepened in bounded
-# steps (deepen 1, 2, 4 — cumulative shallow boundary depth 8) until the
-# fork point resolves or the budget is spent; an unresolvable graph still
+# steps (deepen 1, 2, 4) until the fork point resolves or the budget is spent.
+# That budget bounds ATTEMPTS, not commit COUNT (issue #655): --depth N is
+# per-path, so a merge-heavy history multiplies it. Measured on this repo
+# (git 2.43, steps 1/2/4) a --depth 1 clone went 1 -> 3 -> 7 -> 25 commits over
+# https and 1 -> 3 -> 7 -> 20 over file://, shallow boundaries retained in both
+# — the nominal "depth 8" is 20+ commits, and it grows with merge fan-out.
+# So never size a test terminal by commit COUNT or step GEOMETRY: it heals
+# under the ladder (#654 lost a cycle to a fixture that had done exactly
+# that). The exhausted terminal is reachable through a FAILED deepen (auth,
+# rate limit, network death), and that is the arm to exercise. An
+# unresolvable graph still
 # ends at the SAME withheld terminal state #516 shipped — deepening buys
 # availability, never different diff semantics. And when the fork point
 # RESOLVES but the diff runs clean and comes back empty, that is an EMPTY
