@@ -52,7 +52,7 @@ that NEEDS the loud failure runs `DSH_DEP_INSTALL_CMD="npm ci"`.
 | mini-L3 | macOS | open (cheap cells) | a mac box that is never NAMED linux — lane name is not OS (the factory#60 receipt) |
 | mini-L4 | macOS | open (default) | neutral/default parts on mac |
 | seed-L3 | Linux | linux (cheap cells) | the only Linux node today — the only legal target for linux-native parts |
-| air16-native-open | macOS | open | MacBook Air m1 16gb — pull-only (no ssh route from seed; heartbeat truth) |
+| air16-native-open | macOS | open | MacBook Air m1 16gb — enrolled pull-only; ssh route from seed VERIFIED (alias `air16`, BatchMode, measured 2026-10-25) |
 | air8-native-open | macOS | open | MacBook Air m1 8gb — fresh enrollment 2026-10-01 |
 | m1-8gb-air-open | macOS | open | MacBook Air m1 8gb — MLX-capable; enrolled via Gauge Fleet Control per gauge#47 |
 
@@ -65,7 +65,13 @@ filter alone does not make a placement legal.
 The three air nodes live on two further macOS boxes:
 `air16-native-open` on macos-m1-16gb-air.local, and `air8-native-open` +
 `m1-8gb-air-open` (the MLX-capable trait node) on macos-m1-8gb-air.local.
-Both machines enrolled pull-only (no ssh route from seed; heartbeat
-truth), so their live seat/disk picture reaches a dispatch only through
-the `DSH_FLEET_MANIFEST` snapshot — plan against this file for the
-placement law, never for live seat counts.
+Both machines enrolled pull-only (enrollment transport: heartbeat /
+Gauge Fleet Control), but that transport note has drifted: both boxes
+now answer BatchMode ssh from seed (measured 2026-10-25) — air16 via
+the seed alias `air16` (owner order 2026-09-29; FleetTower#570 lifted
+the pull-only law for this box), and the 8gb box via its tailnet FQDN
+`macos-m1-8gb-air.tail9f1fc.ts.net` as user `ebowwa` (the bare `air8` /
+`m1-8gb-air` aliases do not resolve from seed). ssh is command
+execution, not telemetry: live seat/disk truth still reaches a dispatch
+only through the `DSH_FLEET_MANIFEST` snapshot — plan against this file
+for the placement law, never for live seat counts.
