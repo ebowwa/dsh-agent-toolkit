@@ -62,8 +62,12 @@ test("manifest registry: the two air machine homes are named for placement", () 
   assert.match(MANIFEST, /air16-native-open` on macos-m1-16gb-air\.local/);
   assert.match(MANIFEST, /`air8-native-open` \+\n`m1-8gb-air-open`/);
   assert.match(MANIFEST, /macos-m1-8gb-air\.local/);
-  // pull-only is a placement input: no ssh route from seed, heartbeat truth
-  assert.match(MANIFEST, /pull-only \(no ssh route from seed; heartbeat\ntruth\)/);
+  // issue #690: the old "no ssh route from seed; heartbeat truth" note was
+  // stale — both air machines answer BatchMode ssh from seed (measured
+  // 2026-10-25). Guard the ROT (stale phrase must not return) and the FIX.
+  assert.doesNotMatch(MANIFEST, /no ssh route from seed/);
+  assert.match(MANIFEST, /BatchMode ssh from seed \(measured 2026-10-25\)/);
+  assert.match(MANIFEST, /macos-m1-8gb-air\.tail9f1fc\.ts\.net/);
   // the MLX trait rides the m1-8gb-air row (trait-class hardware note)
   assert.match(MANIFEST, /m1-8gb-air-open \| macOS \| open \| MacBook Air m1 8gb — MLX-capable/);
 });
