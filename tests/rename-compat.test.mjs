@@ -322,10 +322,12 @@ exit 0
 
 test("driver: the cell-bin probe default still probes the LEGACY prefix (same dual fallback as the gh guards)", () => {
   const src = read("scripts", "run-dsh-agent.sh");
-  const line = src.split("\n").find((l) => l.includes('CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-'));
+  const line = src.split("\n").find((l) => l.includes('CELL_PROBE_DIRS="${CELL_PROBE_DIRS-'));
   assert.ok(line, "CELL_PROBE_DIRS default line must exist");
-  assert.match(line, /^\s*CELL_PROBE_DIRS="\$\{CELL_PROBE_DIRS:-\$CELL_BIN /,
+  assert.match(line, /^\s*CELL_PROBE_DIRS="\$\{CELL_PROBE_DIRS-\$CELL_BIN /,
     "the new persistent prefix ($CELL_BIN) must be probed first");
+  assert.doesNotMatch(line, /\$\{CELL_PROBE_DIRS:-/,
+    "the seam must be ${VAR-default}, never ${VAR:-default}: a SET-BUT-EMPTY CELL_PROBE_DIRS means 'probe nothing' — the offline fixtures pin the empty string to rule out host prefixes, and under `:-` the empty pin restored the whole default list, promoting a real host toolchain above the fixtures' stub dirs (issue #688: 37 driver/wrapper failures on a mac cell with real dsh/doppler/gh in /opt/homebrew/bin)");
   assert.match(line, /\.dsh-bot-bin/,
     "cells provisioned into the legacy prefix must be found without re-provisioning over the network");
   assert.match(line, /\$HOME\/\.bun\/bin/,

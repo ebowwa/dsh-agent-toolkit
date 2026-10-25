@@ -70,6 +70,7 @@ const fixture = (opts = {}) => {
       DSH_WORKER_REPOS: "owner/repo",
       DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
       DSH_WORKER_DASHBOARD: "0",
+      CELL_PROBE_DIRS: "", // rule out host prefixes above the shim (issue #688 seam)
       GH_LOG: ghLog,
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
     }),

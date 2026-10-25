@@ -157,8 +157,15 @@ esac
 `;
 
 test("tools present: no install attempted (curl shim fails loudly if called)", () => {
+  // Presence is constructed by the harness's own stubs, never borrowed from
+  // the ambient PATH: with the CELL_PROBE_DIRS seam now honoring the empty
+  // pin (issue #688), host prefixes are ruled out for real, so a host
+  // without gh/doppler on PATH would otherwise fail this test instead of
+  // passing it for the host's own toolchain (the air16 receipt: it passed
+  // under the `:-` bug only because /opt/homebrew/bin was probed back in).
   const t = runFn({
     fn: "ensure_cell_tools",
+    tools: ["node", "doppler", "gh"],
     curlShim: "#!/bin/sh\necho 'curl must not run when tools are present' >&2\nexit 99\n",
     extra: "CELL_BIN=/tmp/celltools-none CELL_PROBE_DIRS=''",
   });
@@ -241,6 +248,66 @@ test("node lives only under a probeable prefix: the probe finds it BEFORE the ha
     assert.match(t.r.stdout + t.r.stderr, /node\/doppler present \(PATH ok; gh: present\)/);
     assert.doesNotMatch(t.r.stderr, /node missing on this cell/);
   } finally { clean(t, prefix); }
+});
+
+test("CELL_PROBE_DIRS seam: set-but-empty probes NOTHING — a host prefix must not be prepended above fixture stubs (issue #688)", () => {
+  // The stub-isolation contract: offline fixtures pin CELL_PROBE_DIRS=""
+  // and prepend their own stub bin dir. Under `${VAR:-default}` the empty
+  // pin RESTORED the default list, so any host prefix carrying a real
+  // dsh/doppler/gh was prepended above the stubs (air16 receipt, issue
+  // #688: the stub dsh's call log stayed EMPTY through a full driver boot;
+  // 37 driver/wrapper suites red with "Doppler Error: Invalid Auth token").
+  // The probe dir here is $HOME/.dsh-bot-bin — CREATED, so a default-list
+  // restore prepends it on EVERY OS: this assertion bites on linux CI too,
+  // not only on hosts that happen to carry a brew prefix.
+  const home = mkdtempSync(path.join(tmpdir(), "celltools-emptyprobe-"));
+  const legacy = path.join(home, ".dsh-bot-bin");
+  mkdirSync(legacy, { recursive: true });
+  const script = [
+    "CELL_PROBE_DIRS=''",
+    'CELL_ADDED_PREFIXES=""',
+    extractFunction("cell_probe_prefixes"),
+    "cell_probe_prefixes",
+    'printf \'%s\\n\' "added:$CELL_ADDED_PREFIXES"',
+  ].join("\n");
+  const r = spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: process.env.PATH, HOME: home },
+  });
+  try {
+    assert.equal(r.status, 0, `probe harness must run: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "added:",
+      `a SET-BUT-EMPTY CELL_PROBE_DIRS must probe NOTHING — got added prefixes: ${r.stdout.trim()}`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("CELL_PROBE_DIRS seam: an EXISTING listed dir is still prepended (positive control for the empty pin)", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "celltools-listprobe-"));
+  const listed = path.join(home, "my-prefix");
+  mkdirSync(listed, { recursive: true });
+  const script = [
+    `CELL_PROBE_DIRS='${listed}'`,
+    'CELL_ADDED_PREFIXES=""',
+    extractFunction("cell_probe_prefixes"),
+    "cell_probe_prefixes",
+    'printf \'%s\\n\' "added:$CELL_ADDED_PREFIXES"',
+    'printf \'%s\\n\' "first:${PATH%%:*}"',
+  ].join("\n");
+  const r = spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: process.env.PATH, HOME: home },
+  });
+  try {
+    assert.equal(r.status, 0, `probe harness must run: ${r.stderr}`);
+    assert.equal(r.stdout.split("\n")[0], `added:${listed}`,
+      "a listed, existing, not-already-on-PATH dir must still be prepended — the heal behavior is real, only the empty pin changed");
+    assert.equal(r.stdout.split("\n")[1], `first:${listed}`,
+      "the listed prefix must land at the FRONT of PATH");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("missing doppler: official installer invoked, binary lands in the persistent prefix", () => {
@@ -417,7 +484,8 @@ test("default probe list finds bun in ~/.bun/bin: a lane whose only bun is the o
   const defaults = src.split("\n")
     .filter((l) => /^(CELL_BIN|CELL_PROBE_DIRS)=/.test(l))
     .join("\n");
-  assert.match(defaults, /^CELL_PROBE_DIRS="\$\{CELL_PROBE_DIRS:-/m, "the default assignments must be lift-able from the source");
+  assert.match(defaults, /^CELL_PROBE_DIRS="\$\{CELL_PROBE_DIRS-/m, "the default assignments must be lift-able from the source");
+  assert.doesNotMatch(defaults, /\$\{CELL_PROBE_DIRS:-/, "the seam must stay ${VAR-default}: a SET-BUT-EMPTY pin means 'probe nothing' (issue #688)");
   assert.match(defaults, /\.bun\/bin/, "the lifted default list itself must carry bun's install dir");
 
   const stubHome = mkdtempSync(path.join(tmpdir(), "celltools-bunhome-"));
