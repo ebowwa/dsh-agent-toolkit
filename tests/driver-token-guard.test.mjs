@@ -44,7 +44,7 @@ test("driver without DOPPLER_SERVICE_TOKEN fails typed (exit 2) before any work"
   // wedge (tests-lint rule 2; gates runs 34748403843/34788769043/
   // 34795917609/34803136058). The env is the hermetic base (issue #144)
   // plus this test's own pins — the seam pin stays IN the literal.
-  const env = { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0" };
+  const env = { ...HERMETIC_ENV, DSH_RETRY_BACKOFF_S: "0", CELL_PROBE_DIRS: "" };
   delete env.DOPPLER_SERVICE_TOKEN;
   // Deliberately bare: the guard must fire before dsh install / cell-tool
   // probes, so no node/dsh/doppler availability is required here.

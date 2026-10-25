@@ -54,6 +54,7 @@ esac
     env: (extra = {}) => ({
       GH_TOKEN: "fake-token", DSH_AGENT_TOOLKIT_DIR: ROOT, DSH_WORKER_REPOS: "owner/repo",
       DSH_WORKER_DATA_ROOT: path.join(dir, "data"),
+      CELL_PROBE_DIRS: "", // rule out host prefixes above the shim (issue #688 seam)
       PATH: `${shim}${path.delimiter}${process.env.PATH}`,
       ...extra,
     }) };

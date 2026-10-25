@@ -666,7 +666,15 @@ CELL_BIN="${DSH_CELL_BIN:-$HOME/.dsh-agent-toolkit-bin}"
 # must heal it onto PATH zero-network alongside gh/doppler.
 # CELL_PROBE_DIRS is a TEST SEAM (space list) — callers never set
 # it; the offline suite needs to rule out the dev machine's real prefixes.
-CELL_PROBE_DIRS="${CELL_PROBE_DIRS:-$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.bun/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
+# `${VAR-default}` deliberately (NOT `:-`): a SET-BUT-EMPTY value must mean
+# "probe nothing" — the offline fixtures pin CELL_PROBE_DIRS="" to keep host
+# prefixes from being PREPENDED above the fixtures' stub tool dirs. Under
+# `:-` the empty pin expanded to this default list, so on a mac cell whose
+# /opt/homebrew/bin carries a REAL dsh + doppler + gh, the probe promoted
+# the real CLIs above the stubs (the stub dsh was never exec'd — instrumented
+# receipt) and 37 driver/wrapper tests failed with "Doppler Error: Invalid
+# Auth token" (issue #688).
+CELL_PROBE_DIRS="${CELL_PROBE_DIRS-$CELL_BIN $HOME/.dsh-bot-bin /opt/homebrew/bin /usr/local/bin $HOME/.bun/bin $HOME/.doppler/bin /home/linuxbrew/.linuxbrew/bin}"
 CELL_ADDED_PREFIXES=""
 cell_probe_prefixes() {
   local p
