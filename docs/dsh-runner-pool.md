@@ -77,7 +77,16 @@ the `dsh` label; the box itself is healthy — the label is the wrong fit.
    service on Linux (`actions.runner.ebowwa-dsh-agent-toolkit.<name>.service`),
    a launchd agent on macOS. Verify the job is actually listening:
    `grep "Listening for Jobs" ~/actions-runner/_diag/*.log` (or the
-   install dir's `_diag`), then the `gh api` read above.
+   install dir's `_diag`), then the `gh api` read above. **Two traps that
+   cost the first relay-dsh job (2026-10-25):** the Linux unit is
+   generated with an EMPTY `User=` — a root-running runner refuses to run
+   at all ("Must not run with sudo"), and after you fix `User=<owner>` in
+   the unit + `daemon-reload` + restart, the seconds the root instance
+   lived may have left a ROOT-OWNED `_work/` behind: the first job then
+   instant-fails (zero steps, ~2s) with
+   `UnauthorizedAccessException: Access to the path '<dir>/_work/_tool'
+   is denied`. Check `ls -la` on `_work` and `chown -R` before trusting
+   the first green.
 6. **Pre-verify the suite BEFORE trusting the box with the required
    check** — clone the repo on the target box and run the exact gates
    steps (the `node --check` loop over `scripts/`, `node
