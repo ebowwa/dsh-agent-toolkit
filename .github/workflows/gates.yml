@@ -20,20 +20,26 @@ concurrency:
 
 jobs:
   gates:
-    runs-on: [self-hosted, dsh]
-    # Issue #680: 20, not 10. This box IS the gates runner — six self-hosted
-    # runners on 2 cores — and the suite is ~4 minutes quiet but ~10 minutes
-    # under load. Run 40062597588 ATTEMPT 1 at 98d65f0 came back `cancelled`
+    runs-on: [self-hosted, gates]
+    # Dedicated cell (issue #686): gates is the only check whose latency
+    # blocks every merge, so it schedules on a runner that carries the
+    # `gates` label and NO `dsh` label — lane installs and suites cannot
+    # queue ahead of it. Never flip this back to the shared `dsh` lane
+    # while gates shares a cell with lane work (that is the starvation
+    # issue #684 measured), and never flip it before a `gates`-labeled
+    # runner exists — a label no runner carries parks every merge forever.
+    # Issue #680: 20, not 10. The budget is a LOAD signal, not a test
+    # signal. Run 40062597588 ATTEMPT 1 at 98d65f0 came back `cancelled`
     # with the Unit tests step still running at 8m50s and NO test failing;
     # attempt 2 at the identical head sha was clean (884 tests / 882 pass /
     # 0 fail / 2 skipped). b12abd2 hit the same cap at 03:39 that morning, so
-    # this recurs rather than being a one-off. A timeout here is a LOAD
-    # signal, not a test signal — and because it hits the POST-MERGE run it
-    # leaves main with no verdict at all, which is indistinguishable from
-    # "never ran" for anyone reading status. The cap now sits at 2x the
-    # slowest observed passing run so a busy box cannot erase the verdict.
-    # The underlying defect (six runners on 2 cores) is the runner-weight
-    # question in the issue, not something a job budget can fix.
+    # this recurs rather than being a one-off. The old shared cell ran six
+    # self-hosted runners on 2 cores — a ~4-minute quiet suite took ~10
+    # under load — and because a timeout hits the POST-MERGE run it left
+    # main with no verdict at all, which is indistinguishable from
+    # "never ran" for anyone reading status. The cap stays at 2x the
+    # slowest observed passing run on the dedicated cell too: a busy box
+    # cannot erase the verdict.
     timeout-minutes: 20
     steps:
       - name: Disk free-space floor check

@@ -11,7 +11,12 @@
 //     waiving the local-gates rule);
 //   - revert guard: gates.yml keeps its push-to-main trigger — the leg the
 //     authority claim rests on (drop it and a pending-at-merge merge means
-//     the change is graded by nothing).
+//     the change is graded by nothing);
+//   - revert guard (issue #686): gates.yml stays on the dedicated
+//     `gates` cell — a silent move back to the shared `dsh` lane re-opens
+//     the starvation #684 measured (four cancelled runs, zero failing
+//     tests) and puts lane work ahead of the one check every merge waits
+//     on.
 // Branch protection is the owner's separate lever (a repo setting, not a
 // tree change), and this repo's shipper opens PRs and never merges, so
 // there is no shipper-side wait to pin here.
@@ -78,5 +83,22 @@ test("issue #680: the gates job budget outlives the slowest observed pass, so a 
     gates,
     /LOAD\s*\n\s*#?\s*signal|LOAD signal/,
     "and states that a timeout here is a load signal, not a test signal",
+  );
+});
+
+test("issue #686 revert guard: gates schedules on the dedicated gates cell, never the shared lane", () => {
+  const gates = read(".github/workflows/gates.yml");
+  assert.match(
+    gates,
+    /runs-on: \[self-hosted, gates\]/,
+    "gates must schedule on a runner carrying the dedicated `gates` label (issue #686) — " +
+      "lane installs and suites on the shared cell queue ahead of the one check whose latency blocks every merge",
+  );
+  assert.doesNotMatch(
+    gates,
+    /runs-on: \[self-hosted, dsh\]/,
+    "a silent revert to the shared `dsh` lane re-opens the #684 starvation " +
+      "(four consecutive cancelled runs at 20m with zero failing tests) — " +
+      "and a flip is only ever shipped once a `gates`-labeled runner is online",
   );
 });

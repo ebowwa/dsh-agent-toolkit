@@ -1,9 +1,10 @@
 # The `dsh` runner pool — inventory, receipts, provisioning runbook
 
-Every self-hosted runner carrying the `dsh` label in this repo. Eleven of
-this repo's twelve workflows declare `runs-on: [self-hosted, dsh]`
-(including `gates.yml` — the required check), so the pool is the whole CI
-surface; its health decides whether a merge gets a verdict at all.
+Every self-hosted runner carrying the `dsh` label in this repo. Ten of
+this repo's thirteen workflows declare `runs-on: [self-hosted, dsh]`;
+the required check is not one of them any more — `gates.yml` moved to
+its own dedicated `gates` cell (issue #686, below), so this pool no
+longer decides merge latency by itself.
 
 ## The pool
 
@@ -23,6 +24,32 @@ Two `dsh`-labeled runners on **distinct machines** is the standing pool
 contract (issue #685): GitHub hands a `dsh` job to whichever matching
 runner is idle, so a box that is drowning in lane load only sheds a job
 if another machine can take it.
+
+## The dedicated `gates` cell (issue #686)
+
+`gates.yml` — the one check whose latency blocks every merge — does not
+run in this pool. It schedules on a runner that carries the `gates`
+label and NO `dsh` label:
+
+| runner | host machine | os / arch | notes |
+|---|---|---|---|
+| `relay-gates` | the relay VPS | Linux / X64, idle | registered for issue #686 (2026-10-25); runs no agent lanes |
+
+Measured at registration: 4 cores, ~6.3 GB free RAM, 64 GB free disk,
+load ~0 — the ~15 quiet minutes issue #684 measured the suite needing
+are a scheduling fact, not a hope. Provisioning followed the runbook
+below (registration token over stdin, dedicated directory, systemd unit
+`actions.runner.ebowwa-dsh-agent-toolkit.relay-gates.service`, the
+runner-owned node bundle wired through `.path`), with one deliberate
+difference: `--labels gates` — and **never also `dsh`**, or lane work
+follows the required check straight back onto the cell.
+
+The ordering here is load-bearing and the reason the label and the flip
+are ONE ticket: the `runs-on` flip landed only AFTER the labeled runner
+was online and idle. A flip naming a label that no runner carries parks
+every merge forever — strictly worse than the starvation it replaces.
+Revert guard: `tests/gates-merge-authority.test.mjs` goes red if
+`gates.yml` silently moves back to `[self-hosted, dsh]`.
 
 ## Why the second runner exists (measured)
 
@@ -101,4 +128,6 @@ the `dsh` label; the box itself is healthy — the label is the wrong fit.
 
 Runner names follow `<host>-dsh` (host first, role second) — `relay-dsh`
 on caringmind-relay, `seed-dshbot` being the historical name on
-seed-dsh-prod.
+seed-dsh-prod. The dedicated cell breaks the pattern on purpose:
+`relay-gates` names the label it carries, because the label IS the
+contract (issue #686).
