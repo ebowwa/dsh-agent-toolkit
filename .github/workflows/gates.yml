@@ -20,14 +20,26 @@ concurrency:
 
 jobs:
   gates:
-    runs-on: [self-hosted, gates]
-    # Dedicated cell (issue #686): gates is the only check whose latency
-    # blocks every merge, so it schedules on a runner that carries the
-    # `gates` label and NO `dsh` label — lane installs and suites cannot
-    # queue ahead of it. Never flip this back to the shared `dsh` lane
-    # while gates shares a cell with lane work (that is the starvation
-    # issue #684 measured), and never flip it before a `gates`-labeled
-    # runner exists — a label no runner carries parks every merge forever.
+    runs-on: [self-hosted, dsh, gates]
+    # Routing pin (issue #686): gates is the only check whose latency blocks
+    # every merge, so it must never be handed to a box that is also running
+    # lane installs and suites. The requirement is a CONJUNCTION, and each
+    # half is load-bearing:
+    #   - `dsh` excludes the dedicated `relay-gates` runner, which carries
+    #     `gates` only and CANNOT run this job: it dies at install-deps with
+    #     `npm did not run (EACCES)` (run 40396993336 at 2026-10-26T20:35Z,
+    #     reproduced live; repair tracked in #693). A bare
+    #     `[self-hosted, gates]` parks the required check permanently red,
+    #     and a permanently red required check blocks EVERY merge — strictly
+    #     worse than the starvation it replaces.
+    #   - `gates` excludes the starved 2-core lane box (`seed-dshbot`), which
+    #     carries `dsh` only. That exclusion is the whole point: issue #684
+    #     measured gates being handed to that box and cancelled at the job
+    #     cap with zero failing tests (runs 40179248484, 40239914805).
+    # Only the quiet relay cell carries both labels, and that host runs no
+    # agent lanes. So: never flip back to `[self-hosted, dsh]` (re-opens
+    # #684), and never flip to bare `[self-hosted, gates]` before #693 makes
+    # that cell capable of running this job.
     # Issue #680: 20, not 10. The budget is a LOAD signal, not a test
     # signal. Run 40062597588 ATTEMPT 1 at 98d65f0 came back `cancelled`
     # with the Unit tests step still running at 8m50s and NO test failing;
@@ -38,8 +50,7 @@ jobs:
     # under load — and because a timeout hits the POST-MERGE run it left
     # main with no verdict at all, which is indistinguishable from
     # "never ran" for anyone reading status. The cap stays at 2x the
-    # slowest observed passing run on the dedicated cell too: a busy box
-    # cannot erase the verdict.
+    # slowest observed passing run: a busy box cannot erase the verdict.
     timeout-minutes: 20
     steps:
       - name: Disk free-space floor check

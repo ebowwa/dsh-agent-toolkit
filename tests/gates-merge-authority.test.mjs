@@ -12,11 +12,12 @@
 //   - revert guard: gates.yml keeps its push-to-main trigger — the leg the
 //     authority claim rests on (drop it and a pending-at-merge merge means
 //     the change is graded by nothing);
-//   - revert guard (issue #686): gates.yml stays on the dedicated
-//     `gates` cell — a silent move back to the shared `dsh` lane re-opens
-//     the starvation #684 measured (four cancelled runs, zero failing
-//     tests) and puts lane work ahead of the one check every merge waits
-//     on.
+//   - revert guard (issue #686): gates.yml requires the `dsh` + `gates`
+//     label PAIR. `gates` keeps the required check off the starved 2-core
+//     lane box (#684 - four cancelled runs at the 20m cap, zero failing
+//     tests); `dsh` keeps it off the dedicated `relay-gates` runner, which
+//     cannot execute npm and would park every merge on a permanently red
+//     required check (#693). Either half dropped alone is a known outage.
 // Branch protection is the owner's separate lever (a repo setting, not a
 // tree change), and this repo's shipper opens PRs and never merges, so
 // there is no shipper-side wait to pin here.
@@ -86,19 +87,25 @@ test("issue #680: the gates job budget outlives the slowest observed pass, so a 
   );
 });
 
-test("issue #686 revert guard: gates schedules on the dedicated gates cell, never the shared lane", () => {
+test("issue #686 revert guard: gates requires the dsh+gates pair, so it lands on the quiet cell only", () => {
   const gates = read(".github/workflows/gates.yml");
   assert.match(
     gates,
-    /runs-on: \[self-hosted, gates\]/,
-    "gates must schedule on a runner carrying the dedicated `gates` label (issue #686) — " +
-      "lane installs and suites on the shared cell queue ahead of the one check whose latency blocks every merge",
+    /runs-on: \[self-hosted, dsh, gates\]/,
+    "gates must require BOTH labels (issue #686): `gates` keeps the required check off the " +
+      "starved 2-core lane box (#684), and `dsh` keeps it off the dedicated `relay-gates` " +
+      "runner that cannot execute npm (#693) - a bare `gates` flip there parks every merge red",
   );
   assert.doesNotMatch(
     gates,
     /runs-on: \[self-hosted, dsh\]/,
     "a silent revert to the shared `dsh` lane re-opens the #684 starvation " +
-      "(four consecutive cancelled runs at 20m with zero failing tests) — " +
-      "and a flip is only ever shipped once a `gates`-labeled runner is online",
+      "(four consecutive cancelled runs at the 20m cap with zero failing tests)",
+  );
+  assert.doesNotMatch(
+    gates,
+    /runs-on: \[self-hosted, gates\]/,
+    "a bare `gates` flip routes the required check to relay-gates, which dies at install-deps " +
+      "with npm EACCES (run 40396993336) - a permanently red required check blocks every merge",
   );
 });
