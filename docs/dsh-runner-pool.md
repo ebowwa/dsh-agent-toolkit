@@ -1,16 +1,18 @@
 # The `dsh` runner pool — inventory, receipts, provisioning runbook
 
-Every self-hosted runner carrying the `dsh` label in this repo. Eleven of
-this repo's twelve workflows declare `runs-on: [self-hosted, dsh]`
-(including `gates.yml` — the required check), so the pool is the whole CI
-surface; its health decides whether a merge gets a verdict at all.
+Every self-hosted runner carrying the `dsh` label in this repo. Ten of
+this repo's thirteen workflows require exactly `runs-on: [self-hosted,
+dsh]`; the required check requires the `dsh` + `gates` PAIR (issue #686,
+below), so the pool is still the whole CI surface but it no longer alone
+decides merge latency.
 
 ## The pool
 
 | runner | host machine | os / arch | notes |
 |---|---|---|---|
-| `seed-dshbot` | seed-dsh-prod | Linux / X64, 2 cores | the original runner; the same 2-core box also runs 4–6 concurrent `run-dsh-agent.sh` lanes |
-| `relay-dsh` | caringmind-relay (VPS) | Linux / X64, 2 cores, idle | added by issue #685 for gates starvation; the box runs no agent lanes |
+| `seed-dshbot` | seed-dsh-prod | Linux / X64, 2 cores, **offline** | the original runner; the same 2-core box also runs 4–6 concurrent `run-dsh-agent.sh` lanes — the host #684 measured as unable to finish `gates` under that load |
+| `relay-dsh` | caringmind-relay (VPS) | Linux / X64, 2 cores, idle | added by issue #685 for gates starvation; the box runs no agent lanes. **Also carries `gates`**, so it serves the required check (issue #686) |
+| `relay-gates` | a relay VPS not reachable from the seed cell | Linux / X64 | registered for issue #686 carrying `gates` only; **cannot run the required check** — dies at install-deps with `npm did not run (EACCES)`, repair tracked in #693 |
 
 Verify live at any time:
 
@@ -23,6 +25,45 @@ Two `dsh`-labeled runners on **distinct machines** is the standing pool
 contract (issue #685): GitHub hands a `dsh` job to whichever matching
 runner is idle, so a box that is drowning in lane load only sheds a job
 if another machine can take it.
+
+## Where `gates` runs now (issue #686)
+
+`gates.yml` — the one check whose latency blocks every merge — requires
+the label PAIR `runs-on: [self-hosted, dsh, gates]`. The conjunction is
+deliberate, and both halves are load-bearing:
+
+| half | rules out | why |
+|---|---|---|
+| `gates` | `seed-dshbot` (the starved 2-core lane host) | issue #684 measured `gates` being handed to that box and `cancelled` at the job cap with **zero failing tests** (runs `40179248484`, `40239914805`) — both *after* the second runner existed, i.e. the pool does not protect the required check by itself |
+| `dsh` | `relay-gates` (the dedicated `gates`-only runner) | it cannot run this job: it dies at *Install plugin smoke-test deps* with `npm did not run (EACCES)`, reproduced live 2026-10-26T20:35Z on run `40396993336`. Repair is issue **#693** |
+
+**Today only `relay-dsh` carries both labels**, and its host
+(caringmind-relay) runs no agent lanes: a measured `gates` completion
+there is **3m11s** (run `40396328950`, 2026-10-26) while seed-dsh-prod
+sat at load ~60. That is the scheduling guarantee the ticket asked for.
+
+Two flips are forbidden, and `tests/gates-merge-authority.test.mjs`
+fails loud on both:
+
+- **never back to `[self-hosted, dsh]`** — re-opens #684: the job can be
+  handed to the saturated box again;
+- **never to bare `[self-hosted, gates]` before #693 lands** — that routes
+  the required check to `relay-gates`, which cannot execute npm. A
+  permanently red required check blocks every merge, which is strictly
+  worse than the starvation it replaces.
+
+Two operational traps, each of which cost an attempt to learn:
+
+- **A label added to a live runner via the API does take effect, but the
+  read is stale.** The first `GET` after `POST .../runners/<id>/labels`
+  still showed 4 labels while the add had already returned
+  `total_count: 5`; re-read the runner detail endpoint before concluding
+  the add failed.
+- **Verify a candidate cell can run the REQUIRED CHECK, not just that it
+  is online and idle.** `relay-gates` sat online/idle for a day while
+  being unable to complete `gates` at all. Dispatch the workflow at the
+  candidate cell's ref and read which step fails before flipping anything
+  that names it.
 
 ## Why the second runner exists (measured)
 
@@ -101,4 +142,7 @@ the `dsh` label; the box itself is healthy — the label is the wrong fit.
 
 Runner names follow `<host>-dsh` (host first, role second) — `relay-dsh`
 on caringmind-relay, `seed-dshbot` being the historical name on
-seed-dsh-prod.
+seed-dsh-prod. The `gates` routing pin rides `relay-dsh` rather than a
+separately named cell, because the capable cell today is the one that
+already serves the pool; `relay-gates` is registered but cannot run the
+required check until #693 is repaired.

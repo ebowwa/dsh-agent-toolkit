@@ -10,8 +10,10 @@ run straight off the tree on Node.
 ## The rules
 
 - **Work lands on `main` via reviewed PR.** `gates.yml` fires on every push
-  to `main` and every PR (job `gates`, self-hosted `dsh` cell, 10-minute
-  timeout). The main-side run fired by the merge push itself is the
+  to `main` and every PR (job `gates`, pinned by the `dsh` + `gates` label
+  pair to the lane-free self-hosted cell, so the required check is never
+  handed to the saturated lane box; issue #686; 20-minute timeout). The main-side run fired by
+  the merge push itself is the
   authoritative grade (issue #431): a PR-level `gates` check still
   pending at merge time is accepted, not an incident — the self-hosted
   cell can lag for hours, and the merged tree is graded by the main-side
