@@ -53,7 +53,7 @@
 //   GH_TOKEN            pass through to gh, as usual.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -123,7 +123,58 @@ reviews.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
 //    LAST body carrying a marker in a channel is that channel's final word,
 //    then the later channel wins (issue #560). Bodies stay on disk in a temp
 //    file and are never echoed.
+
+/**
+ * Reap this tool's own stale siblings before minting (the residue half of
+ * the #2698 invariant). A SIGKILL runs no code, so no teardown below can
+ * fire for that kill — a wedged consumer's watchdog SIGKILLs the tree — and
+ * the next invocation reclaims what the killed one left. Exact prefix, an
+ * age budget far past this tool's runtime, real dirs only, never throws.
+ */
+const STALE_MS = 60 * 60 * 1000;
+const reapStaleScratch = (prefix) => {
+  let names;
+  try { names = readdirSync(tmpdir()); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    try {
+      const p = path.join(tmpdir(), name);
+      if (!statSync(p).isDirectory()) continue;
+      if (now - statSync(p).mtimeMs < STALE_MS) continue;
+      rmSync(p, { recursive: true, force: true });
+    } catch { continue; }
+  }
+};
+reapStaleScratch("pr-verification-");
 const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
+// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is NOT that: the
+// report arm and every `unresolvable()` call end in `process.exit()`,
+// which does not unwind the stack — so the finally never ran on ANY run,
+// and every invocation (pass, fail, and unresolvable alike) stranded one
+// `pr-verification-*` dir under $TMPDIR. Measured on seed: one per run,
+// which is the whole leak. `process.on('exit')` fires for `process.exit()`
+// too, and the signal hooks cover a killed run (the job cap's SIGTERM, a
+// cancelled lane's SIGINT); both reach the same idempotent sweep. The
+// finally stays as the normal-path arm, so a plain return is cleaned
+// before the exit hook would have to.
+let dirSwept = false;
+const sweepDir = () => {
+  if (dirSwept) return;
+  dirSwept = true;
+  rmSync(dir, { recursive: true, force: true });
+};
+process.on("exit", sweepDir);
+for (const [signal, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+  ["SIGHUP", 129],
+]) {
+  process.on(signal, () => {
+    sweepDir();
+    process.exit(code);
+  });
+}
 try {
   const tool = path.join(path.dirname(path.resolve(process.argv[1] ?? ".")), "gate-verify.mjs");
   const lastMarker = (rows, atKey) => {
@@ -189,5 +240,5 @@ try {
   }
   process.exit(last && last.verdict === "pass" ? 0 : 1);
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  sweepDir();
 }

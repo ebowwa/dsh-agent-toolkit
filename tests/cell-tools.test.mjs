@@ -31,13 +31,63 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "run-dsh-agent.sh");
+
+// ── crash-proof scratch ──────────────────────────────────────────────
+// Every fixture dir this file mints goes through `mint()`, which registers
+// it for a sweep that cannot be skipped. The per-test `finally` blocks are
+// NOT that: a suite killed by SIGTERM (the job cap) or SIGINT runs no
+// finally at all, and a mint outside a tracked pair is never swept even on
+// the green path — both shapes were measured as this file's residue under
+// $TMPDIR. `process.on('exit')` also fires for `process.exit()`, so every
+// exit shape reaches the same idempotent sweep.
+const scratch = [];
+const mint = (prefix) => {
+  const d = mkdtempSync(path.join(tmpdir(), prefix));
+  scratch.push(d);
+  return d;
+};
+const sweepScratch = () => {
+  for (const d of scratch.splice(0)) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
+};
+process.on("exit", sweepScratch);
+for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]]) {
+  process.on(signal, () => { sweepScratch(); process.exit(code); });
+
+/**
+ * Reap THIS FILE's stale siblings before the first mint (the residue half of
+ * the #2698 invariant). A SIGKILL runs no code at all — bounded-gate's
+ * watchdog SIGKILLs a wedged suite, so no in-process teardown can ever run
+ * for that kill — and the next run reclaims what a killed one left. The
+ * rails are the fleet sweepers': exact name prefixes, an age budget far past
+ * the slowest suite, real directories only, and an unreadable root removes
+ * nothing (the mint must never die because its housekeeping did).
+ */
+const STALE_MS = 60 * 60 * 1000;
+const reapStaleScratch = (prefixes) => {
+  let names;
+  try { names = readdirSync(tmpdir()); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    if (!prefixes.some((p) => name.startsWith(p))) continue;
+    try {
+      const p = join(tmpdir(), name);
+      if (!statSync(p).isDirectory()) continue; // a file/symlink named like scratch is never a candidate
+      if (now - statSync(p).mtimeMs < STALE_MS) continue;
+      rmSync(p, { recursive: true, force: true });
+    } catch { continue; } // raced vanish or unreadable — leave it
+  }
+};
+reapStaleScratch(["celltools-"]);
+}
 
 const extractFunction = (name) =>
   spawnSync("sed", ["-n", `/^${name}()/,/^}/p`, SCRIPT], { encoding: "utf8" }).stdout;
@@ -63,8 +113,8 @@ const writeTool = (dir, name) => {
 // version-resolve killed the driver before the soft-gh warning / the
 // doppler hint could print).
 const runFn = ({ fn, args = "", tools = [], extra = "", curlShim = null, unzipShim = null, strict = false } = {}) => {
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
-  const shims = mkdtempSync(path.join(tmpdir(), "celltools-shims-"));
+  const home = mint("celltools-home-");
+  const shims = mint("celltools-shims-");
   for (const t of tools) writeTool(shims, t);
   if (curlShim) { writeFileSync(path.join(shims, "curl"), curlShim); chmodSync(path.join(shims, "curl"), 0o755); }
   // Only when the host lacks unzip: a python3-backed -p implementation so
@@ -94,7 +144,7 @@ const clean = (t, ...extraDirs) => {
 // uname -m at runtime — the test cannot choose it.
 const ghVersion = "9.9.9";
 const buildLinuxTarball = () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "celltools-ghsrc-"));
+  const dir = mint("celltools-ghsrc-");
   for (const flavor of ["amd64", "arm64"]) {
     const nested = path.join(dir, `gh_${ghVersion}_linux_${flavor}`, "bin");
     mkdirSync(nested, { recursive: true });
@@ -106,7 +156,7 @@ const buildLinuxTarball = () => {
   return { tgz, dir };
 };
 const buildMacZip = () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "celltools-ghzip-"));
+  const dir = mint("celltools-ghzip-");
   const zip = path.join(dir, "gh.zip");
   const py = spawnSync("python3", ["-c", `
 import sys, zipfile
@@ -178,7 +228,7 @@ test("tools present: no install attempted (curl shim fails loudly if called)", (
 });
 
 test("regressed service PATH: tools exist under a probeable prefix — probing fixes it, no install", () => {
-  const prefix = mkdtempSync(path.join(tmpdir(), "celltools-prefix-"));
+  const prefix = mint("celltools-prefix-");
   writeTool(prefix, "doppler"); writeTool(prefix, "gh");
   const t = runFn({
     fn: "ensure_cell_tools",
@@ -193,10 +243,10 @@ test("regressed service PATH: tools exist under a probeable prefix — probing f
 });
 
 test("bare cell: prefix additions publish to GITHUB_PATH EXACTLY ONCE (3 probe calls, no triplicate — r2 finding 4)", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
+  const home = mint("celltools-home-");
   const gp = path.join(home, "github-path");
   writeFileSync(gp, "");
-  const p1 = mkdtempSync(path.join(tmpdir(), "celltools-prefix-"));
+  const p1 = mint("celltools-prefix-");
   const cellBin = path.join(home, "cellbin"); // does NOT exist yet — the
   // doppler installer creates it, so only the POST-INSTALL re-probe adds it
   const t = runFn({
@@ -234,7 +284,7 @@ test("missing node fails loud with the provisioning hint (hard requirement)", ()
 });
 
 test("node lives only under a probeable prefix: the probe finds it BEFORE the hard fail (r2 finding 6)", () => {
-  const prefix = mkdtempSync(path.join(tmpdir(), "celltools-prefix-"));
+  const prefix = mint("celltools-prefix-");
   // Absence constructed by NAME (a stub name no dir on the pre-probe PATH
   // carries), the BIN-seam way — never by restricting PATH (the lanes
   // install the real CLIs in system dirs; tests-lint rejects that).
@@ -260,7 +310,7 @@ test("CELL_PROBE_DIRS seam: set-but-empty probes NOTHING — a host prefix must 
   // The probe dir here is $HOME/.dsh-bot-bin — CREATED, so a default-list
   // restore prepends it on EVERY OS: this assertion bites on linux CI too,
   // not only on hosts that happen to carry a brew prefix.
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-emptyprobe-"));
+  const home = mint("celltools-emptyprobe-");
   const legacy = path.join(home, ".dsh-bot-bin");
   mkdirSync(legacy, { recursive: true });
   const script = [
@@ -284,7 +334,7 @@ test("CELL_PROBE_DIRS seam: set-but-empty probes NOTHING — a host prefix must 
 });
 
 test("CELL_PROBE_DIRS seam: an EXISTING listed dir is still prepended (positive control for the empty pin)", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-listprobe-"));
+  const home = mint("celltools-listprobe-");
   const listed = path.join(home, "my-prefix");
   mkdirSync(listed, { recursive: true });
   const script = [
@@ -311,7 +361,7 @@ test("CELL_PROBE_DIRS seam: an EXISTING listed dir is still prepended (positive 
 });
 
 test("missing doppler: official installer invoked, binary lands in the persistent prefix", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
+  const home = mint("celltools-home-");
   const cellBin = path.join(home, "cellbin");
   const t = runFn({
     fn: "ensure_cell_tools", tools: ["node", "gh"],
@@ -369,7 +419,7 @@ test("driver context (set -euo pipefail), no egress + doppler missing: fails LOU
 
 test("install_gh_release (linux): tarball in the REAL layout lands AT $CELL_BIN/gh (strip 2)", () => {
   const { tgz, dir: fdir } = buildLinuxTarball();
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
+  const home = mint("celltools-home-");
   const cellBin = path.join(home, "cellbin");
   const t = runFn({
     fn: "install_gh_release", args: "linux",
@@ -385,7 +435,7 @@ test("install_gh_release (linux): tarball in the REAL layout lands AT $CELL_BIN/
 
 test("install_gh_release (darwin): zip asset (macOS ships NO tarball — r0 404) lands AT $CELL_BIN/gh", () => {
   const { zip, dir: fdir } = buildMacZip();
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
+  const home = mint("celltools-home-");
   const cellBin = path.join(home, "cellbin");
   const t = runFn({
     fn: "install_gh_release", args: "darwin",
@@ -439,7 +489,7 @@ test("driver context (set -euo pipefail), no egress + doppler missing: the loud 
 });
 
 test("failed darwin extract leaves NO empty gh artifact in the persistent prefix (residual tidy on 3f690a2)", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "celltools-home-"));
+  const home = mint("celltools-home-");
   const cellBin = path.join(home, "cellbin");
   const t = runFn({
     fn: "install_gh_release", args: "darwin",
@@ -488,7 +538,7 @@ test("default probe list finds bun in ~/.bun/bin: a lane whose only bun is the o
   assert.doesNotMatch(defaults, /\$\{CELL_PROBE_DIRS:-/, "the seam must stay ${VAR-default}: a SET-BUT-EMPTY pin means 'probe nothing' (issue #688)");
   assert.match(defaults, /\.bun\/bin/, "the lifted default list itself must carry bun's install dir");
 
-  const stubHome = mkdtempSync(path.join(tmpdir(), "celltools-bunhome-"));
+  const stubHome = mint("celltools-bunhome-");
   // Absence by NAME (the node9-stub rule): a stub name no ambient PATH dir
   // carries, so the real brew prefixes the default list also probes cannot
   // satisfy the resolution — only $HOME/.bun/bin can.

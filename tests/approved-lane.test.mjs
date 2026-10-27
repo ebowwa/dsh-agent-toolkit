@@ -42,13 +42,62 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TOOL = path.join(ROOT, "scripts", "approved-lane.mjs");
+
+// ── crash-proof fixture scratch ─────────────────────────────────────
+// `t.after()` is not an owner: a run killed mid-test runs no after-hook,
+// so a `-test-*` fixture dir stays behind (that is this file's half of the
+// measured residue). Every fixture mint goes through `mint()`, which
+// registers it for a sweep armed on `process.on('exit')` (also fires for
+// `process.exit()`) and on SIGTERM/SIGINT/SIGHUP. `t.after()` above stays
+// as the normal-path arm.
+const scratch = [];
+const mint = (prefix) => {
+  const d = mkdtempSync(path.join(tmpdir(), prefix));
+  scratch.push(d);
+  return d;
+};
+const sweepScratch = () => {
+  for (const d of scratch.splice(0)) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
+};
+process.on("exit", sweepScratch);
+for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]]) {
+  process.on(signal, () => { sweepScratch(); process.exit(code); });
+
+/**
+ * Reap THIS FILE's stale siblings before the first mint (the residue half of
+ * the #2698 invariant). A SIGKILL runs no code at all — bounded-gate's
+ * watchdog SIGKILLs a wedged suite, so no in-process teardown can ever run
+ * for that kill — and the next run reclaims what a killed one left. The
+ * rails are the fleet sweepers': exact name prefixes, an age budget far past
+ * the slowest suite, real directories only, and an unreadable root removes
+ * nothing (the mint must never die because its housekeeping did).
+ */
+const STALE_MS = 60 * 60 * 1000;
+const reapStaleScratch = (prefixes) => {
+  let names;
+  try { names = readdirSync(tmpdir()); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    if (!prefixes.some((p) => name.startsWith(p))) continue;
+    try {
+      const p = join(tmpdir(), name);
+      if (!statSync(p).isDirectory()) continue; // a file/symlink named like scratch is never a candidate
+      if (now - statSync(p).mtimeMs < STALE_MS) continue;
+      rmSync(p, { recursive: true, force: true });
+    } catch { continue; } // raced vanish or unreadable — leave it
+  }
+};
+reapStaleScratch(["approved-lane-test-"]);
+}
 const HEAD = "667a2f78d780ce22f564abd67bca4d6221f1af82"; // the real #495 head
 
 /** One check-run row for merge-guard's paged rollup. */
@@ -68,7 +117,7 @@ const fixture = (t, {
   checkRuns = [checkRun("gates", "completed", "success")],
   fail = null,
 } = {}) => {
-  const dir = mkdtempSync(path.join(tmpdir(), "approved-lane-test-"));
+  const dir = mint("approved-lane-test-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(path.join(dir, "pr-view.json"), JSON.stringify({
     number: 495,
@@ -306,7 +355,7 @@ test("unresolvable gates channel (merge-guard rc 2 — check-runs API failed) ex
 });
 
 test("missing gh exits 2 (the fail-closed direction — silence is not idle)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "approved-lane-test-"));
+  const dir = mint("approved-lane-test-");
   const r = spawnSync(process.execPath, [TOOL, "495"], {
     encoding: "utf8",
     env: { ...process.env, APPROVED_LANE_GH: path.join(dir, "absent-gh") },
