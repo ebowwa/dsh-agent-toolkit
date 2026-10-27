@@ -147,20 +147,23 @@ const reapStaleScratch = (prefix) => {
   }
 };
 reapStaleScratch("pr-verification-");
-const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
-// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is NOT that: the
-// report arm and every `unresolvable()` call end in `process.exit()`,
-// which does not unwind the stack — so the finally never ran on ANY run,
-// and every invocation (pass, fail, and unresolvable alike) stranded one
-// `pr-verification-*` dir under $TMPDIR. Measured on seed: one per run,
-// which is the whole leak. `process.on('exit')` fires for `process.exit()`
-// too, and the signal hooks cover a killed run (the job cap's SIGTERM, a
-// cancelled lane's SIGINT); both reach the same idempotent sweep. The
-// finally stays as the normal-path arm, so a plain return is cleaned
-// before the exit hook would have to.
+// TEARDOWN THE CALLER CANNOT SKIP — AT THE ALLOCATION SITE. The mint lives
+// INSIDE the try below and the remove-tree is the finally's body, so the
+// dir dies on every exit shape that unwinds: normal fall-through, a thrown
+// error, any future arm added to the try. `process.exit()` does NOT unwind
+// — it would skip any finally — so the report arm no longer exits from
+// inside the try: it records the code and exits AFTER the finally has run,
+// making the removal synchronous instead of exit-hook-best-effort. That
+// ordering is the point (measured history: +28 stranded dirs per suite run
+// here, and bun's process.on('exit') firing is runtime-context-dependent —
+// it fires for plain `bun script` on bun 1.3.14 but not inside bun test).
+// The exit + signal hooks stay armed below as belt-and-suspenders for the
+// pre-try window and signal kills; the finally is the arm that no longer
+// depends on the runner's courtesy.
+let dir = null;
 let dirSwept = false;
 const sweepDir = () => {
-  if (dirSwept) return;
+  if (dirSwept || !dir) return;
   dirSwept = true;
   rmSync(dir, { recursive: true, force: true });
 };
@@ -175,7 +178,9 @@ for (const [signal, code] of [
     process.exit(code);
   });
 }
+let exitCode = 1;
 try {
+  dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
   const tool = path.join(path.dirname(path.resolve(process.argv[1] ?? ".")), "gate-verify.mjs");
   const lastMarker = (rows, atKey) => {
     let found = null;
@@ -238,7 +243,8 @@ try {
   } else {
     process.stdout.write("none\n");
   }
-  process.exit(last && last.verdict === "pass" ? 0 : 1);
+  exitCode = last && last.verdict === "pass" ? 0 : 1;
 } finally {
   sweepDir();
 }
+process.exit(exitCode);
