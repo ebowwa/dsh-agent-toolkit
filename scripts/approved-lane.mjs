@@ -102,7 +102,7 @@
 //   GH_TOKEN          pass through to gh, as usual.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -208,7 +208,56 @@ if (commentsResp.status !== 0 || !Array.isArray(comments)) {
 // The comment channel reuses review-verdict.mjs's line-strict parse via a
 // temp-file seam (the pr-verification pattern): the sibling stays the ONE
 // implementation of "what line is a verdict", and bodies never echo.
+
+/**
+ * Reap this tool's own stale siblings before minting (the residue half of
+ * the #2698 invariant). A SIGKILL runs no code, so no teardown below can
+ * fire for that kill — a wedged consumer's watchdog SIGKILLs the tree — and
+ * the next invocation reclaims what the killed one left. Exact prefix, an
+ * age budget far past this tool's runtime, real dirs only, never throws.
+ */
+const STALE_MS = 60 * 60 * 1000;
+const reapStaleScratch = (prefix) => {
+  let names;
+  try { names = readdirSync(tmpdir()); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    try {
+      const p = path.join(tmpdir(), name);
+      if (!statSync(p).isDirectory()) continue;
+      if (now - statSync(p).mtimeMs < STALE_MS) continue;
+      rmSync(p, { recursive: true, force: true });
+    } catch { continue; }
+  }
+};
+reapStaleScratch("approved-lane-");
 const dir = mkdtempSync(path.join(tmpdir(), "approved-lane-"));
+// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is not that: the
+// verdict arm and every `unresolvable()` call end in `process.exit()`,
+// which does not unwind the stack — the finally never ran on any run, so
+// each invocation (approved, refused, unresolvable) stranded one
+// `approved-lane-*` dir under $TMPDIR. Measured on seed: one per run.
+// `process.on('exit')` also fires for `process.exit()`, and the signal
+// hooks cover a killed run; both reach the same idempotent sweep, and the
+// finally stays as the normal-path arm.
+let dirSwept = false;
+const sweepDir = () => {
+  if (dirSwept) return;
+  dirSwept = true;
+  rmSync(dir, { recursive: true, force: true });
+};
+process.on("exit", sweepDir);
+for (const [signal, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+  ["SIGHUP", 129],
+]) {
+  process.on(signal, () => {
+    sweepDir();
+    process.exit(code);
+  });
+}
 try {
   const verdictTool = path.join(SCRIPT_DIR, "review-verdict.mjs");
   let voteSignal = null;
@@ -283,5 +332,5 @@ try {
   }
   process.exit(verdict === "approved" ? 0 : 1);
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  sweepDir();
 }

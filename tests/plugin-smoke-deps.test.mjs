@@ -42,6 +42,56 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+// ── crash-proof scratch ──────────────────────────────────────────────
+// Every fixture dir this file mints goes through `mint()`, which registers
+// it for a sweep that cannot be skipped. That matters twice here: most of
+// the `psd-*` dirs are PATH fixtures whose `finally` only RESTORES
+// `process.env.PATH` (the dir itself was never removed on any run at
+// all), and a suite killed by SIGTERM/SIGINT runs no finally even where
+// one exists. `process.on('exit')` also fires for `process.exit()`, so
+// every exit shape reaches the same idempotent sweep.
+const scratch = [];
+const mint = (prefix) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  scratch.push(d);
+  return d;
+};
+const sweepScratch = () => {
+  for (const d of scratch.splice(0)) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
+};
+process.on("exit", sweepScratch);
+for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]]) {
+  process.on(signal, () => { sweepScratch(); process.exit(code); });
+
+/**
+ * Reap THIS FILE's stale siblings before the first mint (the residue half of
+ * the #2698 invariant). A SIGKILL runs no code at all — bounded-gate's
+ * watchdog SIGKILLs a wedged suite, so no in-process teardown can ever run
+ * for that kill — and the next run reclaims what a killed one left. The
+ * rails are the fleet sweepers': exact name prefixes, an age budget far past
+ * the slowest suite, real directories only, and an unreadable root removes
+ * nothing (the mint must never die because its housekeeping did).
+ */
+const STALE_MS = 60 * 60 * 1000;
+const reapStaleScratch = (prefixes) => {
+  let names;
+  try { names = fs.readdirSync(os.tmpdir()); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    if (!prefixes.some((p) => name.startsWith(p))) continue;
+    try {
+      const p = path.join(os.tmpdir(), name);
+      if (!fs.statSync(p).isDirectory()) continue; // a file/symlink named like scratch is never a candidate
+      if (now - fs.statSync(p).mtimeMs < STALE_MS) continue;
+      fs.rmSync(p, { recursive: true, force: true });
+    } catch { continue; } // raced vanish or unreadable — leave it
+  }
+};
+reapStaleScratch(["psd-"]);
+}
+
 // ---- fixtures ------------------------------------------------------------
 
 const plugin = (name, deps = {}, peers = {}) => ({
@@ -385,7 +435,7 @@ test("re-walking a converged walk-accumulated union adds nothing (anti-oscillati
 // A fake npm on PATH drives the REAL default seam (npmViewVersions)
 // hermetically: stdout+exit scripts for the registry's answer shapes.
 const fakeNpmOnPath = (script) => {
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-npm-"));
+  const bin = mint("psd-512-npm-");
   fs.writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${script}\n`, {
     mode: 0o755,
   });
@@ -456,7 +506,7 @@ test("the #512 repro: an unspawnable npm reds as NpmTransportError — never 'un
   // is a prepared EMPTY dir: no npm on it anywhere, hermetically, on
   // every box (a literal `/nonexistent` is tests-lint-banned and
   // lane-fragile — ambient re-inclusion would keep npm spawnable).
-  process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "psd-512-no-npm-"));
+  process.env.PATH = mint("psd-512-no-npm-");
   try {
     assert.throws(
       () => resolveUnionSpecs(u),
@@ -571,7 +621,7 @@ test("the walk default seam: registryPeers throws transport on ECONNREFUSED, sta
   // EMPTY dir as the whole PATH — no npm spawnable on any box, no
   // literal banned path, no ambient re-inclusion to keep npm alive.
   const keep = process.env.PATH;
-  process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-no-npm-"));
+  process.env.PATH = mint("psd-653-no-npm-");
   try {
     assert.throws(
       () => registryPeers("@deepseek-ai/lib653", "^1.0.0"),
@@ -705,7 +755,7 @@ test("a non-transport error from peersFn still propagates — the walk never swa
 // the false green this pin exists to kill.
 test("CLI: a cold install off a degraded walk refuses 'closure satisfied' — the #653 false green is dead", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-cold-"));
+  const tmp = mint("psd-653-cold-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -774,7 +824,7 @@ test("CLI: a cold install off a degraded walk refuses 'closure satisfied' — th
 // quietly.
 test("CLI: a warm install-once tree stays exit 0 on a degraded walk — with the warning attached (issue #653)", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-653-warm-"));
+  const tmp = mint("psd-653-warm-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -932,7 +982,7 @@ test("a growing (non-converging) walk is LOUD, not silent", () => {
 });
 
 test("verify is fail-closed: missing package, unresolved peer, pruned link", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-"));
+  const tmp = mint("psd-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -976,7 +1026,7 @@ test("verify is fail-closed: missing package, unresolved peer, pruned link", () 
 });
 
 test("a root with NO plugins/ dir reads as no plugins — not a raw ENOENT (issue #329)", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-missing-"));
+  const tmp = mint("psd-missing-");
   try {
     // the unit seam: both readers return [] instead of throwing
     assert.deepEqual(
@@ -1024,7 +1074,7 @@ test("CLI --dry-run: green on a converged tree, red on bare", (t) => {
   // GREEN, hermetic: a converged tree this fixture builds itself — the
   // plugin's one peer is materialized by hand (package present,
   // peer-free), the @local link made the way the installer makes it.
-  const green = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-green-"));
+  const green = mint("psd-cli-green-");
   try {
     fs.mkdirSync(path.join(green, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1064,7 +1114,7 @@ test("CLI --dry-run: green on a converged tree, red on bare", (t) => {
 
   // RED, hermetic: bare fixture with an unmaterializable peer — red
   // naming the gap, without npm ever installing anything
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-cli-"));
+  const tmp = mint("psd-cli-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1124,7 +1174,7 @@ test("the repo-leg skip key stays narrow on BOTH seams (issue #432)", () => {
   // The crashed-mid-install shape (issue #432's masking window): npm
   // created the @deepseek-ai scope dir before extraction and died;
   // linkLocals() from a prior run left the @local link behind.
-  const stale = fs.mkdtempSync(path.join(os.tmpdir(), "psd-432-stale-"));
+  const stale = mint("psd-432-stale-");
   try {
     fs.mkdirSync(path.join(stale, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1175,7 +1225,7 @@ test("the repo-leg skip key stays narrow on BOTH seams (issue #432)", () => {
   }
 
   // The pristine clone stays skip-eligible: absent from BOTH seams.
-  const pristine = fs.mkdtempSync(path.join(os.tmpdir(), "psd-432-pristine-"));
+  const pristine = mint("psd-432-pristine-");
   try {
     fs.mkdirSync(path.join(pristine, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1227,7 +1277,7 @@ test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
   // (observed on pristine main @ 3da299e: symlinked --dry-run exit 0,
   // zero output; direct run loud red).
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-symlink-"));
+  const tmp = mint("psd-symlink-");
   try {
     // no deps/peers: 0 seed specs, zero registry walks — the @local-link
     // verify leg alone supplies a state-independent loud observable
@@ -1278,7 +1328,7 @@ test("CLI runs through a symlinked argv (issue #324, the #302 class)", () => {
 // every plugin spec, in both printed lines, regardless of readdir order.
 test("CLI: a spec that loses the readdir race still reaches the seed + verify lines (issue #508)", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-508-"));
+  const tmp = mint("psd-508-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1472,7 +1522,7 @@ test("issue #660 structural: main() carries the retry at both transient boundari
 
 test("issue #660 CLI: an install that fails EAI_AGAIN once is retried and the gate goes GREEN", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-retry-"));
+  const tmp = mint("psd-660-retry-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1484,7 +1534,7 @@ test("issue #660 CLI: an install that fails EAI_AGAIN once is retried and the ga
     );
     // stateful fake npm: the FIRST install attempt fails with a transient
     // transport code, the second materializes the package.
-    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-npm-"));
+    const bin = mint("psd-660-npm-");
     fs.writeFileSync(
       path.join(bin, "npm"),
       [
@@ -1535,7 +1585,7 @@ test("issue #660 CLI: an install that fails EAI_AGAIN once is retried and the ga
 
 test("issue #660 CLI: a hard resolution failure makes exactly ONE install attempt (no retry)", () => {
   const script = path.join(ROOT, "scripts", "install-plugin-smoke-deps.mjs");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660-hard-"));
+  const tmp = mint("psd-660-hard-");
   try {
     fs.mkdirSync(path.join(tmp, "plugins", "a", "test"), { recursive: true });
     fs.writeFileSync(
@@ -1545,7 +1595,7 @@ test("issue #660 CLI: a hard resolution failure makes exactly ONE install attemp
         peerDependencies: { "@deepseek-ai/lib660h": "^1.0.0" },
       }),
     );
-    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "psd-660h-npm-"));
+    const bin = mint("psd-660h-npm-");
     fs.writeFileSync(
       path.join(bin, "npm"),
       [
