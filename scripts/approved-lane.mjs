@@ -232,18 +232,23 @@ const reapStaleScratch = (prefix) => {
   }
 };
 reapStaleScratch("approved-lane-");
-const dir = mkdtempSync(path.join(tmpdir(), "approved-lane-"));
-// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is not that: the
-// verdict arm and every `unresolvable()` call end in `process.exit()`,
-// which does not unwind the stack — the finally never ran on any run, so
-// each invocation (approved, refused, unresolvable) stranded one
-// `approved-lane-*` dir under $TMPDIR. Measured on seed: one per run.
-// `process.on('exit')` also fires for `process.exit()`, and the signal
-// hooks cover a killed run; both reach the same idempotent sweep, and the
-// finally stays as the normal-path arm.
+// TEARDOWN THE CALLER CANNOT SKIP — AT THE ALLOCATION SITE. The mint lives
+// INSIDE the try below and the remove-tree is the finally's body, so the
+// dir dies on every exit shape that unwinds: normal fall-through, a thrown
+// error, any future arm added to the try. `process.exit()` does NOT unwind
+// — it would skip any finally — so the verdict arm no longer exits from
+// inside the try: it records the code and exits AFTER the finally has run,
+// making the removal synchronous instead of exit-hook-best-effort. That
+// ordering is the point (measured history: +28 stranded dirs per suite run
+// across the sibling tool, and bun's process.on('exit') firing is runtime-
+// context-dependent — it fires for plain `bun script` on bun 1.3.14 but
+// not inside bun test). The exit + signal hooks stay armed below as
+// belt-and-suspenders for the pre-try window and signal kills; the finally
+// is the arm that no longer depends on the runner's courtesy.
+let dir = null;
 let dirSwept = false;
 const sweepDir = () => {
-  if (dirSwept) return;
+  if (dirSwept || !dir) return;
   dirSwept = true;
   rmSync(dir, { recursive: true, force: true });
 };
@@ -258,7 +263,9 @@ for (const [signal, code] of [
     process.exit(code);
   });
 }
+let exitCode = 1;
 try {
+  dir = mkdtempSync(path.join(tmpdir(), "approved-lane-"));
   const verdictTool = path.join(SCRIPT_DIR, "review-verdict.mjs");
   let voteSignal = null;
   for (const v of votes) {
@@ -330,7 +337,8 @@ try {
   } else {
     process.stdout.write(`${verdict} pr#${pr.number} gates=${gates.green ? "green" : "not-green"} verdict=${verdictWord}\n`);
   }
-  process.exit(verdict === "approved" ? 0 : 1);
+  exitCode = verdict === "approved" ? 0 : 1;
 } finally {
   sweepDir();
 }
+process.exit(exitCode);
