@@ -209,6 +209,33 @@ if (commentsResp.status !== 0 || !Array.isArray(comments)) {
 // temp-file seam (the pr-verification pattern): the sibling stays the ONE
 // implementation of "what line is a verdict", and bodies never echo.
 const dir = mkdtempSync(path.join(tmpdir(), "approved-lane-"));
+// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is not that: the
+// report arm ends in `process.exit()`, which does not unwind the stack, so
+// the finally never ran on ANY run and every invocation (pass, fail, and
+// unresolvable alike) stranded one `approved-lane-*` dir under $TMPDIR. Measured
+// on seed: 2 dirs per suite run, one per invocation, with zero failing
+// assertions — a leak on the NORMAL path, not a crash. `process.on('exit')`
+// also fires for `process.exit()`, and the signal hooks cover a killed run
+// (the job cap's SIGTERM, a cancelled lane's SIGINT); all three reach the
+// same idempotent sweep. The `finally` stays as the normal-path arm, so a
+// plain return is cleaned before the exit hook would have to be.
+let dirSwept = false;
+const sweepDir = () => {
+  if (dirSwept) return;
+  dirSwept = true;
+  rmSync(dir, { recursive: true, force: true });
+};
+process.on("exit", sweepDir);
+for (const [signal, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+  ["SIGHUP", 129],
+]) {
+  process.on(signal, () => {
+    sweepDir();
+    process.exit(code);
+  });
+}
 try {
   const verdictTool = path.join(SCRIPT_DIR, "review-verdict.mjs");
   let voteSignal = null;
@@ -283,5 +310,5 @@ try {
   }
   process.exit(verdict === "approved" ? 0 : 1);
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  sweepDir();
 }

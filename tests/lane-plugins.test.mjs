@@ -13,6 +13,37 @@ const CONSULT = join(ROOT, "scripts", "lane-plugins-consult.py");
 const MANIFEST = join(ROOT, "config", "lane-plugins.json");
 const SYNC = join(ROOT, "scripts", "sync-lane-plugins.sh");
 
+// ── the scratch mints, and the ONE owner of their sweep ──────────────
+// Every fixture dir this file mints goes through `mint()`, which registers
+// the MINTED root. A per-test `finally` is not an owner: a throw out of a
+// test, an early return, or a kill at the job cap runs no `finally` at all,
+// and most mints here never had a teardown to begin with (16 mints, 2
+// `rmSync` calls, both for one derived index dir). Measured on seed: 15
+// `lp-*` dirs per suite run on a GREEN run. `process.on('exit')` also fires
+// for `process.exit()`; the signal hooks fire before the process dies. One
+// idempotent sweeper, every exit shape.
+const scratchDirs = [];
+const mint = (prefix) => {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  scratchDirs.push(d);
+  return d;
+};
+const sweepScratch = () => {
+  for (const d of scratchDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+};
+process.on("exit", sweepScratch);
+for (const [signal, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+  ["SIGHUP", 129],
+]) {
+  process.on(signal, () => {
+    sweepScratch();
+    process.exit(code);
+  });
+}
+
+
 function consult(args) {
   const out = execFileSync("python3", [CONSULT, ...args], { encoding: "utf8" });
   return out.split("\n").filter((l) => l.trim());
@@ -90,7 +121,7 @@ test("consult: platform gate — linux node sees nothing from the macos set", ()
 });
 
 test("consult: native-web — missing canonical copy SKIPs (never a dead mount)", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   const browser = join(d, "chrome-headless-shell");
   writeFileSync(browser, "#!/bin/sh\n");
@@ -117,7 +148,7 @@ test("consult: native-web — missing canonical copy SKIPs (never a dead mount)"
 });
 
 test("consult: native-web — primed ENV when canonical + browser exist; spacey browsers excluded", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   const canon = join(d, "canonical", "dsh-web-search-browser");
   makePkg(canon, "@local/dsh-web-search-browser");
@@ -154,7 +185,7 @@ test("consult: native-web — primed ENV when canonical + browser exist; spacey 
 });
 
 test("consult: plugin — dead probe port SKIPs; live port mounts with insert-row overlay", async () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   // in-repo source fixture at a fake root
   const root = join(d, "tk");
@@ -200,7 +231,7 @@ test("consult: plugin — dead probe port SKIPs; live port mounts with insert-ro
 });
 
 test("consult: node glob gate — a node outside the pattern SKIPs", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   writeFileSync(manifest, JSON.stringify({ macos: [{ id: "x", seam: "plugin", nodes: ["mini-native-*"], source: { path: "p" } }] }));
   const lines = consult(["--platform", "Darwin", "--node", "hetzner-shell", "--home", d, manifest]);
@@ -212,7 +243,7 @@ test("consult: node glob gate — a node outside the pattern SKIPs", () => {
 // every LATER entry silently never mounted. The pin: both seams (plugin +
 // system-prompt) degrade to a loud SKIP and the loop survives.
 test("consult: require_probe without probe_port SKIPs loud on both seams — the loop survives, later entries still mount", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   const root = join(d, "tk");
   makePkg(join(root, "plugins", "bad-plugin"), "@local/bad-plugin");
@@ -250,7 +281,7 @@ function makeProfilePkg(home, name) {
 }
 
 test("consult: profile-config — missing profile package SKIPs loud (a restated row naming a missing package is a dead mount)", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   writeFileSync(
     manifest,
@@ -265,7 +296,7 @@ test("consult: profile-config — missing profile package SKIPs loud (a restated
 });
 
 test("consult: profile-config — bare RESTATING row (no insert grammar), ~/ config expanded against the real home", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   makeProfilePkg(d, "@deepseek-ai/dsh-session-persistence-jsonl");
   writeFileSync(
@@ -285,7 +316,7 @@ test("consult: profile-config — bare RESTATING row (no insert grammar), ~/ con
 });
 
 test("consult: profile-config ensure_dir — the fleet corpus is minted 0700 before the first write; a root-less row skips loud", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   makeProfilePkg(d, "@deepseek-ai/dsh-session-persistence-jsonl");
   const corpus = join(d, "corpus-root", "sessions");
@@ -316,7 +347,7 @@ test("consult: profile-config ensure_dir — the fleet corpus is minted 0700 bef
 });
 
 test("consult: profile-config shared_index — unique per-job db under the shared dir, dir created, stale files pruned", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   makeProfilePkg(d, "@deepseek-ai/dsh-session-query-sqlite");
   // Unique per-RUN dir under the real home: still exercises the ~/ expansion
@@ -356,7 +387,7 @@ test("consult: profile-config shared_index — unique per-job db under the share
 });
 
 test("consult: plugin require_profile_packages — backend missing SKIPs the tools (never a mount that fails every call)", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
+  const d = mint("lp-");
   const manifest = join(d, "m.json");
   const root = join(d, "tk");
   makePkg(join(root, "plugins", "tool-session-query"), "@deepseek-ai/dsh-tool-session-query");
@@ -379,13 +410,13 @@ test("consult: plugin require_profile_packages — backend missing SKIPs the too
 });
 
 test("consult: system-prompt — live engine merges the marker block; operator text untouched", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-"));
-  const root = mkdtempSync(join(tmpdir(), "lp-root-"));
+  const d = mint("lp-");
+  const root = mint("lp-root-");
   const tplDir = join(root, "config", "system-prompts");
   mkdirSync(tplDir, { recursive: true });
   const tpl = join(tplDir, "macos.md");
   writeFileSync(tpl, "<!-- dsh:mac-reflex-prompt -->\nREFLEX RULE v1\n<!-- /dsh:mac-reflex-prompt -->\n");
-  const home = mkdtempSync(join(tmpdir(), "lp-home-"));
+  const home = mint("lp-home-");
   const target = join(home, "system-prompt.md");
   writeFileSync(target, "operator preamble — never touched\n");
   const manifest = join(d, "m.json");
@@ -465,7 +496,7 @@ function runSyncVerify(script, home) {
 }
 
 test("sync --verify: NOTE fires only off a real comparison — an unresolvable SRC_REF prints no NOTE (issue #548)", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-sync-"));
+  const d = mint("lp-sync-");
   const home = join(d, "home");
   const scriptDir = join(d, "scripts");
   const configDir = join(d, "config");
@@ -524,7 +555,7 @@ test("sync --verify: NOTE fires only off a real comparison — an unresolvable S
 });
 
 test("sync --verify: missing canonical copy is still a loud FAIL (exit 1) — unchanged verdict path", () => {
-  const d = mkdtempSync(join(tmpdir(), "lp-sync-"));
+  const d = mint("lp-sync-");
   const home = join(d, "home");
   const scriptDir = join(d, "scripts");
   const configDir = join(d, "config");

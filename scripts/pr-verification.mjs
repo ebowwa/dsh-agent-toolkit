@@ -124,6 +124,33 @@ reviews.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
 //    then the later channel wins (issue #560). Bodies stay on disk in a temp
 //    file and are never echoed.
 const dir = mkdtempSync(path.join(tmpdir(), "pr-verification-"));
+// TEARDOWN THE CALLER CANNOT SKIP. The `finally` below is not that: the
+// report arm ends in `process.exit()`, which does not unwind the stack, so
+// the finally never ran on ANY run and every invocation (pass, fail, and
+// unresolvable alike) stranded one `pr-verification-*` dir under $TMPDIR. Measured
+// on seed: 19 dirs per suite run, one per invocation, with zero failing
+// assertions — a leak on the NORMAL path, not a crash. `process.on('exit')`
+// also fires for `process.exit()`, and the signal hooks cover a killed run
+// (the job cap's SIGTERM, a cancelled lane's SIGINT); all three reach the
+// same idempotent sweep. The `finally` stays as the normal-path arm, so a
+// plain return is cleaned before the exit hook would have to be.
+let dirSwept = false;
+const sweepDir = () => {
+  if (dirSwept) return;
+  dirSwept = true;
+  rmSync(dir, { recursive: true, force: true });
+};
+process.on("exit", sweepDir);
+for (const [signal, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+  ["SIGHUP", 129],
+]) {
+  process.on(signal, () => {
+    sweepDir();
+    process.exit(code);
+  });
+}
 try {
   const tool = path.join(path.dirname(path.resolve(process.argv[1] ?? ".")), "gate-verify.mjs");
   const lastMarker = (rows, atKey) => {
@@ -189,5 +216,5 @@ try {
   }
   process.exit(last && last.verdict === "pass" ? 0 : 1);
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  sweepDir();
 }
