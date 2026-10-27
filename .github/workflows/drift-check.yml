@@ -158,7 +158,11 @@ jobs:
           echo "release-review verdict: ${VERDICT:-none}"
 
       - name: Tag + release + notify (only on TAG verdicts)
-        if: steps.scope.outputs.empty != 'true'
+        # Main-only: a workflow_dispatch on a PR head must be able to run the
+        # review gate (its bootstrap is what this file's red was) WITHOUT
+        # cutting a rogue release from a branch commit. Review + verdict run
+        # everywhere; only the merged main ref may tag.
+        if: steps.scope.outputs.empty != 'true' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           # repository_dispatch to CONSUMER repos needs a PAT (github.token

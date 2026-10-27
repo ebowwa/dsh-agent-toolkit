@@ -896,13 +896,33 @@ echo "::group::dsh setup" >&2
 # --- 1. dsh CLI -----------------------------------------------------------
 if ! command -v dsh >/dev/null 2>&1; then
   echo "installing @deepseek-ai/dsh@${DSH_VERSION}" >&2
+  # Heap budget for THIS bootstrap (runs 40473152860, 40564386794): npm needs
+  # a >2GB V8 old-space to resolve the ~60-package dsh tree, and node's
+  # default on a 4GB runner is 1950MB — the install GC-thrashed to
+  # "Ineffective mark-compacts near heap limit", exit 134, on the first
+  # runner without a preinstalled dsh. Raised for the install lines ONLY,
+  # appended (never clobbering an operator-set NODE_OPTIONS) and restored
+  # after, so the agent session below keeps the heap it always had.
+  DSH_INSTALL_NODE_OPTS="${NODE_OPTIONS:-}"
+  export NODE_OPTIONS="${DSH_INSTALL_NODE_OPTS:+$DSH_INSTALL_NODE_OPTS }--max-old-space-size=3072"
   # Global first; on runners whose service user cannot write the system npm
   # prefix (EACCES on /usr/lib/node_modules), fall back to a user prefix and
   # put it on PATH for this process tree.
   if ! npm install --global "@deepseek-ai/dsh@${DSH_VERSION}" 2>/dev/null; then
     NPM_USER_PREFIX="${DSH_HOME}/npm-global"
-    npm install --prefix "$NPM_USER_PREFIX" "@deepseek-ai/dsh@${DSH_VERSION}"
+    # --global WITH --prefix: global layout into the user prefix, so the bin
+    # lands at ${NPM_USER_PREFIX}/bin/dsh — the dir the PATH export below
+    # points at. A bare --prefix install is LOCAL-style: bins stay in
+    # node_modules/.bin, <prefix>/bin is never created, and `dsh` stays
+    # unresolved (run 40572504259: "added 451 packages in 11m", then
+    # line 922 "dsh: command not found", exit 127).
+    npm install --global --prefix "$NPM_USER_PREFIX" "@deepseek-ai/dsh@${DSH_VERSION}"
     export PATH="${NPM_USER_PREFIX}/bin:$PATH"
+  fi
+  if [ -n "$DSH_INSTALL_NODE_OPTS" ]; then
+    export NODE_OPTIONS="$DSH_INSTALL_NODE_OPTS"
+  else
+    unset NODE_OPTIONS
   fi
 fi
 dsh --version >&2
