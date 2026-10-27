@@ -20,7 +20,11 @@ const SYNC = join(ROOT, "scripts", "sync-lane-plugins.sh");
 // finally at all, and a mint outside a tracked pair is never swept even on
 // the green path — both shapes were measured as this file's residue under
 // $TMPDIR. `process.on('exit')` also fires for `process.exit()`, so every
-// exit shape reaches the same idempotent sweep.
+// exit shape reaches the same idempotent sweep — under node. Under
+// `bun test` NO process exit hook fires at end of run (measured: a
+// process.on("exit") sweeper stranded its own probe dir), so the runner
+// arm below — `afterAll`, which bun runs after the file's tests even when
+// they fail — is the arm that actually sweeps a bun-driven run.
 const scratch = [];
 const mint = (prefix) => {
   const d = mkdtempSync(join(tmpdir(), prefix));
@@ -61,6 +65,14 @@ const reapStaleScratch = (prefixes) => {
   }
 };
 reapStaleScratch(["lp-"]);
+}
+// bun arm: registered through a guarded dynamic import — a static
+// `from "bun:test"` would fail module resolution under the gate's
+// `node --test` run, where this file must still load. Under node the
+// process.on("exit") arm above is the live sweeper; only bun needs this.
+if (process.versions.bun) {
+  const { afterAll } = await import("bun:test");
+  afterAll(sweepScratch);
 }
 
 function consult(args) {
