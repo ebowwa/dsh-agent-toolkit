@@ -26,7 +26,7 @@
 #
 # Env you may override:
 #   DSH_HOME              harness home (default $HOME/.dsh)
-#   DSH_VERSION           dsh npm version to install if missing (default 0.1.0-rc.7)
+#   DSH_VERSION           dsh npm version to install if missing (default 0.2.1-rc.4)
 #   DSH_PERMISSION_MODE   sandbox/approval mode (default danger-full-access:
 #                         no human to ask in CI, so approvals are never raised)
 #   DSH_MODEL             head model, "provider/model" (default zai/glm-5.3)
@@ -890,7 +890,13 @@ if [ -z "${DISPATCH_FACE_ID:-}" ] && [ -n "${DSH_FACE_ID:-}" ]; then
   DISPATCH_FACE_ID="$DSH_FACE_ID"
   export DISPATCH_FACE_ID
 fi
-DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
+# 0.2-line pin (runs 40577600995, 40564386794): the stale 0.1.0-rc.7 pin
+# boots fail-loud on a cold install — its runProfile watches the user
+# patch layer unconditionally and dies with "requires the Cordis HMR
+# service" before any credential resolution. Cold-box control
+# (caringmind): rc.7 throws exactly that; 0.2.0-rc.2 and 0.2.1-rc.4 both
+# boot past it to the designed MISSING_CREDENTIAL death.
+DSH_VERSION="${DSH_VERSION:-0.2.1-rc.4}"
 
 echo "::group::dsh setup" >&2
 # --- 1. dsh CLI -----------------------------------------------------------
